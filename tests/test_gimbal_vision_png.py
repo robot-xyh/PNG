@@ -10,6 +10,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _gimbal_from_relative_body,
     _guidance_velocity,
     _los_fallback_allowed,
+    _rows_until_first_hit,
     _terminal_trigger,
     _update_gimbal_from_pixel,
     _wrap_angle_deg,
@@ -124,6 +125,13 @@ class GimbalVisionPNGTest(unittest.TestCase):
             "gimbal_limit",
         )
         self.assertEqual(_terminal_trigger("no_detection", False, 0.0, 0.0, 0.0, intrinsics, args), "")
+
+    def test_plot_rows_stop_at_first_hit(self):
+        rows = [{"t": 0.0, "hit": 0}, {"t": 1.0, "hit": 1}, {"t": 2.0, "hit": 0}]
+
+        clipped = _rows_until_first_hit(rows)
+
+        self.assertEqual([row["t"] for row in clipped], [0.0, 1.0])
 
 
 if __name__ == "__main__":

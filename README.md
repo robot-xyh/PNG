@@ -72,6 +72,13 @@ Trajectory debug output is written to `logs/` by default:
 - `airsim_trajectory_*.png`
 
 `--enable-motion` is still simulation-only. It does not send MAVLink commands.
+For the three PNG validation scripts, success is defined by AirSim reporting a
+collision between `Interceptor` and `Intruder`; range thresholds are diagnostic
+only. Each run stops immediately after the collision frame, so CSV and plot
+outputs do not include post-collision samples.
+The collision object name must match the other vehicle's glob pattern
+(`Intruder*` or `Interceptor*` by default), so unrelated wall/ground collisions
+are not counted as intercept success.
 
 ## AirSim Truth PNG Baseline
 
@@ -90,7 +97,7 @@ Default truth-PNG settings:
 - Both vehicles climb to 50 m before the intercept loop.
 - Intruder velocity defaults to `+Y` at `5 m/s`.
 - Interceptor velocity command is capped at `speed_ratio * intruder_speed`.
-- Hit radius defaults to `1.0 m`.
+- Hit is based on AirSim pair collision, not range radius.
 
 Debug output is written to `logs/`:
 
@@ -131,6 +138,24 @@ visual inspection is needed.
 It writes `gimbal_vision_png_*.csv` and `gimbal_vision_png_*.png` to `logs/`.
 Ground-truth positions in those logs are not used by the visual guidance
 calculation.
+
+## AirSim Strapdown Vision PNG Validation
+
+The strapdown-camera validation script tests the fixed forward camera path. It
+does not command a gimbal. After climbing to the start altitudes, it may use
+truth once to rotate the interceptor body yaw so the intruder starts inside the
+camera FOV. The guidance loop then uses only AirSim `box2D`, interceptor
+attitude, fixed camera extrinsics, 6D LOS and TTC.
+By default the intruder starts 30 m above the interceptor before interception.
+
+```bash
+python3 examples/run_airsim_strapdown_vision_png.py --enable-motion --intruder-speed 5 --speed-ratio 2
+```
+
+Yaw is controlled from bbox horizontal error with a bounded yaw-rate command.
+Velocity guidance remains 3D and preserves `v_cmd_z`, including during coast or
+terminal blind push. It writes `strapdown_vision_png_*.csv` and
+`strapdown_vision_png_*.png` to `logs/`.
 
 ## Safety Boundary
 

@@ -7,6 +7,7 @@ from vision_guidance.airsim_adapter import (
     airsim_orientation_to_R_IB,
     choose_detection,
     detection_to_frame_detection,
+    get_vehicle_pair_collision,
     infer_intrinsics_from_fov,
 )
 
@@ -22,6 +23,24 @@ def make_detection(name, x1, y1, x2, y2):
         relative_pose=SimpleNamespace(position=SimpleNamespace(x_val=999)),
         geo_point=SimpleNamespace(latitude=1, longitude=2),
     )
+
+
+def make_collision(has_collided, object_name="", point=(0.0, 0.0, 0.0)):
+    vector = SimpleNamespace(x_val=point[0], y_val=point[1], z_val=point[2])
+    return SimpleNamespace(
+        has_collided=has_collided,
+        object_name=object_name,
+        impact_point=vector,
+        position=vector,
+    )
+
+
+class CollisionClient:
+    def __init__(self, collisions):
+        self.collisions = collisions
+
+    def simGetCollisionInfo(self, vehicle_name=""):
+        return self.collisions[vehicle_name]
 
 
 class AirSimAdapterTest(unittest.TestCase):
@@ -49,6 +68,73 @@ class AirSimAdapterTest(unittest.TestCase):
         self.assertAlmostEqual(intr.fy, 320.0)
         self.assertEqual(intr.cx, 320.0)
         self.assertEqual(intr.cy, 240.0)
+
+    def test_pair_collision_matches_other_vehicle_name(self):
+        client = CollisionClient(
+            {
+                "Interceptor": make_collision(True, "Intruder"),
+                "Intruder": make_collision(False, ""),
+            }
+        )
+
+        result = get_vehicle_pair_collision(client, "Interceptor", "Intruder")
+
+        self.assertTrue(result.collided)
+        self.assertEqual(result.reason, "object_name_pattern_match")
+
+    def test_pair_collision_matches_other_vehicle_name_pattern(self):
+        client = CollisionClient(
+            {
+                "Interceptor": make_collision(True, "Intruder_CollisionMesh_12"),
+                "Intruder": make_collision(False, ""),
+            }
+        )
+
+        result = get_vehicle_pair_collision(client, "Interceptor", "Intruder")
+
+        self.assertTrue(result.collided)
+        self.assertEqual(result.reason, "object_name_pattern_match")
+
+    def test_pair_collision_rejects_unrelated_collision(self):
+        client = CollisionClient(
+            {
+                "Interceptor": make_collision(True, "Wall"),
+                "Intruder": make_collision(False, ""),
+            }
+        )
+
+        result = get_vehicle_pair_collision(client, "Interceptor", "Intruder")
+
+        self.assertFalse(result.collided)
+
+    def test_pair_collision_rejects_nearby_dual_collision_without_object_match(self):
+        client = CollisionClient(
+            {
+                "Interceptor": make_collision(True, "Obstacle", (1.0, 2.0, 3.0)),
+                "Intruder": make_collision(True, "Obstacle", (1.5, 2.0, 3.0)),
+            }
+        )
+
+        result = get_vehicle_pair_collision(client, "Interceptor", "Intruder")
+
+        self.assertFalse(result.collided)
+
+    def test_pair_collision_uses_custom_glob_patterns(self):
+        client = CollisionClient(
+            {
+                "Interceptor": make_collision(True, "BP_Intruder_C_3"),
+                "Intruder": make_collision(False, ""),
+            }
+        )
+
+        result = get_vehicle_pair_collision(
+            client,
+            "Interceptor",
+            "Intruder",
+            intruder_object_patterns=("BP_Intruder_*",),
+        )
+
+        self.assertTrue(result.collided)
 
 
 if __name__ == "__main__":

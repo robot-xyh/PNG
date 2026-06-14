@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--mesh", default="Intruder*")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fov-deg", type=float, default=90.0)
+    parser.add_argument("--fov-deg", type=float, default=120.0)
     parser.add_argument("--camera-pitch-up-deg", type=float, default=0.0)
     parser.add_argument("--intruder-speed", type=float, default=5.0)
     parser.add_argument("--speed-ratio", type=float, default=2.0)

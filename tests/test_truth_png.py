@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from examples.run_airsim_truth_png import _apply_altitude_correction, _world_position
+from examples.run_airsim_truth_png import _apply_altitude_correction, _rows_until_first_hit, _world_position
 from vision_guidance.truth_png import compute_truth_png, integrate_velocity_command
 
 
@@ -93,6 +93,13 @@ class TruthPNGTest(unittest.TestCase):
 
         self.assertAlmostEqual(command[2], 3.0)
         self.assertLessEqual(np.linalg.norm(command), 8.0 + 1.0e-9)
+
+    def test_plot_rows_stop_at_first_hit(self):
+        rows = [{"t": 0.0, "hit": 0}, {"t": 1.0, "hit": 1}, {"t": 2.0, "hit": 0}]
+
+        clipped = _rows_until_first_hit(rows)
+
+        self.assertEqual([row["t"] for row in clipped], [0.0, 1.0])
 
 
 if __name__ == "__main__":

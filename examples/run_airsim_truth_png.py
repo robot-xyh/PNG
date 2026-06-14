@@ -14,6 +14,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+from vision_guidance.airsim_adapter import get_vehicle_pair_collision  # noqa: E402
 from vision_guidance.truth_png import compute_truth_png, integrate_velocity_command  # noqa: E402
 
 
@@ -26,6 +27,8 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run truth-state classic PNG baseline in AirSim Blocks.")
     parser.add_argument("--interceptor", default="Interceptor")
     parser.add_argument("--intruder", default="Intruder")
+    parser.add_argument("--collision-interceptor-pattern", action="append", default=None)
+    parser.add_argument("--collision-intruder-pattern", action="append", default=None)
     parser.add_argument("--intruder-speed", type=float, default=5.0)
     parser.add_argument("--intruder-vx", type=float, default=0.0)
     parser.add_argument("--intruder-vy", type=float, default=None)
@@ -36,7 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--duration-s", type=float, default=30.0)
     parser.add_argument("--enable-motion", action="store_true", help="Apply AirSim velocity commands.")
     parser.add_argument("--reset", action=argparse.BooleanOptionalAction, default=True, help="Reset AirSim before the run.")
-    parser.add_argument("--hit-radius-m", type=float, default=1.0)
+    parser.add_argument("--hit-radius-m", type=float, default=1.0, help="Deprecated; AirSim collision is the success criterion.")
     parser.add_argument("--max-accel", type=float, default=15.0)
     parser.add_argument("--min-speed-ratio", type=float, default=0.8)
     parser.add_argument(
@@ -155,6 +158,9 @@ def _record_sample(
     guidance_valid: bool,
     reject_reason: str,
     hit: bool,
+    collision_reason: str,
+    interceptor_collision_object: str,
+    intruder_collision_object: str,
 ) -> None:
     row: dict[str, float | int | str | bool] = {
         "t": t,
@@ -165,6 +171,9 @@ def _record_sample(
         "guidance_valid": int(guidance_valid),
         "reject_reason": reject_reason,
         "hit": int(hit),
+        "collision_reason": collision_reason,
+        "interceptor_collision_object": interceptor_collision_object,
+        "intruder_collision_object": intruder_collision_object,
     }
     for prefix, vector in [
         ("los", los),
@@ -195,6 +204,9 @@ def _write_csv(rows: Sequence[dict[str, float | int | str | bool]], csv_path: Pa
         "guidance_valid",
         "reject_reason",
         "hit",
+        "collision_reason",
+        "interceptor_collision_object",
+        "intruder_collision_object",
         "los_x",
         "los_y",
         "los_z",
@@ -246,6 +258,17 @@ def _prefer_user_mpl_toolkits() -> None:
     sys.modules["mpl_toolkits"] = module
 
 
+def _rows_until_first_hit(rows: Sequence[dict[str, float | int | str | bool]]) -> Sequence[dict[str, float | int | str | bool]]:
+    for index, row in enumerate(rows):
+        try:
+            hit = int(row.get("hit", 0)) == 1
+        except (TypeError, ValueError):
+            hit = False
+        if hit:
+            return rows[: index + 1]
+    return rows
+
+
 def _plot_truth_png(rows: Sequence[dict[str, float | int | str | bool]], plot_path: Path) -> bool:
     try:
         import matplotlib
@@ -263,6 +286,7 @@ def _plot_truth_png(rows: Sequence[dict[str, float | int | str | bool]], plot_pa
         print(f"matplotlib plot unavailable ({exc}); CSV was still saved.")
         return False
 
+    rows = _rows_until_first_hit(rows)
     if not rows:
         return False
 
@@ -431,9 +455,6 @@ def main() -> None:
         raise SystemExit("--rate-hz must be positive")
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
-    if args.hit_radius_m <= 0.0:
-        raise SystemExit("--hit-radius-m must be positive")
-
     client = airsim.MultirotorClient()
     try:
         client.confirmConnection()
@@ -545,7 +566,14 @@ def main() -> None:
         )
         v_cmd = _apply_altitude_correction(v_cmd, relative_position, intruder_vel, speed_cap, args)
 
-        hit = result.range_m <= args.hit_radius_m
+        pair_collision = get_vehicle_pair_collision(
+            client,
+            args.interceptor,
+            args.intruder,
+            interceptor_object_patterns=args.collision_interceptor_pattern,
+            intruder_object_patterns=args.collision_intruder_pattern,
+        )
+        hit = pair_collision.collided
         _record_sample(
             rows,
             sim_t,
@@ -564,11 +592,17 @@ def main() -> None:
             result.valid,
             result.reject_reason or "",
             hit,
+            pair_collision.reason,
+            pair_collision.interceptor_object_name,
+            pair_collision.intruder_object_name,
         )
         _print_status(frame, sim_t, result, relative_position, accel, v_cmd, hit)
 
         if hit:
-            print(f"hit=True range={result.range_m:.3f}m t={sim_t:.3f}s")
+            print(
+                f"hit=True collision=True reason={pair_collision.reason} "
+                f"range={result.range_m:.3f}m t={sim_t:.3f}s"
+            )
             break
 
         if args.enable_motion:

@@ -21,6 +21,7 @@ from vision_guidance.airsim_adapter import (  # noqa: E402
     choose_detection,
     configure_detection_filter,
     detection_to_frame_detection,
+    get_vehicle_pair_collision,
     get_detections,
     infer_intrinsics_from_fov,
 )
@@ -46,11 +47,13 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AirSim gimbal-camera pure-vision PNG validation.")
     parser.add_argument("--interceptor", default="Interceptor")
     parser.add_argument("--intruder", default="Intruder")
+    parser.add_argument("--collision-interceptor-pattern", action="append", default=None)
+    parser.add_argument("--collision-intruder-pattern", action="append", default=None)
     parser.add_argument("--camera", default="0")
     parser.add_argument("--mesh", default="Intruder*")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
-    parser.add_argument("--fov-deg", type=float, default=90.0)
+    parser.add_argument("--fov-deg", type=float, default=120.0)
     parser.add_argument("--camera-x", type=float, default=0.0)
     parser.add_argument("--camera-y", type=float, default=0.0)
     parser.add_argument("--camera-z", type=float, default=-0.5)
@@ -79,7 +82,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-s", type=float, default=2.0)
     parser.add_argument("--settle-speed", type=float, default=0.5)
     parser.add_argument("--settle-timeout-s", type=float, default=8.0)
-    parser.add_argument("--hit-radius-m", type=float, default=1.0)
+    parser.add_argument("--hit-radius-m", type=float, default=1.0, help="Deprecated; AirSim collision is the success criterion.")
     parser.add_argument("--gimbal-yaw-limit-deg", type=float, default=80.0)
     parser.add_argument("--gimbal-pitch-limit-deg", type=float, default=45.0)
     parser.add_argument("--gimbal-rate-limit-deg", type=float, default=90.0)
@@ -624,6 +627,17 @@ def _write_csv(rows: Sequence[dict[str, float | int | str]], csv_path: Path) -> 
         writer.writerows(rows)
 
 
+def _rows_until_first_hit(rows: Sequence[dict[str, float | int | str]]) -> Sequence[dict[str, float | int | str]]:
+    for index, row in enumerate(rows):
+        try:
+            hit = int(row.get("hit", 0)) == 1
+        except (TypeError, ValueError):
+            hit = False
+        if hit:
+            return rows[: index + 1]
+    return rows
+
+
 def _plot(rows: Sequence[dict[str, float | int | str]], plot_path: Path) -> bool:
     try:
         import matplotlib
@@ -635,6 +649,7 @@ def _plot(rows: Sequence[dict[str, float | int | str]], plot_path: Path) -> bool
     except Exception as exc:
         print(f"matplotlib 3D plot unavailable ({exc}); CSV was still saved.")
         return False
+    rows = _rows_until_first_hit(rows)
     if not rows:
         return False
 
@@ -802,13 +817,19 @@ def main() -> None:
         intruder_pos = np.full(3, np.nan)
         rel = np.full(3, np.nan)
         range_m = float("nan")
-        hit = False
         if args.diagnostic_truth:
             intruder_kin = _truth_kinematics(client, args.intruder)
             intruder_pos = _world_position(intruder_kin, args.intruder, origins)
             rel = intruder_pos - interceptor_pos
             range_m = float(np.linalg.norm(rel))
-            hit = range_m <= args.hit_radius_m
+        pair_collision = get_vehicle_pair_collision(
+            client,
+            args.interceptor,
+            args.intruder,
+            interceptor_object_patterns=args.collision_interceptor_pattern,
+            intruder_object_patterns=args.collision_intruder_pattern,
+        )
+        hit = pair_collision.collided
 
         state = client.getMultirotorState(vehicle_name=args.interceptor)
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
@@ -972,7 +993,7 @@ def main() -> None:
             target_body_bearing = _wrap_angle_deg(target_bearing - body_yaw_deg)
             target_body_bearing_deg = target_body_bearing
             gimbal_body_bearing_error_deg = _wrap_angle_deg(float(np.rad2deg(yaw_rad)) - target_body_bearing)
-        if args.enable_motion:
+        if args.enable_motion and not hit:
             drivetrain, yaw_mode = _air_sim_yaw_mode(airsim, v_cmd, args)
             client.moveByVelocityAsync(
                 float(v_cmd[0]),
@@ -1004,6 +1025,9 @@ def main() -> None:
                 "horizontal_range": float(np.linalg.norm(rel[:2])) if args.diagnostic_truth else "",
                 "vertical_error": float(rel[2]) if args.diagnostic_truth else "",
                 "hit": int(hit),
+                "collision_reason": pair_collision.reason,
+                "interceptor_collision_object": pair_collision.interceptor_object_name,
+                "intruder_collision_object": pair_collision.intruder_object_name,
                 "pixel_error_x": px_err_x,
                 "pixel_error_y": px_err_y,
                 "bbox_area": bbox_area,
@@ -1055,7 +1079,10 @@ def main() -> None:
                 f"{np.array2string(v_cmd, precision=2)},{int(hit)}"
             )
         if hit:
-            print(f"hit=True range={range_m:.3f}m t={sim_t:.3f}s")
+            print(
+                f"hit=True collision=True reason={pair_collision.reason} "
+                f"range={range_m:.3f}m t={sim_t:.3f}s"
+            )
             break
         if stop_requested:
             print("preview_window_quit=True")

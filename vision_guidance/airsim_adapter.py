@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from fnmatch import fnmatchcase
 from typing import Any, Iterable, Optional, Sequence
 
 import numpy as np
@@ -15,6 +16,16 @@ class AirSimDetectionConfig:
     detection_radius_cm: float = 20000.0
     mesh_name_pattern: str = "Intruder*"
     vehicle_name: str = "Interceptor"
+
+
+@dataclass(frozen=True)
+class AirSimPairCollision:
+    collided: bool
+    reason: str
+    interceptor_has_collided: bool
+    intruder_has_collided: bool
+    interceptor_object_name: str
+    intruder_object_name: str
 
 
 def quaternion_to_rotation_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
@@ -39,6 +50,61 @@ def airsim_orientation_to_R_IB(orientation: Any) -> np.ndarray:
         float(orientation.y_val),
         float(orientation.z_val),
     )
+
+
+def get_vehicle_pair_collision(
+    client: Any,
+    interceptor: str,
+    intruder: str,
+    interceptor_object_patterns: Sequence[str] | None = None,
+    intruder_object_patterns: Sequence[str] | None = None,
+) -> AirSimPairCollision:
+    """Return true only when AirSim object names identify a vehicle-to-vehicle collision."""
+
+    interceptor_info = client.simGetCollisionInfo(vehicle_name=interceptor)
+    intruder_info = client.simGetCollisionInfo(vehicle_name=intruder)
+    interceptor_hit = bool(getattr(interceptor_info, "has_collided", False))
+    intruder_hit = bool(getattr(intruder_info, "has_collided", False))
+    interceptor_object = str(getattr(interceptor_info, "object_name", "") or "")
+    intruder_object = str(getattr(intruder_info, "object_name", "") or "")
+    interceptor_patterns = tuple(interceptor_object_patterns or _default_collision_patterns(interceptor))
+    intruder_patterns = tuple(intruder_object_patterns or _default_collision_patterns(intruder))
+
+    interceptor_names_intruder = interceptor_hit and _collision_object_matches(interceptor_object, intruder_patterns)
+    intruder_names_interceptor = intruder_hit and _collision_object_matches(intruder_object, interceptor_patterns)
+    if interceptor_names_intruder or intruder_names_interceptor:
+        return AirSimPairCollision(
+            True,
+            "object_name_pattern_match",
+            interceptor_hit,
+            intruder_hit,
+            interceptor_object,
+            intruder_object,
+        )
+
+    return AirSimPairCollision(
+        False,
+        "",
+        interceptor_hit,
+        intruder_hit,
+        interceptor_object,
+        intruder_object,
+    )
+
+
+def _default_collision_patterns(vehicle_name: str) -> tuple[str, ...]:
+    return (vehicle_name, f"{vehicle_name}*")
+
+
+def _collision_object_matches(object_name: str, patterns: Sequence[str]) -> bool:
+    normalized_object = object_name.strip().lower()
+    if not normalized_object:
+        return False
+    for pattern in patterns:
+        normalized_pattern = str(pattern or "").strip().lower()
+        if normalized_pattern and fnmatchcase(normalized_object, normalized_pattern):
+            return True
+    return False
 
 
 def detection_to_frame_detection(
