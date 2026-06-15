@@ -102,6 +102,7 @@ Default truth-PNG settings:
 Debug output is written to `logs/`:
 
 - `truth_png_trajectory_*.csv`
+- `truth_png_trajectory_*_meta.json`
 - `truth_png_trajectory_*.png`
 
 Use this baseline to separate guidance/control issues from pure-vision sensing
@@ -120,8 +121,17 @@ The interceptor camera is mounted 0.5 m above the body center by default
 Interceptor motion commands explicitly use `ForwardOnly` with an absolute yaw
 angle derived from the current velocity command, so the airframe heading follows
 the guidance direction instead of holding yaw rate zero. Near terminal range,
-large/clipped boxes or gimbal-limit conditions trigger a short blind push using
-the last full 3D velocity command.
+large/clipped boxes, gimbal-limit conditions, or short terminal target loss
+trigger a short terminal extrapolation blind push. The blind command uses a
+short-window average of recent 3D velocity commands plus bounded LOS-trend and
+pitch-up bias; pass `--no-terminal-extrapolation` to disable it. The gimbal
+adapter is intentionally different from the fixed-camera adapter: terminal
+visual tracking reduces gimbal centering gain, clipped boxes stop updating the
+gimbal, and blind push can freeze the last reliable gimbal yaw/pitch
+(`--terminal-freeze-gimbal-on-blind`). A terminal image-plane constant-velocity
+Kalman filter is enabled by default; during clipped boxes or blind push it
+predicts short-horizon angular error so the gimbal can continue sweeping for up
+to `--terminal-image-kf-max-predict-s` instead of only holding still.
 
 ```bash
 python3 examples/run_airsim_gimbal_vision_png.py --enable-motion --intruder-speed 5 --speed-ratio 2
@@ -135,9 +145,11 @@ by default for offline range, hit and trajectory evaluation; use
 default to keep the AirSim loop rate higher; pass `--show-window` only when
 visual inspection is needed.
 
-It writes `gimbal_vision_png_*.csv` and `gimbal_vision_png_*.png` to `logs/`.
-Ground-truth positions in those logs are not used by the visual guidance
-calculation.
+It writes `gimbal_vision_png_*.csv`, `gimbal_vision_png_*_meta.json`, and
+`gimbal_vision_png_*.png` to `logs/`. The metadata JSON records run arguments
+and derived values such as `speed_ratio`, `intruder_altitude_offset_m`, and
+`speed_cap`. Ground-truth positions in those logs are not used by the visual
+guidance calculation.
 
 ## AirSim Strapdown Vision PNG Validation
 
@@ -153,8 +165,16 @@ python3 examples/run_airsim_strapdown_vision_png.py --enable-motion --intruder-s
 ```
 
 Yaw is controlled from bbox horizontal error with a bounded yaw-rate command.
-Velocity guidance remains 3D and preserves `v_cmd_z`, including during coast or
-terminal blind push. It writes `strapdown_vision_png_*.csv` and
+Velocity guidance remains 3D and preserves `v_cmd_z`, including during coast and
+terminal extrapolation blind push. Because the fixed camera must keep the
+airframe pointed at the target, strapdown blind push also keeps a decaying
+short-window average of recent yaw-rate commands. When the terminal image-plane
+Kalman filter is valid, its predicted angular error and angular rate override
+the window hold to generate yaw rate during clipped boxes or blind push; pass
+`--no-terminal-image-kf` to disable that predictive layer, and pass
+`--no-terminal-yaw-rate-extrapolation` to restore the older behavior where
+target loss immediately returns yaw rate to the current visual command. It
+writes `strapdown_vision_png_*.csv`, `strapdown_vision_png_*_meta.json`, and
 `strapdown_vision_png_*.png` to `logs/`.
 
 ## Safety Boundary

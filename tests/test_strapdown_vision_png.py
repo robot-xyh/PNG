@@ -6,12 +6,19 @@ from types import SimpleNamespace
 import numpy as np
 
 from examples.run_airsim_strapdown_vision_png import (
+    _append_yaw_rate_sample,
+    _image_kf_takeover_allowed,
+    _kf_yaw_rate_command,
     _output_paths_strapdown,
     _plot_strapdown,
     _rows_until_first_hit,
     _terminal_trigger_strapdown,
+    _terminal_yaw_rate_command,
+    _yaw_rate_from_angle_error,
     _yaw_rate_from_pixel_error,
 )
+from vision_guidance.terminal_image_kf import TerminalImageEstimate
+from vision_guidance.terminal_extrapolation import BLIND_PUSH, TERMINAL_VISUAL
 from vision_guidance.types import CameraIntrinsics
 
 
@@ -31,6 +38,127 @@ class StrapdownVisionPNGTest(unittest.TestCase):
 
         args.yaw_control = False
         self.assertAlmostEqual(_yaw_rate_from_pixel_error(640.0, intrinsics, args), 0.0)
+
+    def test_yaw_rate_from_angle_error_and_kf_feedforward(self):
+        args = SimpleNamespace(yaw_control=True, yaw_error_gain=2.0, max_yaw_rate_deg=30.0)
+
+        self.assertAlmostEqual(_yaw_rate_from_angle_error(0.10, args), np.rad2deg(0.20))
+
+        image_kf = TerminalImageEstimate(
+            timestamp=0.0,
+            theta_x=0.10,
+            theta_y=0.0,
+            theta_dot_x=0.20,
+            theta_dot_y=0.0,
+            valid=True,
+            mode="predict",
+            age_s=0.05,
+            quality=0.8,
+        )
+
+        command = _kf_yaw_rate_command(image_kf, args)
+
+        self.assertAlmostEqual(command, np.rad2deg(0.40))
+
+        args.max_yaw_rate_deg = 10.0
+        self.assertAlmostEqual(_kf_yaw_rate_command(image_kf, args), 10.0)
+
+    def test_strapdown_image_kf_can_take_over_on_terminal_los_reject(self):
+        image_kf = TerminalImageEstimate(
+            timestamp=1.0,
+            theta_x=0.05,
+            theta_y=0.02,
+            theta_dot_x=0.10,
+            theta_dot_y=0.0,
+            valid=True,
+            mode="predict",
+            age_s=0.06,
+            quality=0.8,
+        )
+        terminal_result = SimpleNamespace(
+            state="Tracking",
+            reason="",
+            using_blind_push=False,
+        )
+        args = SimpleNamespace(terminal_soft_enter_area_ratio=0.05)
+
+        allowed, reason = _image_kf_takeover_allowed(
+            image_kf,
+            terminal_result,
+            "los_innovation_reject",
+            True,
+            0.08,
+            args,
+            profile="strapdown",
+        )
+
+        self.assertTrue(allowed)
+        self.assertEqual(reason, "strapdown_los_reject")
+
+    def test_terminal_yaw_rate_scales_terminal_visual_and_extrapolates_blind_push(self):
+        args = SimpleNamespace(
+            terminal_yaw_rate_extrapolation=True,
+            terminal_yaw_rate_average_window_s=0.10,
+            terminal_yaw_rate_decay_tau_s=0.20,
+            terminal_yaw_rate_scale=0.50,
+            max_yaw_rate_deg=90.0,
+        )
+        samples: list[tuple[float, float]] = []
+        for ts, value in [(0.00, 20.0), (0.04, 30.0), (0.08, 40.0)]:
+            _append_yaw_rate_sample(samples, ts, value, True, args)
+
+        command, base, count, decay = _terminal_yaw_rate_command(
+            current_yaw_rate_deg_s=30.0,
+            samples=samples,
+            timestamp=0.10,
+            terminal_state=TERMINAL_VISUAL,
+            using_blind_push=False,
+            blind_elapsed_s=0.0,
+            args=args,
+        )
+        self.assertAlmostEqual(command, 15.0)
+        self.assertAlmostEqual(base, 0.0)
+        self.assertEqual(count, 0)
+        self.assertAlmostEqual(decay, 1.0)
+
+        command, base, count, decay = _terminal_yaw_rate_command(
+            current_yaw_rate_deg_s=0.0,
+            samples=samples,
+            timestamp=0.10,
+            terminal_state=BLIND_PUSH,
+            using_blind_push=True,
+            blind_elapsed_s=0.10,
+            args=args,
+        )
+        self.assertAlmostEqual(base, 30.0)
+        self.assertEqual(count, 3)
+        self.assertGreater(decay, 0.0)
+        self.assertLess(command, base)
+        self.assertGreater(command, 0.0)
+
+    def test_terminal_yaw_rate_extrapolation_can_be_disabled(self):
+        args = SimpleNamespace(
+            terminal_yaw_rate_extrapolation=False,
+            terminal_yaw_rate_average_window_s=0.10,
+            terminal_yaw_rate_decay_tau_s=0.20,
+            terminal_yaw_rate_scale=0.50,
+            max_yaw_rate_deg=90.0,
+        )
+
+        command, base, count, decay = _terminal_yaw_rate_command(
+            current_yaw_rate_deg_s=0.0,
+            samples=[(0.0, 40.0)],
+            timestamp=0.10,
+            terminal_state=BLIND_PUSH,
+            using_blind_push=True,
+            blind_elapsed_s=0.10,
+            args=args,
+        )
+
+        self.assertAlmostEqual(command, 0.0)
+        self.assertAlmostEqual(base, 0.0)
+        self.assertEqual(count, 0)
+        self.assertAlmostEqual(decay, 0.0)
 
     def test_terminal_trigger_strapdown_conditions(self):
         intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)

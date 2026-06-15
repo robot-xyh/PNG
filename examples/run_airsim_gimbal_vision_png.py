@@ -34,6 +34,21 @@ from vision_guidance.geometry import (  # noqa: E402
 )
 from vision_guidance.los_filter import LOSKalmanFilter6D  # noqa: E402
 from vision_guidance.png_eval import TTCGainSchedule  # noqa: E402
+from vision_guidance.terminal_image_kf import (  # noqa: E402
+    IMAGE_KF_PREDICT,
+    TerminalImageEstimate,
+    TerminalImageKF,
+    TerminalImageKFConfig,
+    center_from_angle_error,
+)
+from vision_guidance.terminal_extrapolation import (  # noqa: E402
+    ABORT_HOLD,
+    BLIND_PUSH,
+    COMPLETE,
+    TERMINAL_VISUAL,
+    TerminalConfig,
+    TerminalExtrapolator,
+)
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig  # noqa: E402
 from vision_guidance.types import AttitudeSample  # noqa: E402
 
@@ -93,6 +108,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coast-timeout-s", type=float, default=0.5)
     parser.add_argument("--blind-push-timeout-s", type=float, default=1.0)
     parser.add_argument("--terminal-bbox-area-ratio", type=float, default=0.25)
+    parser.add_argument("--terminal-extrapolation", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-enter-area-ratio", type=float, default=0.20)
+    parser.add_argument("--terminal-soft-enter-area-ratio", type=float, default=0.05)
+    parser.add_argument("--terminal-cutoff-area-ratio", type=float, default=0.60)
+    parser.add_argument("--terminal-gimbal-limit-area-ratio", type=float, default=0.05)
+    parser.add_argument("--terminal-cutoff-miss-count", type=int, default=3)
+    parser.add_argument("--terminal-min-tracking-time-s", type=float, default=0.20)
+    parser.add_argument("--terminal-confidence-min-score", type=float, default=0.35)
+    parser.add_argument("--terminal-max-measurement-age-s", type=float, default=0.12)
+    parser.add_argument("--terminal-blind-duration-s", type=float, default=0.30)
+    parser.add_argument("--terminal-command-average-window-s", type=float, default=0.10)
+    parser.add_argument("--terminal-command-decay-tau-s", type=float, default=0.18)
+    parser.add_argument("--terminal-trend-bias-gain", type=float, default=0.10)
+    parser.add_argument("--terminal-trend-bias-max-mps", type=float, default=1.5)
+    parser.add_argument("--terminal-pitch-up-bias-mps", type=float, default=0.8)
+    parser.add_argument("--terminal-abort-on-tilt-hardcap", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-image-kf", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-image-kf-max-predict-s", type=float, default=0.35)
+    parser.add_argument("--terminal-image-kf-meas-noise-rad", type=float, default=0.006)
+    parser.add_argument("--terminal-image-kf-accel-noise-rad-s2", type=float, default=8.0)
+    parser.add_argument("--terminal-image-kf-innovation-reject-rad", type=float, default=0.20)
+    parser.add_argument("--terminal-image-kf-max-angle-rad", type=float, default=1.0)
+    parser.add_argument("--terminal-image-kf-max-rate-rad-s", type=float, default=8.0)
+    parser.add_argument(
+        "--terminal-gimbal-gain-scale",
+        type=float,
+        default=0.35,
+        help="Scale gimbal centering gain while terminal visual state is active.",
+    )
+    parser.add_argument(
+        "--terminal-freeze-gimbal-on-blind",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Hold the last reliable gimbal pose during terminal blind push.",
+    )
     parser.add_argument("--gimbal-limit-margin-deg", type=float, default=3.0)
     parser.add_argument("--yaw-control", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--detection-radius-cm", type=float, default=50000.0)
@@ -110,6 +160,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
     parser.add_argument("--show-window", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--window-scale", type=float, default=0.75)
+    parser.add_argument("--record-preview", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--preview-dir", default="")
+    parser.add_argument("--preview-every-n", type=int, default=20)
+    parser.add_argument("--preview-max-frames", type=int, default=12)
+    parser.add_argument("--preview-near-terminal-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-every-n", type=int, default=10)
     parser.add_argument("--settings-path", default=str(SETTINGS_EXAMPLE_PATH))
     parser.add_argument("--list-vehicles", action="store_true")
@@ -216,8 +271,8 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
         ]
         if speeds and max(speeds) <= args.settle_speed:
             break
-        for vehicle in vehicles:
-            client.hoverAsync(vehicle_name=vehicle)
+        for future in [client.hoverAsync(vehicle_name=vehicle) for vehicle in vehicles]:
+            future.join()
         time.sleep(0.2)
     print("Altitude preparation complete; starting gimbal vision loop.")
 
@@ -240,18 +295,98 @@ def _update_gimbal_from_pixel(
     intrinsics,
     dt: float,
     args,
+    gain_scale: float = 1.0,
 ) -> tuple[float, float, float, float]:
     u, v = center
     yaw_error = float(np.arctan2(u - intrinsics.cx, intrinsics.fx))
     pitch_error = float(np.arctan2(v - intrinsics.cy, intrinsics.fy))
     max_step = np.deg2rad(args.gimbal_rate_limit_deg) * dt
-    yaw_step = float(np.clip(args.gimbal_yaw_gain * yaw_error, -max_step, max_step))
-    pitch_step = float(np.clip(args.gimbal_pitch_gain * pitch_error, -max_step, max_step))
+    scale = max(0.0, float(gain_scale))
+    yaw_step = float(np.clip(scale * args.gimbal_yaw_gain * yaw_error, -max_step, max_step))
+    pitch_step = float(np.clip(scale * args.gimbal_pitch_gain * pitch_error, -max_step, max_step))
     yaw_limit = np.deg2rad(args.gimbal_yaw_limit_deg)
     pitch_limit = np.deg2rad(args.gimbal_pitch_limit_deg)
     yaw_rad = float(np.clip(yaw_rad + yaw_step, -yaw_limit, yaw_limit))
     pitch_rad = float(np.clip(pitch_rad + pitch_step, -pitch_limit, pitch_limit))
     return yaw_rad, pitch_rad, yaw_error, pitch_error
+
+
+def _gimbal_update_profile(
+    *,
+    detected: bool,
+    terminal_state: str,
+    terminal_reason: str,
+    using_blind_push: bool,
+    args,
+) -> tuple[bool, float, str]:
+    if not detected:
+        return False, 0.0, "no_detection"
+    if terminal_reason == "bbox_clipped":
+        return False, 0.0, "bbox_clipped_hold"
+    if using_blind_push and args.terminal_freeze_gimbal_on_blind:
+        return False, 0.0, "blind_push_hold"
+    if terminal_state == TERMINAL_VISUAL or using_blind_push:
+        return True, max(0.0, float(args.terminal_gimbal_gain_scale)), "terminal_scaled"
+    return True, 1.0, "tracking"
+
+
+def _terminal_image_kf_config_from_args(args) -> TerminalImageKFConfig:
+    return TerminalImageKFConfig(
+        enable=bool(args.terminal_image_kf),
+        max_predict_s=max(0.0, float(args.terminal_image_kf_max_predict_s)),
+        measurement_noise_rad=max(1.0e-6, float(args.terminal_image_kf_meas_noise_rad)),
+        accel_noise_rad_s2=max(0.0, float(args.terminal_image_kf_accel_noise_rad_s2)),
+        innovation_reject_rad=max(1.0e-6, float(args.terminal_image_kf_innovation_reject_rad)),
+        max_angle_rad=max(1.0e-6, float(args.terminal_image_kf_max_angle_rad)),
+        max_rate_rad_s=max(1.0e-6, float(args.terminal_image_kf_max_rate_rad_s)),
+    )
+
+
+def _image_kf_takeover_allowed(
+    image_kf: TerminalImageEstimate,
+    terminal_result,
+    reason: str,
+    detected: bool,
+    area_ratio: float,
+    args,
+    *,
+    profile: str,
+) -> tuple[bool, str]:
+    if not image_kf.valid:
+        return False, "image_kf_invalid"
+    if image_kf.mode != IMAGE_KF_PREDICT:
+        return False, "image_kf_not_predict"
+
+    terminal_reasons = {"bbox_clipped", "bbox_area_large", "terminal_lost", "gimbal_limit"}
+    if terminal_result.using_blind_push:
+        return True, "blind_push"
+    if terminal_result.state in {TERMINAL_VISUAL, BLIND_PUSH}:
+        return True, "terminal_state"
+    if terminal_result.reason in terminal_reasons:
+        return True, terminal_result.reason
+    if reason in {"bbox_clipped", "no_detection"}:
+        return True, reason
+    if profile == "strapdown" and reason == "los_innovation_reject":
+        if area_ratio >= max(0.0, float(args.terminal_soft_enter_area_ratio)):
+            return True, "strapdown_los_reject"
+    if not detected and area_ratio >= max(0.0, float(args.terminal_soft_enter_area_ratio)):
+        return True, "soft_terminal_loss"
+    return False, "not_terminal"
+
+
+def _empty_image_kf_estimate(timestamp: float) -> TerminalImageEstimate:
+    return TerminalImageEstimate(
+        timestamp=timestamp,
+        theta_x=0.0,
+        theta_y=0.0,
+        theta_dot_x=0.0,
+        theta_dot_y=0.0,
+        valid=False,
+        mode="unavailable",
+        age_s=0.0,
+        quality=0.0,
+        reject_reason="",
+    )
 
 
 def _gimbal_from_relative_body(relative_body: np.ndarray, args) -> tuple[float, float]:
@@ -345,6 +480,13 @@ def _air_sim_yaw_mode(airsim_module, velocity: np.ndarray, args):
     )
 
 
+def _airsim_safety_ok(client, vehicle_name: str) -> bool:
+    try:
+        return bool(client.isApiControlEnabled(vehicle_name=vehicle_name))
+    except Exception:
+        return True
+
+
 def _near_gimbal_limit(yaw_rad: float, pitch_rad: float, args) -> bool:
     margin = np.deg2rad(max(0.0, args.gimbal_limit_margin_deg))
     yaw_limit = np.deg2rad(args.gimbal_yaw_limit_deg)
@@ -380,6 +522,136 @@ def _los_fallback_allowed(reason: str, args) -> bool:
     if not args.allow_los_fallback:
         return False
     return reason in {"ttc_out_of_range", "area_not_expanding", "ttc_invalid"}
+
+
+def _terminal_config_from_args(args) -> TerminalConfig:
+    return TerminalConfig(
+        enable=bool(args.terminal_extrapolation),
+        terminal_enter_area_ratio=max(0.0, float(args.terminal_enter_area_ratio)),
+        soft_enter_area_ratio=max(0.0, float(args.terminal_soft_enter_area_ratio)),
+        cutoff_area_ratio=max(0.0, float(args.terminal_cutoff_area_ratio)),
+        terminal_gimbal_limit_area_ratio=max(0.0, float(args.terminal_gimbal_limit_area_ratio)),
+        cutoff_miss_count=max(1, int(args.terminal_cutoff_miss_count)),
+        min_tracking_time_s=max(0.0, float(args.terminal_min_tracking_time_s)),
+        confidence_min_score=max(0.0, float(args.terminal_confidence_min_score)),
+        max_measurement_age_s=max(0.0, float(args.terminal_max_measurement_age_s)),
+        blind_duration_s=max(0.0, float(args.terminal_blind_duration_s)),
+        command_average_window_s=max(0.01, float(args.terminal_command_average_window_s)),
+        command_decay_tau_s=max(1.0e-6, float(args.terminal_command_decay_tau_s)),
+        trend_bias_gain=max(0.0, float(args.terminal_trend_bias_gain)),
+        trend_bias_max_mps=max(0.0, float(args.terminal_trend_bias_max_mps)),
+        pitch_up_bias_mps=max(0.0, float(args.terminal_pitch_up_bias_mps)),
+        abort_on_tilt_hardcap=bool(args.terminal_abort_on_tilt_hardcap),
+    )
+
+
+def _experiment_fields(
+    *,
+    args,
+    experiment_type: str,
+    speed_cap: float,
+    intruder_velocity_cmd: np.ndarray,
+    intrinsics,
+) -> dict[str, float | int | str]:
+    return {
+        "experiment_type": experiment_type,
+        "speed_ratio": float(args.speed_ratio),
+        "intruder_speed": float(args.intruder_speed),
+        "intruder_speed_arg": float(args.intruder_speed),
+        "intruder_vx": float(intruder_velocity_cmd[0]),
+        "intruder_vy": float(intruder_velocity_cmd[1]),
+        "intruder_vz": float(intruder_velocity_cmd[2]),
+        "speed_cap": float(speed_cap),
+        "intercept_altitude_m": float(args.intercept_altitude_m),
+        "intruder_altitude_offset_m": float(args.intruder_altitude_offset_m),
+        "camera_name": str(args.camera),
+        "camera_x": float(args.camera_x),
+        "camera_y": float(args.camera_y),
+        "camera_z": float(args.camera_z),
+        "fov_deg": float(args.fov_deg),
+        "image_width_config": int(args.width),
+        "image_height_config": int(args.height),
+        "image_width_runtime": int(intrinsics.width),
+        "image_height_runtime": int(intrinsics.height),
+        "rate_hz": float(args.rate_hz),
+        "duration_s": float(args.duration_s),
+        "terminal_enter_area_ratio": float(args.terminal_enter_area_ratio),
+        "terminal_soft_enter_area_ratio": float(args.terminal_soft_enter_area_ratio),
+        "terminal_cutoff_area_ratio": float(args.terminal_cutoff_area_ratio),
+        "terminal_gimbal_limit_area_ratio": float(args.terminal_gimbal_limit_area_ratio),
+        "terminal_image_kf_max_predict_s": float(args.terminal_image_kf_max_predict_s),
+        "terminal_blind_duration_s": float(args.terminal_blind_duration_s),
+        "terminal_command_average_window_s": float(args.terminal_command_average_window_s),
+    }
+
+
+def _json_safe(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _finite_row_float(row: dict[str, float | int | str], key: str) -> Optional[float]:
+    try:
+        value = row.get(key, "")
+        if value == "":
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _write_run_metadata(
+    *,
+    args,
+    csv_path: Path,
+    script_name: str,
+    experiment_type: str,
+    intrinsics,
+    speed_cap: float,
+    intruder_velocity_cmd: np.ndarray,
+    rows: Sequence[dict[str, float | int | str]],
+    hit: bool,
+) -> Path:
+    ranges = [value for row in rows if (value := _finite_row_float(row, "range")) is not None]
+    meta = {
+        "script_name": script_name,
+        "experiment_type": experiment_type,
+        "created_local_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "csv_path": str(csv_path),
+        "settings_path": str(args.settings_path),
+        "vehicle_names": {"interceptor": args.interceptor, "intruder": args.intruder},
+        "args": vars(args),
+        "intrinsics": {
+            "fx": float(intrinsics.fx),
+            "fy": float(intrinsics.fy),
+            "cx": float(intrinsics.cx),
+            "cy": float(intrinsics.cy),
+            "width": int(intrinsics.width),
+            "height": int(intrinsics.height),
+        },
+        "derived": {
+            "speed_cap": float(speed_cap),
+            "intruder_velocity_cmd": [float(value) for value in intruder_velocity_cmd],
+            "frame_count": len(rows),
+            "hit": bool(hit),
+            "min_range_m": min(ranges) if ranges else None,
+            "final_range_m": ranges[-1] if ranges else None,
+        },
+    }
+    metadata_path = csv_path.with_name(f"{csv_path.stem}_meta.json")
+    with metadata_path.open("w", encoding="utf-8") as stream:
+        json.dump(_json_safe(meta), stream, ensure_ascii=False, indent=2, sort_keys=True)
+    return metadata_path
 
 
 def _summarize_run(rows: Sequence[dict[str, float | int | str]]) -> None:
@@ -447,6 +719,28 @@ def _make_display(airsim_module, enabled: bool):
     return {"cv2": cv2, "airsim": airsim_module, "failed": False, "image_failures": 0}
 
 
+def _make_preview_recorder(airsim_module, args, default_dir: Path):
+    if not getattr(args, "record_preview", False):
+        return None
+    try:
+        import cv2
+    except Exception as exc:
+        print(f"OpenCV preview recorder unavailable ({exc}); continuing without saved preview frames.")
+        return None
+    preview_dir_arg = str(getattr(args, "preview_dir", "") or "").strip()
+    preview_dir = Path(preview_dir_arg).expanduser() if preview_dir_arg else default_dir
+    preview_dir.mkdir(parents=True, exist_ok=True)
+    print(f"preview_recording_dir={preview_dir}")
+    return {
+        "cv2": cv2,
+        "airsim": airsim_module,
+        "dir": preview_dir,
+        "saved": 0,
+        "failed": False,
+        "image_failures": 0,
+    }
+
+
 def _decode_airsim_image(cv2, raw_image):
     if raw_image is None:
         return None
@@ -455,11 +749,18 @@ def _decode_airsim_image(cv2, raw_image):
     return cv2.imdecode(np.frombuffer(raw_image, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
 
 
-def _draw_detection_window(display, client, config: AirSimDetectionConfig, detections, selected, intrinsics, yaw_rad: float, pitch_rad: float, valid: bool, reason: str, ttc_text: str, args) -> bool:
-    if display is None or display.get("failed"):
-        return False
-    cv2 = display["cv2"]
-    airsim_module = display["airsim"]
+def _annotated_detection_image(
+    *,
+    cv2,
+    airsim_module,
+    client,
+    config: AirSimDetectionConfig,
+    detections,
+    selected,
+    intrinsics,
+    lines: Sequence[str],
+    window_scale: float,
+):
     try:
         raw_image = client.simGetImage(
             config.camera_name,
@@ -467,16 +768,10 @@ def _draw_detection_window(display, client, config: AirSimDetectionConfig, detec
             vehicle_name=config.vehicle_name,
         )
         if raw_image is None:
-            display["image_failures"] += 1
-            if display["image_failures"] <= 3:
-                print("OpenCV display: simGetImage returned no image.")
-            return False
+            return None
         image = _decode_airsim_image(cv2, raw_image)
         if image is None:
-            display["image_failures"] += 1
-            if display["image_failures"] <= 3:
-                print("OpenCV display: failed to decode AirSim image.")
-            return False
+            return None
         if image.ndim == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         elif image.shape[2] == 4:
@@ -495,17 +790,172 @@ def _draw_detection_window(display, client, config: AirSimDetectionConfig, detec
             cv2.rectangle(image, p1, p2, color, 2)
             cv2.putText(image, getattr(detection, "name", "target"), (p1[0], max(15, p1[1] - 8)), cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
 
-        lines = [
-            f"yaw={np.rad2deg(yaw_rad):.1f} pitch={np.rad2deg(pitch_rad):.1f}",
-            f"detections={len(detections)} selected={getattr(selected, 'name', '-') if selected is not None else '-'}",
-            f"valid={valid} reason={reason or 'ok'} ttc={ttc_text or '-'}",
-            "q: quit",
-        ]
+        if lines:
+            overlay_height = min(image.shape[0] - 2, 12 + 20 * len(lines))
+            overlay_width = min(image.shape[1] - 2, 630)
+            cv2.rectangle(image, (4, 4), (overlay_width, overlay_height), (0, 0, 0), -1)
         for i, line in enumerate(lines):
             cv2.putText(image, line, (10, 22 + 20 * i), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (36, 255, 12), 1)
 
-        if args.window_scale > 0.0 and abs(args.window_scale - 1.0) > 1.0e-6:
-            image = cv2.resize(image, None, fx=args.window_scale, fy=args.window_scale)
+        if window_scale > 0.0 and abs(window_scale - 1.0) > 1.0e-6:
+            image = cv2.resize(image, None, fx=window_scale, fy=window_scale)
+        return image
+    except Exception:
+        return None
+
+
+def _preview_lines(
+    *,
+    profile: str,
+    detections,
+    selected,
+    valid: bool,
+    reason: str,
+    ttc_text: str,
+    terminal_state: str,
+    image_kf_mode: str,
+    range_m: float,
+    control_line: str,
+    hit: bool,
+    include_quit: bool = False,
+) -> list[str]:
+    lines = [
+        control_line,
+        f"detections={len(detections)} selected={getattr(selected, 'name', '-') if selected is not None else '-'}",
+        f"valid={valid} reason={reason or 'ok'} ttc={ttc_text or '-'}",
+        f"terminal={terminal_state or '-'} image_kf={image_kf_mode or '-'} hit={int(hit)}",
+        f"profile={profile} range={range_m:.2f}m" if np.isfinite(range_m) else f"profile={profile} range=-",
+    ]
+    if include_quit:
+        lines.append("q: quit")
+    return lines
+
+
+def _sanitize_preview_token(value: str) -> str:
+    token = "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(value or ""))
+    return token.strip("_") or "none"
+
+
+def _record_detection_preview(
+    recorder,
+    client,
+    config: AirSimDetectionConfig,
+    detections,
+    selected,
+    intrinsics,
+    lines: Sequence[str],
+    args,
+    *,
+    frame_id: int,
+    terminal_state: str,
+    guidance_mode: str,
+    reason: str,
+    hit: bool,
+):
+    if recorder is None or recorder.get("failed"):
+        return None
+    max_frames = max(0, int(getattr(args, "preview_max_frames", 0)))
+    if max_frames <= 0 or int(recorder.get("saved", 0)) >= max_frames:
+        return None
+
+    near_terminal = bool(
+        hit
+        or terminal_state in {TERMINAL_VISUAL, BLIND_PUSH, COMPLETE, ABORT_HOLD}
+        or reason in {"bbox_clipped", "bbox_area_large", "gimbal_limit", "terminal_lost"}
+    )
+    if getattr(args, "preview_near_terminal_only", True) and not near_terminal:
+        return None
+    every_n = max(1, int(getattr(args, "preview_every_n", 1)))
+    if not near_terminal and frame_id % every_n != 0:
+        return None
+
+    cv2 = recorder["cv2"]
+    image = _annotated_detection_image(
+        cv2=cv2,
+        airsim_module=recorder["airsim"],
+        client=client,
+        config=config,
+        detections=detections,
+        selected=selected,
+        intrinsics=intrinsics,
+        lines=lines,
+        window_scale=1.0,
+    )
+    if image is None:
+        recorder["image_failures"] += 1
+        if recorder["image_failures"] <= 3:
+            print("Preview recorder: failed to capture or decode AirSim image.")
+        return None
+
+    name = (
+        f"{frame_id:05d}_"
+        f"{_sanitize_preview_token(terminal_state)}_"
+        f"{_sanitize_preview_token(guidance_mode)}_"
+        f"{_sanitize_preview_token(reason)}.png"
+    )
+    output_path = Path(recorder["dir"]) / name
+    ok = cv2.imwrite(str(output_path), image)
+    if not ok:
+        recorder["failed"] = True
+        print(f"Preview recorder failed to write {output_path}; disabling preview recording.")
+        return None
+    recorder["saved"] = int(recorder.get("saved", 0)) + 1
+    return output_path
+
+
+def _draw_detection_window(
+    display,
+    client,
+    config: AirSimDetectionConfig,
+    detections,
+    selected,
+    intrinsics,
+    yaw_rad: float,
+    pitch_rad: float,
+    valid: bool,
+    reason: str,
+    ttc_text: str,
+    args,
+    *,
+    terminal_state: str = "",
+    image_kf_mode: str = "",
+    range_m: float = float("nan"),
+    hit: bool = False,
+) -> bool:
+    if display is None or display.get("failed"):
+        return False
+    cv2 = display["cv2"]
+    lines = _preview_lines(
+        profile="gimbal",
+        detections=detections,
+        selected=selected,
+        valid=valid,
+        reason=reason,
+        ttc_text=ttc_text,
+        terminal_state=terminal_state,
+        image_kf_mode=image_kf_mode,
+        range_m=range_m,
+        control_line=f"yaw={np.rad2deg(yaw_rad):.1f} pitch={np.rad2deg(pitch_rad):.1f}",
+        hit=hit,
+        include_quit=True,
+    )
+    try:
+        image = _annotated_detection_image(
+            cv2=cv2,
+            airsim_module=display["airsim"],
+            client=client,
+            config=config,
+            detections=detections,
+            selected=selected,
+            intrinsics=intrinsics,
+            lines=lines,
+            window_scale=args.window_scale,
+        )
+        if image is None:
+            display["image_failures"] += 1
+            if display["image_failures"] <= 3:
+                print("OpenCV display: failed to capture or decode AirSim image.")
+            return False
         cv2.imshow("Gimbal Vision PNG", image)
         key = cv2.waitKey(1) & 0xFF
         return key == ord("q")
@@ -753,6 +1203,8 @@ def main() -> None:
         TTCConfig(min_area=max(0.0, args.ttc_min_area), max_ttc_s=max(0.1, args.ttc_max_s))
     )
     gain_schedule = TTCGainSchedule()
+    terminal_extrapolator = TerminalExtrapolator(_terminal_config_from_args(args))
+    terminal_image_kf = TerminalImageKF(_terminal_image_kf_config_from_args(args))
 
     target_dt = 1.0 / args.rate_hz
     intruder_velocity_cmd = _intruder_velocity(args)
@@ -765,6 +1217,13 @@ def main() -> None:
         pitch_rad = 0.0
     client.simSetCameraPose(args.camera, _camera_pose(airsim, yaw_rad, pitch_rad, args), vehicle_name=args.interceptor)
     intrinsics = _probe_camera_intrinsics(client, airsim, config, args)
+    experiment_fields = _experiment_fields(
+        args=args,
+        experiment_type="gimbal_vision_png",
+        speed_cap=speed_cap,
+        intruder_velocity_cmd=intruder_velocity_cmd,
+        intrinsics=intrinsics,
+    )
     _warmup_detection(client, config, args)
     display = _make_display(airsim, args.show_window)
     active_name: Optional[str] = None
@@ -772,12 +1231,9 @@ def main() -> None:
     last_lambda_I: Optional[np.ndarray] = None
     last_omega_los: Optional[np.ndarray] = None
     last_v_cmd: Optional[np.ndarray] = None
-    last_detection_ts: Optional[float] = None
-    blind_push_until: Optional[float] = None
-    blind_push_reason = ""
-    terminal_armed = False
     rows: list[dict[str, float | int | str]] = []
     csv_path, plot_path = _output_paths(args)
+    preview_recorder = _make_preview_recorder(airsim, args, csv_path.with_name(f"{csv_path.stem}_preview"))
     start = time.monotonic()
     last_loop_start = start
     frame_id = 0
@@ -856,11 +1312,14 @@ def main() -> None:
         guidance_gain = 0.0
         bbox_area = 0.0
         guidance_mode = "invalid"
+        detection_score = 0.0
+        center: Optional[tuple[float, float]] = None
+        frame_detection = None
+        detection_clipped = False
 
         if detection is None:
             reason = "no_detection"
         else:
-            last_detection_ts = sim_t
             active_name = getattr(detection, "name", None) or active_name
             frame_detection = detection_to_frame_detection(
                 detection=detection,
@@ -869,10 +1328,12 @@ def main() -> None:
                 track_id=1,
                 score=1.0,
             )
+            detection_score = frame_detection.score
             bbox_area = frame_detection.area
             center = frame_detection.center
             px_err_x = center[0] - intrinsics.cx
             px_err_y = center[1] - intrinsics.cy
+            detection_clipped = frame_detection.is_clipped(intrinsics.width, intrinsics.height)
 
             lookup = attitude_buffer.lookup(frame_detection.exposure_ts)
             if not lookup.valid or lookup.sample is None:
@@ -895,18 +1356,6 @@ def main() -> None:
                     lambda_I = los.lambda_I
                     omega_los = los.omega_los
                     reason = ttc.reject_reason or "ttc_invalid"
-                    terminal_reason = _terminal_trigger(
-                        reason,
-                        detected,
-                        bbox_area,
-                        yaw_rad,
-                        pitch_rad,
-                        intrinsics,
-                        args,
-                    )
-                    if terminal_reason and last_v_cmd is not None:
-                        blind_push_until = sim_t + args.blind_push_timeout_s
-                        blind_push_reason = terminal_reason
                     if _los_fallback_allowed(reason, args):
                         guidance_gain = max(0.0, args.los_fallback_gain)
                         g_eval = guidance_gain * omega_los
@@ -927,13 +1376,81 @@ def main() -> None:
                     last_lambda_I = lambda_I
                     last_omega_los = omega_los
 
+        image_kf = terminal_image_kf.update(
+            timestamp=sim_t,
+            center=center,
+            intrinsics=intrinsics,
+            detected=detected,
+            measurement_valid=detected,
+            clipped=detection_clipped,
+            track_id=1 if detected else None,
+        )
+
+        if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
+            lambda_I = last_lambda_I
+            omega_los = last_omega_los
+
+        candidate_v_cmd = _guidance_velocity(interceptor_vel, lambda_I, omega_los if valid else None, guidance_gain, speed_cap, args)
+        terminal_result = terminal_extrapolator.update(
+            timestamp=sim_t,
+            detected=detected,
+            measurement_valid=valid,
+            measurement_score=detection_score,
+            bbox_area=bbox_area,
+            image_width=intrinsics.width,
+            image_height=intrinsics.height,
+            reject_reason=reason,
+            v_cmd=candidate_v_cmd,
+            lambda_I=lambda_I,
+            omega_los=omega_los if valid else None,
+            speed_cap=speed_cap,
+            max_vertical_speed=args.max_vision_vertical_speed,
+            gimbal_at_limit=_near_gimbal_limit(yaw_rad, pitch_rad, args),
+            safety_ok=_airsim_safety_ok(client, args.interceptor),
+            soft_measurement_valid=image_kf.valid,
+        )
+        v_cmd = terminal_result.v_cmd
+        if terminal_result.using_blind_push:
+            guidance_mode = "blind_push"
+            reason = terminal_result.reason
+        elif valid:
+            last_v_cmd = np.array(v_cmd, dtype=float)
+        gimbal_update_enabled, gimbal_gain_scale, gimbal_hold_reason = _gimbal_update_profile(
+            detected=detected,
+            terminal_state=terminal_result.state,
+            terminal_reason=terminal_result.reason,
+            using_blind_push=terminal_result.using_blind_push,
+            args=args,
+        )
+        gimbal_update_source = "hold"
+        gimbal_update_center = center
+        image_kf_takeover_allowed, image_kf_takeover_reason = _image_kf_takeover_allowed(
+            image_kf,
+            terminal_result,
+            reason,
+            detected,
+            terminal_result.area_ratio,
+            args,
+            profile="gimbal",
+        )
+        if image_kf_takeover_allowed:
+            gimbal_update_enabled = True
+            gimbal_gain_scale = max(0.0, float(args.terminal_gimbal_gain_scale))
+            gimbal_hold_reason = "image_kf_predict"
+            gimbal_update_center = center_from_angle_error(image_kf.theta, intrinsics)
+            gimbal_update_source = "kf"
+        elif center is not None and gimbal_update_enabled:
+            gimbal_update_source = "measurement"
+
+        if gimbal_update_center is not None and gimbal_update_enabled:
             yaw_rad, pitch_rad, _, _ = _update_gimbal_from_pixel(
                 yaw_rad,
                 pitch_rad,
-                center,
+                gimbal_update_center,
                 intrinsics,
                 loop_dt,
                 args,
+                gain_scale=gimbal_gain_scale,
             )
 
         stop_requested = _draw_detection_window(
@@ -949,39 +1466,40 @@ def main() -> None:
             reason,
             ttc_value,
             args,
+            terminal_state=terminal_result.state,
+            image_kf_mode=image_kf.mode,
+            range_m=range_m,
+            hit=hit,
+        )
+        preview_lines = _preview_lines(
+            profile="gimbal",
+            detections=detections,
+            selected=detection,
+            valid=valid,
+            reason=reason,
+            ttc_text=ttc_value,
+            terminal_state=terminal_result.state,
+            image_kf_mode=image_kf.mode,
+            range_m=range_m,
+            control_line=f"yaw={np.rad2deg(yaw_rad):.1f} pitch={np.rad2deg(pitch_rad):.1f}",
+            hit=hit,
+        )
+        _record_detection_preview(
+            preview_recorder,
+            client,
+            config,
+            detections,
+            detection,
+            intrinsics,
+            preview_lines,
+            args,
+            frame_id=frame_id,
+            terminal_state=terminal_result.state,
+            guidance_mode=guidance_mode,
+            reason=reason,
+            hit=hit,
         )
 
-        terminal_reason = _terminal_trigger(reason, detected, bbox_area, yaw_rad, pitch_rad, intrinsics, args)
-        if terminal_reason and last_v_cmd is not None:
-            blind_push_until = sim_t + args.blind_push_timeout_s
-            blind_push_reason = terminal_reason
-            terminal_armed = True
-        elif detected and blind_push_reason == "lost_after_track":
-            blind_push_until = None
-            blind_push_reason = ""
-        if (
-            not detected
-            and last_detection_ts is not None
-            and sim_t - last_detection_ts <= args.coast_timeout_s
-            and last_v_cmd is not None
-            and terminal_armed
-        ):
-            blind_push_until = max(blind_push_until or sim_t, sim_t + args.blind_push_timeout_s)
-            blind_push_reason = "lost_after_track"
-
-        using_blind_push = blind_push_until is not None and sim_t <= blind_push_until and last_v_cmd is not None
-        if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
-            lambda_I = last_lambda_I
-            omega_los = last_omega_los
-
-        if using_blind_push:
-            v_cmd = np.array(last_v_cmd, dtype=float)
-            guidance_mode = "blind_push"
-            reason = blind_push_reason
-        else:
-            v_cmd = _guidance_velocity(interceptor_vel, lambda_I, omega_los if valid else None, guidance_gain, speed_cap, args)
-            if valid:
-                last_v_cmd = np.array(v_cmd, dtype=float)
         cmd_yaw_deg = _yaw_deg_from_velocity(v_cmd)
         yaw_error_deg = _wrap_angle_deg(cmd_yaw_deg - body_yaw_deg)
         target_bearing_deg = ""
@@ -1006,10 +1524,19 @@ def main() -> None:
             )
 
         frame_elapsed = time.monotonic() - loop_start
+        vertical_error_sign = ""
+        vertical_command_consistent = ""
+        if args.diagnostic_truth and np.all(np.isfinite(rel)):
+            vertical_error_sign = float(np.sign(rel[2]))
+            if abs(float(rel[2])) <= 1.0e-6 or abs(float(v_cmd[2])) <= 1.0e-6:
+                vertical_command_consistent = 1
+            else:
+                vertical_command_consistent = int(np.sign(rel[2]) == np.sign(v_cmd[2]))
 
         rows.append(
             {
                 "frame": frame_id,
+                **experiment_fields,
                 "t": sim_t,
                 "loop_dt": loop_dt,
                 "frame_elapsed": frame_elapsed,
@@ -1024,6 +1551,9 @@ def main() -> None:
                 "range": range_m,
                 "horizontal_range": float(np.linalg.norm(rel[:2])) if args.diagnostic_truth else "",
                 "vertical_error": float(rel[2]) if args.diagnostic_truth else "",
+                "vertical_error_sign": vertical_error_sign,
+                "v_cmd_z_sign": float(np.sign(v_cmd[2])),
+                "vertical_command_consistent": vertical_command_consistent,
                 "hit": int(hit),
                 "collision_reason": pair_collision.reason,
                 "interceptor_collision_object": pair_collision.interceptor_object_name,
@@ -1047,7 +1577,32 @@ def main() -> None:
                 "valid": int(valid),
                 "guidance_mode": guidance_mode,
                 "reject_reason": reason,
-                "blind_push_reason": blind_push_reason if using_blind_push else "",
+                "blind_push_reason": terminal_result.reason if terminal_result.using_blind_push else "",
+                "terminal_state": terminal_result.state,
+                "terminal_reason": terminal_result.reason,
+                "terminal_arm_source": terminal_result.terminal_arm_source,
+                "terminal_cutoff_source": terminal_result.terminal_cutoff_source,
+                "terminal_area_ratio": terminal_result.area_ratio,
+                "terminal_miss_count": terminal_result.miss_count,
+                "terminal_profile": "gimbal",
+                "gimbal_update_enabled": int(gimbal_update_enabled),
+                "gimbal_gain_scale": gimbal_gain_scale,
+                "gimbal_hold_reason": gimbal_hold_reason,
+                "gimbal_update_source": gimbal_update_source,
+                "image_kf_takeover_allowed": int(image_kf_takeover_allowed),
+                "image_kf_takeover_reason": image_kf_takeover_reason,
+                "image_kf_valid": int(image_kf.valid),
+                "image_kf_mode": image_kf.mode,
+                "image_kf_theta_x": image_kf.theta_x,
+                "image_kf_theta_y": image_kf.theta_y,
+                "image_kf_theta_dot_x": image_kf.theta_dot_x,
+                "image_kf_theta_dot_y": image_kf.theta_dot_y,
+                "image_kf_age_s": image_kf.age_s,
+                "image_kf_quality": image_kf.quality,
+                "image_kf_reject_reason": image_kf.reject_reason,
+                "blind_elapsed_s": terminal_result.blind_elapsed_s,
+                "blind_decay": terminal_result.blind_decay,
+                "blind_sample_count": terminal_result.blind_sample_count,
                 "lambda_x": 0.0 if lambda_I is None else float(lambda_I[0]),
                 "lambda_y": 0.0 if lambda_I is None else float(lambda_I[1]),
                 "lambda_z": 0.0 if lambda_I is None else float(lambda_I[2]),
@@ -1057,6 +1612,15 @@ def main() -> None:
                 "g_eval_x": float(g_eval[0]),
                 "g_eval_y": float(g_eval[1]),
                 "g_eval_z": float(g_eval[2]),
+                "v_cmd_base_x": float(terminal_result.v_cmd_base[0]),
+                "v_cmd_base_y": float(terminal_result.v_cmd_base[1]),
+                "v_cmd_base_z": float(terminal_result.v_cmd_base[2]),
+                "v_cmd_trend_bias_x": float(terminal_result.v_cmd_trend_bias[0]),
+                "v_cmd_trend_bias_y": float(terminal_result.v_cmd_trend_bias[1]),
+                "v_cmd_trend_bias_z": float(terminal_result.v_cmd_trend_bias[2]),
+                "v_cmd_pitch_up_bias_x": float(terminal_result.v_cmd_pitch_up_bias[0]),
+                "v_cmd_pitch_up_bias_y": float(terminal_result.v_cmd_pitch_up_bias[1]),
+                "v_cmd_pitch_up_bias_z": float(terminal_result.v_cmd_pitch_up_bias[2]),
                 "v_cmd_x": float(v_cmd[0]),
                 "v_cmd_y": float(v_cmd[1]),
                 "v_cmd_z": float(v_cmd[2]),
@@ -1094,6 +1658,18 @@ def main() -> None:
 
     _write_csv(rows, csv_path)
     print(f"gimbal_vision_csv={csv_path}")
+    metadata_path = _write_run_metadata(
+        args=args,
+        csv_path=csv_path,
+        script_name=Path(__file__).name,
+        experiment_type="gimbal_vision_png",
+        intrinsics=intrinsics,
+        speed_cap=speed_cap,
+        intruder_velocity_cmd=intruder_velocity_cmd,
+        rows=rows,
+        hit=hit,
+    )
+    print(f"gimbal_vision_meta={metadata_path}")
     if not args.no_plot and _plot(rows, plot_path):
         print(f"gimbal_vision_plot={plot_path}")
     _summarize_run(rows)

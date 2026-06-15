@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from examples.run_airsim_gimbal_vision_png import (
     PROJECT_ROOT,
     SETTINGS_EXAMPLE_PATH,
+    _airsim_safety_ok,
     _bearing_deg_from_xy,
     _body_yaw_deg,
     _camera_offset_body,
@@ -21,22 +22,30 @@ from examples.run_airsim_gimbal_vision_png import (
     _detection_names,
     _format_names,
     _guidance_velocity,
+    _experiment_fields,
+    _image_kf_takeover_allowed,
     _intruder_velocity,
     _load_vehicle_origins,
     _los_fallback_allowed,
     _make_display,
+    _make_preview_recorder,
     _output_paths,
     _prefer_user_mpl_toolkits,
+    _preview_lines,
     _prepare_intercept_altitude,
     _probe_camera_intrinsics,
+    _record_detection_preview,
     _require_vehicles,
     _summarize_run,
     _terminal_area,
+    _terminal_config_from_args,
+    _terminal_image_kf_config_from_args,
     _truth_kinematics,
     _vector_xyz,
     _warmup_detection,
     _world_position,
     _wrap_angle_deg,
+    _write_run_metadata,
     _write_csv,
     _yaw_deg_from_velocity,
 )
@@ -53,6 +62,8 @@ from vision_guidance.attitude_buffer import AttitudeHistoryBuffer
 from vision_guidance.geometry import airsim_camera_zero_to_body, camera_ray_from_pixel, los_camera_to_inertial
 from vision_guidance.los_filter import LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
+from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
+from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
 
@@ -102,6 +113,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--coast-timeout-s", type=float, default=0.5)
     parser.add_argument("--blind-push-timeout-s", type=float, default=1.0)
     parser.add_argument("--terminal-bbox-area-ratio", type=float, default=0.25)
+    parser.add_argument("--terminal-extrapolation", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-enter-area-ratio", type=float, default=0.20)
+    parser.add_argument("--terminal-soft-enter-area-ratio", type=float, default=0.05)
+    parser.add_argument("--terminal-cutoff-area-ratio", type=float, default=0.60)
+    parser.add_argument("--terminal-gimbal-limit-area-ratio", type=float, default=0.05)
+    parser.add_argument("--terminal-cutoff-miss-count", type=int, default=3)
+    parser.add_argument("--terminal-min-tracking-time-s", type=float, default=0.20)
+    parser.add_argument("--terminal-confidence-min-score", type=float, default=0.35)
+    parser.add_argument("--terminal-max-measurement-age-s", type=float, default=0.12)
+    parser.add_argument("--terminal-blind-duration-s", type=float, default=0.30)
+    parser.add_argument("--terminal-command-average-window-s", type=float, default=0.10)
+    parser.add_argument("--terminal-command-decay-tau-s", type=float, default=0.18)
+    parser.add_argument("--terminal-trend-bias-gain", type=float, default=0.10)
+    parser.add_argument("--terminal-trend-bias-max-mps", type=float, default=1.5)
+    parser.add_argument("--terminal-pitch-up-bias-mps", type=float, default=0.8)
+    parser.add_argument("--terminal-abort-on-tilt-hardcap", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-image-kf", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument("--terminal-image-kf-max-predict-s", type=float, default=0.35)
+    parser.add_argument("--terminal-image-kf-meas-noise-rad", type=float, default=0.006)
+    parser.add_argument("--terminal-image-kf-accel-noise-rad-s2", type=float, default=8.0)
+    parser.add_argument("--terminal-image-kf-innovation-reject-rad", type=float, default=0.20)
+    parser.add_argument("--terminal-image-kf-max-angle-rad", type=float, default=1.0)
+    parser.add_argument("--terminal-image-kf-max-rate-rad-s", type=float, default=8.0)
+    parser.add_argument(
+        "--terminal-yaw-rate-extrapolation",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Keep a decaying short-window yaw-rate command during terminal blind push.",
+    )
+    parser.add_argument("--terminal-yaw-rate-average-window-s", type=float, default=0.10)
+    parser.add_argument("--terminal-yaw-rate-decay-tau-s", type=float, default=0.18)
+    parser.add_argument("--terminal-yaw-rate-scale", type=float, default=0.70)
     parser.add_argument("--yaw-control", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--yaw-error-gain", type=float, default=2.5)
     parser.add_argument("--max-yaw-rate-deg", type=float, default=90.0)
@@ -122,6 +165,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
     parser.add_argument("--show-window", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--window-scale", type=float, default=0.75)
+    parser.add_argument("--record-preview", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--preview-dir", default="")
+    parser.add_argument("--preview-every-n", type=int, default=20)
+    parser.add_argument("--preview-max-frames", type=int, default=12)
+    parser.add_argument("--preview-near-terminal-only", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--print-every-n", type=int, default=10)
     parser.add_argument("--settings-path", default=str(SETTINGS_EXAMPLE_PATH))
     parser.add_argument("--list-vehicles", action="store_true")
@@ -184,6 +232,66 @@ def _yaw_rate_from_pixel_error(pixel_error_x: float, intrinsics, args) -> float:
     yaw_error_rad = float(np.arctan2(pixel_error_x, intrinsics.fx))
     yaw_rate = float(np.rad2deg(args.yaw_error_gain * yaw_error_rad))
     return float(np.clip(yaw_rate, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
+
+
+def _yaw_rate_from_angle_error(theta_x_rad: float, args) -> float:
+    if not args.yaw_control:
+        return 0.0
+    yaw_rate = float(np.rad2deg(args.yaw_error_gain * float(theta_x_rad)))
+    return float(np.clip(yaw_rate, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
+
+
+def _append_yaw_rate_sample(
+    samples: list[tuple[float, float]],
+    timestamp: float,
+    yaw_rate_deg_s: float,
+    valid: bool,
+    args,
+) -> None:
+    if valid and np.isfinite(yaw_rate_deg_s):
+        samples.append((float(timestamp), float(yaw_rate_deg_s)))
+    keep_s = max(1.0, 4.0 * max(0.01, float(args.terminal_yaw_rate_average_window_s)))
+    samples[:] = [(ts, value) for ts, value in samples if timestamp - ts <= keep_s]
+
+
+def _terminal_yaw_rate_command(
+    *,
+    current_yaw_rate_deg_s: float,
+    samples: list[tuple[float, float]],
+    timestamp: float,
+    terminal_state: str,
+    using_blind_push: bool,
+    blind_elapsed_s: float,
+    args,
+) -> tuple[float, float, int, float]:
+    if not args.terminal_yaw_rate_extrapolation:
+        return current_yaw_rate_deg_s, 0.0, 0, 0.0
+
+    max_rate = max(0.0, float(args.max_yaw_rate_deg))
+    if not using_blind_push:
+        if terminal_state == TERMINAL_VISUAL:
+            scaled = float(current_yaw_rate_deg_s) * max(0.0, float(args.terminal_yaw_rate_scale))
+            return float(np.clip(scaled, -max_rate, max_rate)), 0.0, 0, 1.0
+        return current_yaw_rate_deg_s, 0.0, 0, 0.0
+
+    window = max(0.01, float(args.terminal_yaw_rate_average_window_s))
+    recent = [value for ts, value in samples if timestamp - ts <= window]
+    if not recent and samples:
+        recent = [samples[-1][1]]
+    if not recent:
+        return current_yaw_rate_deg_s, 0.0, 0, 0.0
+    base = float(np.mean(recent))
+    tau = max(1.0e-6, float(args.terminal_yaw_rate_decay_tau_s))
+    decay = float(np.exp(-max(0.0, float(blind_elapsed_s)) / tau))
+    command = float(np.clip(decay * base, -max_rate, max_rate))
+    return command, base, len(recent), decay
+
+
+def _kf_yaw_rate_command(image_kf, args) -> float:
+    feedback = _yaw_rate_from_angle_error(image_kf.theta_x, args)
+    feedforward = float(np.rad2deg(image_kf.theta_dot_x))
+    command = feedback + feedforward
+    return float(np.clip(command, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
 
 
 def _terminal_trigger_strapdown(reason: str, detected: bool, bbox_area: float, intrinsics, args) -> str:
@@ -403,27 +511,33 @@ def main() -> None:
         TTCConfig(min_area=max(0.0, args.ttc_min_area), max_ttc_s=max(0.1, args.ttc_max_s))
     )
     gain_schedule = TTCGainSchedule()
-    intrinsics = _probe_camera_intrinsics(client, airsim, config, args)
-    _warmup_detection(client, config, args)
-    display = _make_display(airsim, args.show_window)
-
+    terminal_extrapolator = TerminalExtrapolator(_terminal_config_from_args(args))
+    terminal_image_kf = TerminalImageKF(_terminal_image_kf_config_from_args(args))
     target_dt = 1.0 / args.rate_hz
     intruder_velocity_cmd = _intruder_velocity(args)
     intruder_speed = max(float(np.linalg.norm(intruder_velocity_cmd)), args.intruder_speed)
     speed_cap = args.speed_ratio * intruder_speed
     R_BC = airsim_camera_zero_to_body()
+    intrinsics = _probe_camera_intrinsics(client, airsim, config, args)
+    experiment_fields = _experiment_fields(
+        args=args,
+        experiment_type="strapdown_vision_png",
+        speed_cap=speed_cap,
+        intruder_velocity_cmd=intruder_velocity_cmd,
+        intrinsics=intrinsics,
+    )
+    _warmup_detection(client, config, args)
+    display = _make_display(airsim, args.show_window)
 
     active_name: Optional[str] = None
     last_valid_ts: Optional[float] = None
     last_lambda_I: Optional[np.ndarray] = None
     last_omega_los: Optional[np.ndarray] = None
     last_v_cmd: Optional[np.ndarray] = None
-    last_detection_ts: Optional[float] = None
-    blind_push_until: Optional[float] = None
-    blind_push_reason = ""
-    terminal_armed = False
+    yaw_rate_samples: list[tuple[float, float]] = []
     rows: list[dict[str, float | int | str]] = []
     csv_path, plot_path = _output_paths_strapdown(args)
+    preview_recorder = _make_preview_recorder(airsim, args, csv_path.with_name(f"{csv_path.stem}_preview"))
     start = time.monotonic()
     last_loop_start = start
     frame_id = 0
@@ -496,11 +610,14 @@ def main() -> None:
         guidance_gain = 0.0
         bbox_area = 0.0
         guidance_mode = "invalid"
+        detection_score = 0.0
+        center: Optional[tuple[float, float]] = None
+        frame_detection = None
+        detection_clipped = False
 
         if detection is None:
             reason = "no_detection"
         else:
-            last_detection_ts = sim_t
             active_name = getattr(detection, "name", None) or active_name
             frame_detection = detection_to_frame_detection(
                 detection=detection,
@@ -509,10 +626,12 @@ def main() -> None:
                 track_id=1,
                 score=1.0,
             )
+            detection_score = frame_detection.score
             bbox_area = frame_detection.area
             center = frame_detection.center
             px_err_x = center[0] - intrinsics.cx
             px_err_y = center[1] - intrinsics.cy
+            detection_clipped = frame_detection.is_clipped(intrinsics.width, intrinsics.height)
             yaw_rate_cmd_deg_s = _yaw_rate_from_pixel_error(px_err_x, intrinsics, args)
 
             lookup = attitude_buffer.lookup(frame_detection.exposure_ts)
@@ -535,16 +654,6 @@ def main() -> None:
                     lambda_I = los.lambda_I
                     omega_los = los.omega_los
                     reason = ttc.reject_reason or "ttc_invalid"
-                    terminal_reason = _terminal_trigger_strapdown(
-                        reason,
-                        detected,
-                        bbox_area,
-                        intrinsics,
-                        args,
-                    )
-                    if terminal_reason and last_v_cmd is not None:
-                        blind_push_until = sim_t + args.blind_push_timeout_s
-                        blind_push_reason = terminal_reason
                     if _los_fallback_allowed(reason, args):
                         guidance_gain = max(0.0, args.los_fallback_gain)
                         g_eval = guidance_gain * omega_los
@@ -565,6 +674,82 @@ def main() -> None:
                     last_lambda_I = lambda_I
                     last_omega_los = omega_los
 
+        image_kf = terminal_image_kf.update(
+            timestamp=sim_t,
+            center=center,
+            intrinsics=intrinsics,
+            detected=detected,
+            measurement_valid=detected,
+            clipped=detection_clipped,
+            track_id=1 if detected else None,
+        )
+
+        if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
+            lambda_I = last_lambda_I
+            omega_los = last_omega_los
+
+        raw_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
+        _append_yaw_rate_sample(yaw_rate_samples, sim_t, raw_yaw_rate_cmd_deg_s, valid, args)
+        candidate_v_cmd = _guidance_velocity(interceptor_vel, lambda_I, omega_los if valid else None, guidance_gain, speed_cap, args)
+        terminal_result = terminal_extrapolator.update(
+            timestamp=sim_t,
+            detected=detected,
+            measurement_valid=valid,
+            measurement_score=detection_score,
+            bbox_area=bbox_area,
+            image_width=intrinsics.width,
+            image_height=intrinsics.height,
+            reject_reason=reason,
+            v_cmd=candidate_v_cmd,
+            lambda_I=lambda_I,
+            omega_los=omega_los if valid else None,
+            speed_cap=speed_cap,
+            max_vertical_speed=args.max_vision_vertical_speed,
+            gimbal_at_limit=False,
+            safety_ok=_airsim_safety_ok(client, args.interceptor),
+            soft_measurement_valid=image_kf.valid,
+        )
+        v_cmd = terminal_result.v_cmd
+        if terminal_result.using_blind_push:
+            guidance_mode = "blind_push"
+            reason = terminal_result.reason
+        elif valid:
+            last_v_cmd = np.array(v_cmd, dtype=float)
+        (
+            yaw_rate_cmd_deg_s,
+            yaw_rate_blind_base_deg_s,
+            yaw_rate_blind_sample_count,
+            yaw_rate_blind_decay,
+        ) = _terminal_yaw_rate_command(
+            current_yaw_rate_deg_s=raw_yaw_rate_cmd_deg_s,
+            samples=yaw_rate_samples,
+            timestamp=sim_t,
+            terminal_state=terminal_result.state,
+            using_blind_push=terminal_result.using_blind_push,
+            blind_elapsed_s=terminal_result.blind_elapsed_s,
+            args=args,
+        )
+        yaw_rate_source = "measurement" if detected else "none"
+        image_kf_takeover_allowed, image_kf_takeover_reason = _image_kf_takeover_allowed(
+            image_kf,
+            terminal_result,
+            reason,
+            detected,
+            terminal_result.area_ratio,
+            args,
+            profile="strapdown",
+        )
+        if image_kf_takeover_allowed:
+            yaw_rate_cmd_deg_s = _kf_yaw_rate_command(image_kf, args)
+            yaw_rate_blind_base_deg_s = yaw_rate_cmd_deg_s
+            yaw_rate_blind_sample_count = 0
+            yaw_rate_blind_decay = image_kf.quality
+            yaw_rate_source = "kf"
+        elif terminal_result.using_blind_push:
+            yaw_rate_source = "window_hold"
+        elif terminal_result.state == TERMINAL_VISUAL:
+            yaw_rate_source = "measurement_scaled"
+
         stop_requested = _draw_detection_window_strapdown(
             display,
             client,
@@ -578,38 +763,35 @@ def main() -> None:
             ttc_value,
             args,
         )
+        preview_lines = _preview_lines(
+            profile="strapdown",
+            detections=detections,
+            selected=detection,
+            valid=valid,
+            reason=reason,
+            ttc_text=ttc_value,
+            terminal_state=terminal_result.state,
+            image_kf_mode=image_kf.mode,
+            range_m=range_m,
+            control_line=f"yaw_rate={yaw_rate_cmd_deg_s:.1f} deg/s body_yaw={body_yaw_deg:.1f}",
+            hit=hit,
+        )
+        _record_detection_preview(
+            preview_recorder,
+            client,
+            config,
+            detections,
+            detection,
+            intrinsics,
+            preview_lines,
+            args,
+            frame_id=frame_id,
+            terminal_state=terminal_result.state,
+            guidance_mode=guidance_mode,
+            reason=reason,
+            hit=hit,
+        )
 
-        terminal_reason = _terminal_trigger_strapdown(reason, detected, bbox_area, intrinsics, args)
-        if terminal_reason and last_v_cmd is not None:
-            blind_push_until = sim_t + args.blind_push_timeout_s
-            blind_push_reason = terminal_reason
-            terminal_armed = True
-        elif detected and blind_push_reason == "lost_after_track":
-            blind_push_until = None
-            blind_push_reason = ""
-        if (
-            not detected
-            and last_detection_ts is not None
-            and sim_t - last_detection_ts <= args.coast_timeout_s
-            and last_v_cmd is not None
-            and terminal_armed
-        ):
-            blind_push_until = max(blind_push_until or sim_t, sim_t + args.blind_push_timeout_s)
-            blind_push_reason = "lost_after_track"
-
-        using_blind_push = blind_push_until is not None and sim_t <= blind_push_until and last_v_cmd is not None
-        if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
-            lambda_I = last_lambda_I
-            omega_los = last_omega_los
-
-        if using_blind_push:
-            v_cmd = np.array(last_v_cmd, dtype=float)
-            guidance_mode = "blind_push"
-            reason = blind_push_reason
-        else:
-            v_cmd = _guidance_velocity(interceptor_vel, lambda_I, omega_los if valid else None, guidance_gain, speed_cap, args)
-            if valid:
-                last_v_cmd = np.array(v_cmd, dtype=float)
         cmd_yaw_deg = _yaw_deg_from_velocity(v_cmd)
         yaw_error_deg = _wrap_angle_deg(cmd_yaw_deg - body_yaw_deg)
         target_bearing_deg = ""
@@ -630,9 +812,18 @@ def main() -> None:
             )
 
         frame_elapsed = time.monotonic() - loop_start
+        vertical_error_sign = ""
+        vertical_command_consistent = ""
+        if args.diagnostic_truth and np.all(np.isfinite(rel)):
+            vertical_error_sign = float(np.sign(rel[2]))
+            if abs(float(rel[2])) <= 1.0e-6 or abs(float(v_cmd[2])) <= 1.0e-6:
+                vertical_command_consistent = 1
+            else:
+                vertical_command_consistent = int(np.sign(rel[2]) == np.sign(v_cmd[2]))
         rows.append(
             {
                 "frame": frame_id,
+                **experiment_fields,
                 "t": sim_t,
                 "loop_dt": loop_dt,
                 "frame_elapsed": frame_elapsed,
@@ -647,6 +838,9 @@ def main() -> None:
                 "range": range_m,
                 "horizontal_range": float(np.linalg.norm(rel[:2])) if args.diagnostic_truth else "",
                 "vertical_error": float(rel[2]) if args.diagnostic_truth else "",
+                "vertical_error_sign": vertical_error_sign,
+                "v_cmd_z_sign": float(np.sign(v_cmd[2])),
+                "vertical_command_consistent": vertical_command_consistent,
                 "hit": int(hit),
                 "collision_reason": pair_collision.reason,
                 "interceptor_collision_object": pair_collision.interceptor_object_name,
@@ -654,7 +848,23 @@ def main() -> None:
                 "pixel_error_x": px_err_x,
                 "pixel_error_y": px_err_y,
                 "bbox_area": bbox_area,
+                "yaw_rate_raw_deg_s": raw_yaw_rate_cmd_deg_s,
                 "yaw_rate_cmd_deg_s": yaw_rate_cmd_deg_s,
+                "yaw_rate_source": yaw_rate_source,
+                "yaw_rate_blind_base_deg_s": yaw_rate_blind_base_deg_s,
+                "yaw_rate_blind_sample_count": yaw_rate_blind_sample_count,
+                "yaw_rate_blind_decay": yaw_rate_blind_decay,
+                "image_kf_takeover_allowed": int(image_kf_takeover_allowed),
+                "image_kf_takeover_reason": image_kf_takeover_reason,
+                "image_kf_valid": int(image_kf.valid),
+                "image_kf_mode": image_kf.mode,
+                "image_kf_theta_x": image_kf.theta_x,
+                "image_kf_theta_y": image_kf.theta_y,
+                "image_kf_theta_dot_x": image_kf.theta_dot_x,
+                "image_kf_theta_dot_y": image_kf.theta_dot_y,
+                "image_kf_age_s": image_kf.age_s,
+                "image_kf_quality": image_kf.quality,
+                "image_kf_reject_reason": image_kf.reject_reason,
                 "body_yaw_deg": body_yaw_deg,
                 "cmd_yaw_deg": cmd_yaw_deg,
                 "yaw_error_deg": yaw_error_deg,
@@ -668,7 +878,17 @@ def main() -> None:
                 "valid": int(valid),
                 "guidance_mode": guidance_mode,
                 "reject_reason": reason,
-                "blind_push_reason": blind_push_reason if using_blind_push else "",
+                "blind_push_reason": terminal_result.reason if terminal_result.using_blind_push else "",
+                "terminal_state": terminal_result.state,
+                "terminal_reason": terminal_result.reason,
+                "terminal_arm_source": terminal_result.terminal_arm_source,
+                "terminal_cutoff_source": terminal_result.terminal_cutoff_source,
+                "terminal_area_ratio": terminal_result.area_ratio,
+                "terminal_miss_count": terminal_result.miss_count,
+                "terminal_profile": "strapdown",
+                "blind_elapsed_s": terminal_result.blind_elapsed_s,
+                "blind_decay": terminal_result.blind_decay,
+                "blind_sample_count": terminal_result.blind_sample_count,
                 "lambda_x": 0.0 if lambda_I is None else float(lambda_I[0]),
                 "lambda_y": 0.0 if lambda_I is None else float(lambda_I[1]),
                 "lambda_z": 0.0 if lambda_I is None else float(lambda_I[2]),
@@ -678,6 +898,15 @@ def main() -> None:
                 "g_eval_x": float(g_eval[0]),
                 "g_eval_y": float(g_eval[1]),
                 "g_eval_z": float(g_eval[2]),
+                "v_cmd_base_x": float(terminal_result.v_cmd_base[0]),
+                "v_cmd_base_y": float(terminal_result.v_cmd_base[1]),
+                "v_cmd_base_z": float(terminal_result.v_cmd_base[2]),
+                "v_cmd_trend_bias_x": float(terminal_result.v_cmd_trend_bias[0]),
+                "v_cmd_trend_bias_y": float(terminal_result.v_cmd_trend_bias[1]),
+                "v_cmd_trend_bias_z": float(terminal_result.v_cmd_trend_bias[2]),
+                "v_cmd_pitch_up_bias_x": float(terminal_result.v_cmd_pitch_up_bias[0]),
+                "v_cmd_pitch_up_bias_y": float(terminal_result.v_cmd_pitch_up_bias[1]),
+                "v_cmd_pitch_up_bias_z": float(terminal_result.v_cmd_pitch_up_bias[2]),
                 "v_cmd_x": float(v_cmd[0]),
                 "v_cmd_y": float(v_cmd[1]),
                 "v_cmd_z": float(v_cmd[2]),
@@ -714,6 +943,18 @@ def main() -> None:
 
     _write_csv(rows, csv_path)
     print(f"strapdown_vision_csv={csv_path}")
+    metadata_path = _write_run_metadata(
+        args=args,
+        csv_path=csv_path,
+        script_name=Path(__file__).name,
+        experiment_type="strapdown_vision_png",
+        intrinsics=intrinsics,
+        speed_cap=speed_cap,
+        intruder_velocity_cmd=intruder_velocity_cmd,
+        rows=rows,
+        hit=hit,
+    )
+    print(f"strapdown_vision_meta={metadata_path}")
     if not args.no_plot and _plot_strapdown(rows, plot_path):
         print(f"strapdown_vision_plot={plot_path}")
     _summarize_run(rows)

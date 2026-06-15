@@ -4,5 +4,6 @@ __pycache__/
 .venv/
 .env
 *.log
+*.webm
 Blocks/
 logs/

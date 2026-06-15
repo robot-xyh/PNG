@@ -142,6 +142,7 @@ def _world_position(kinematics, vehicle_name: str, origins: dict[str, np.ndarray
 
 def _record_sample(
     rows: list[dict[str, float | int | str | bool]],
+    experiment_fields: dict[str, float | int | str],
     t: float,
     interceptor_name: str,
     intruder_name: str,
@@ -163,6 +164,7 @@ def _record_sample(
     intruder_collision_object: str,
 ) -> None:
     row: dict[str, float | int | str | bool] = {
+        **experiment_fields,
         "t": t,
         "range": range_m,
         "horizontal_range": float(np.linalg.norm((intruder_pos - interceptor_pos)[:2])),
@@ -193,51 +195,96 @@ def _record_sample(
     rows.append(row)
 
 
+def _truth_experiment_fields(args, speed_cap: float, intruder_velocity: np.ndarray) -> dict[str, float | int | str]:
+    return {
+        "experiment_type": "truth_png",
+        "speed_ratio": float(args.speed_ratio),
+        "intruder_speed": float(args.intruder_speed),
+        "intruder_speed_arg": float(args.intruder_speed),
+        "intruder_vx": float(intruder_velocity[0]),
+        "intruder_vy": float(intruder_velocity[1]),
+        "intruder_vz": float(intruder_velocity[2]),
+        "speed_cap": float(speed_cap),
+        "navigation_constant": float(args.navigation_constant),
+        "max_accel": float(args.max_accel),
+        "min_speed_ratio": float(args.min_speed_ratio),
+        "intercept_altitude_m": float(args.intercept_altitude_m),
+        "intruder_altitude_offset_m": 0.0,
+        "rate_hz": float(args.rate_hz),
+        "duration_s": float(args.duration_s),
+        "altitude_correction": int(bool(args.altitude_correction)),
+        "vertical_kp": float(args.vertical_kp),
+        "vertical_speed_limit": float(args.vertical_speed_limit),
+    }
+
+
 def _write_csv(rows: Sequence[dict[str, float | int | str | bool]], csv_path: Path) -> None:
     csv_path.parent.mkdir(parents=True, exist_ok=True)
-    fields = [
-        "t",
-        "range",
-        "horizontal_range",
-        "vertical_error",
-        "closing_speed",
-        "guidance_valid",
-        "reject_reason",
-        "hit",
-        "collision_reason",
-        "interceptor_collision_object",
-        "intruder_collision_object",
-        "los_x",
-        "los_y",
-        "los_z",
-        "omega_los_x",
-        "omega_los_y",
-        "omega_los_z",
-        "a_cmd_x",
-        "a_cmd_y",
-        "a_cmd_z",
-        "v_cmd_x",
-        "v_cmd_y",
-        "v_cmd_z",
-        "interceptor_pos_x",
-        "interceptor_pos_y",
-        "interceptor_pos_z",
-        "intruder_pos_x",
-        "intruder_pos_y",
-        "intruder_pos_z",
-        "interceptor_vel_x",
-        "interceptor_vel_y",
-        "interceptor_vel_z",
-        "intruder_vel_x",
-        "intruder_vel_y",
-        "intruder_vel_z",
-        "interceptor",
-        "intruder",
-    ]
+    fields = list(rows[0].keys()) if rows else []
     with csv_path.open("w", newline="", encoding="utf-8") as stream:
+        if not fields:
+            return
         writer = csv.DictWriter(stream, fieldnames=fields)
         writer.writeheader()
         writer.writerows(rows)
+
+
+def _json_safe(value):
+    if isinstance(value, Path):
+        return str(value)
+    if isinstance(value, np.ndarray):
+        return value.tolist()
+    if isinstance(value, np.generic):
+        return value.item()
+    if isinstance(value, dict):
+        return {str(key): _json_safe(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_json_safe(item) for item in value]
+    return value
+
+
+def _row_float(row: dict[str, float | int | str | bool], key: str) -> float | None:
+    try:
+        value = row.get(key, "")
+        if value == "":
+            return None
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if np.isfinite(number) else None
+
+
+def _write_run_metadata(
+    *,
+    args,
+    csv_path: Path,
+    speed_cap: float,
+    intruder_velocity: np.ndarray,
+    rows: Sequence[dict[str, float | int | str | bool]],
+    hit: bool,
+) -> Path:
+    ranges = [value for row in rows if (value := _row_float(row, "range")) is not None]
+    meta = {
+        "script_name": Path(__file__).name,
+        "experiment_type": "truth_png",
+        "created_local_time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "csv_path": str(csv_path),
+        "settings_path": str(args.settings_path),
+        "vehicle_names": {"interceptor": args.interceptor, "intruder": args.intruder},
+        "args": vars(args),
+        "derived": {
+            "speed_cap": float(speed_cap),
+            "intruder_velocity_cmd": [float(value) for value in intruder_velocity],
+            "frame_count": len(rows),
+            "hit": bool(hit),
+            "min_range_m": min(ranges) if ranges else None,
+            "final_range_m": ranges[-1] if ranges else None,
+        },
+    }
+    metadata_path = csv_path.with_name(f"{csv_path.stem}_meta.json")
+    with metadata_path.open("w", encoding="utf-8") as stream:
+        json.dump(_json_safe(meta), stream, ensure_ascii=False, indent=2, sort_keys=True)
+    return metadata_path
 
 
 def _prefer_user_mpl_toolkits() -> None:
@@ -512,6 +559,7 @@ def main() -> None:
     speed_cap = args.speed_ratio * configured_intruder_speed
     min_speed = max(0.0, min(speed_cap, args.min_speed_ratio * speed_cap))
     default_fallback_direction = np.array([1.0, 0.0, 0.0], dtype=float)
+    experiment_fields = _truth_experiment_fields(args, speed_cap, intruder_velocity)
 
     csv_path, plot_path = _output_paths(args)
     rows: list[dict[str, float | int | str | bool]] = []
@@ -576,6 +624,7 @@ def main() -> None:
         hit = pair_collision.collided
         _record_sample(
             rows,
+            experiment_fields,
             sim_t,
             args.interceptor,
             args.intruder,
@@ -620,6 +669,15 @@ def main() -> None:
 
     _write_csv(rows, csv_path)
     print(f"truth_png_csv={csv_path}")
+    metadata_path = _write_run_metadata(
+        args=args,
+        csv_path=csv_path,
+        speed_cap=speed_cap,
+        intruder_velocity=intruder_velocity,
+        rows=rows,
+        hit=hit,
+    )
+    print(f"truth_png_meta={metadata_path}")
     if not args.no_plot and _plot_truth_png(rows, plot_path):
         print(f"truth_png_plot={plot_path}")
     if not hit:
