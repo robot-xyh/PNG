@@ -12,6 +12,7 @@ from examples.run_airsim_strapdown_vision_png import (
     _output_paths_strapdown,
     _plot_strapdown,
     _rows_until_first_hit,
+    _start_geometry_offsets,
     _terminal_trigger_strapdown,
     _terminal_yaw_rate_command,
     _yaw_rate_from_angle_error,
@@ -226,6 +227,29 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         clipped = _rows_until_first_hit(rows)
 
         self.assertEqual([row["t"] for row in clipped], [0.0, 1.0])
+
+    def test_start_geometry_offsets_from_horizontal_range(self):
+        args = SimpleNamespace(
+            start_horizontal_range_m=100.0,
+            start_forward_offset_m=None,
+            start_lateral_offset_m=-20.0,
+        )
+
+        forward, lateral, horizontal = _start_geometry_offsets(args)
+
+        self.assertAlmostEqual(horizontal, 100.0)
+        self.assertAlmostEqual(lateral, -20.0)
+        self.assertAlmostEqual(forward, np.sqrt(100.0 * 100.0 - 20.0 * 20.0))
+
+    def test_start_geometry_rejects_impossible_lateral_offset(self):
+        args = SimpleNamespace(
+            start_horizontal_range_m=10.0,
+            start_forward_offset_m=None,
+            start_lateral_offset_m=-20.0,
+        )
+
+        with self.assertRaises(SystemExit):
+            _start_geometry_offsets(args)
 
 
 if __name__ == "__main__":

@@ -56,6 +56,7 @@ from vision_guidance.types import AttitudeSample  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AIRSIM_SETTINGS_PATH = Path.home() / "Documents" / "AirSim" / "settings.json"
 SETTINGS_EXAMPLE_PATH = PROJECT_ROOT / "config" / "airsim_blocks_settings.json"
+GRAVITY_MPS2 = 9.80665
 
 
 def parse_args() -> argparse.Namespace:
@@ -97,6 +98,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-s", type=float, default=2.0)
     parser.add_argument("--settle-speed", type=float, default=0.5)
     parser.add_argument("--settle-timeout-s", type=float, default=8.0)
+    parser.add_argument("--start-horizontal-range-m", type=float, default=None)
+    parser.add_argument("--start-forward-offset-m", type=float, default=None)
+    parser.add_argument("--start-lateral-offset-m", type=float, default=-20.0)
+    parser.add_argument("--start-interceptor-x-m", type=float, default=0.0)
+    parser.add_argument("--start-interceptor-y-m", type=float, default=0.0)
+    parser.add_argument("--start-geometry-settle-s", type=float, default=0.5)
     parser.add_argument("--hit-radius-m", type=float, default=1.0, help="Deprecated; AirSim collision is the success criterion.")
     parser.add_argument("--gimbal-yaw-limit-deg", type=float, default=80.0)
     parser.add_argument("--gimbal-pitch-limit-deg", type=float, default=45.0)
@@ -228,6 +235,28 @@ def _world_position(kinematics, vehicle_name: str, origins: dict[str, np.ndarray
     return origins.get(vehicle_name, np.zeros(3, dtype=float)) + _vector_xyz(kinematics.position)
 
 
+def _kinematics_timestamp_s(kinematics) -> Optional[float]:
+    for name in ("time_stamp", "timestamp"):
+        value = getattr(kinematics, name, None)
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(number):
+            continue
+        return number * 1.0e-9 if number > 1.0e6 else number
+    return None
+
+
+def _linear_acceleration_mps2(kinematics) -> np.ndarray:
+    acceleration = getattr(kinematics, "linear_acceleration", None)
+    if acceleration is None:
+        return np.zeros(3, dtype=float)
+    return _vector_xyz(acceleration)
+
+
 def _intruder_velocity(args) -> np.ndarray:
     vy = args.intruder_speed if args.intruder_vy is None else args.intruder_vy
     return np.array([args.intruder_vx, vy, args.intruder_vz], dtype=float)
@@ -275,6 +304,76 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
             future.join()
         time.sleep(0.2)
     print("Altitude preparation complete; starting gimbal vision loop.")
+
+
+def _start_geometry_enabled(args) -> bool:
+    return args.start_horizontal_range_m is not None or args.start_forward_offset_m is not None
+
+
+def _local_start_z(vehicle: str, args) -> float:
+    return _target_z_ned(vehicle, args)
+
+
+def _start_geometry_offsets(args) -> tuple[float, float, float]:
+    lateral = float(args.start_lateral_offset_m)
+    if args.start_horizontal_range_m is not None and args.start_forward_offset_m is not None:
+        raise SystemExit("Use either --start-horizontal-range-m or --start-forward-offset-m, not both.")
+    if args.start_horizontal_range_m is not None:
+        horizontal_range = float(args.start_horizontal_range_m)
+        if horizontal_range <= 0.0:
+            raise SystemExit("--start-horizontal-range-m must be positive")
+        if abs(lateral) > horizontal_range:
+            raise SystemExit("--start-lateral-offset-m magnitude cannot exceed --start-horizontal-range-m")
+        forward = float(np.sqrt(max(0.0, horizontal_range * horizontal_range - lateral * lateral)))
+    elif args.start_forward_offset_m is not None:
+        forward = float(args.start_forward_offset_m)
+        horizontal_range = float(np.hypot(forward, lateral))
+    else:
+        forward = 0.0
+        horizontal_range = 0.0
+    return forward, lateral, horizontal_range
+
+
+def _apply_start_geometry(client, args, origins: dict[str, np.ndarray]) -> None:
+    if not _start_geometry_enabled(args):
+        return
+
+    forward, lateral, horizontal_range = _start_geometry_offsets(args)
+    interceptor_local = np.array(
+        [float(args.start_interceptor_x_m), float(args.start_interceptor_y_m), _local_start_z(args.interceptor, args)],
+        dtype=float,
+    )
+    interceptor_world = origins.get(args.interceptor, np.zeros(3, dtype=float)) + interceptor_local
+    intruder_world = interceptor_world + np.array([forward, lateral, -float(args.intruder_altitude_offset_m)], dtype=float)
+    intruder_local = intruder_world - origins.get(args.intruder, np.zeros(3, dtype=float))
+
+    for vehicle, local_position in [(args.interceptor, interceptor_local), (args.intruder, intruder_local)]:
+        client.moveToPositionAsync(
+            float(local_position[0]),
+            float(local_position[1]),
+            float(local_position[2]),
+            velocity=max(0.5, float(args.climb_speed)),
+            timeout_sec=max(1.0, float(args.climb_timeout_s)),
+            vehicle_name=vehicle,
+        ).join()
+        client.hoverAsync(vehicle_name=vehicle).join()
+    intruder_yaw_deg = _yaw_deg_from_velocity(_intruder_velocity(args))
+    client.rotateToYawAsync(
+        intruder_yaw_deg,
+        timeout_sec=max(1.0, float(args.climb_timeout_s)),
+        margin=3.0,
+        vehicle_name=args.intruder,
+    ).join()
+
+    if args.start_geometry_settle_s > 0.0:
+        time.sleep(float(args.start_geometry_settle_s))
+    print(
+        "Applied gimbal start geometry: "
+        f"horizontal_range={horizontal_range:.2f}m, forward={forward:.2f}m, lateral={lateral:.2f}m, "
+        f"altitude_offset={float(args.intruder_altitude_offset_m):.2f}m, "
+        f"interceptor_local={np.array2string(interceptor_local, precision=2)}, "
+        f"intruder_local={np.array2string(intruder_local, precision=2)}"
+    )
 
 
 def _camera_offset_body(args) -> np.ndarray:
@@ -564,6 +663,9 @@ def _experiment_fields(
         "speed_cap": float(speed_cap),
         "intercept_altitude_m": float(args.intercept_altitude_m),
         "intruder_altitude_offset_m": float(args.intruder_altitude_offset_m),
+        "start_horizontal_range_m": "" if getattr(args, "start_horizontal_range_m", None) is None else float(args.start_horizontal_range_m),
+        "start_forward_offset_m": "" if getattr(args, "start_forward_offset_m", None) is None else float(args.start_forward_offset_m),
+        "start_lateral_offset_m": float(getattr(args, "start_lateral_offset_m", 0.0)),
         "camera_name": str(args.camera),
         "camera_x": float(args.camera_x),
         "camera_y": float(args.camera_y),
@@ -623,6 +725,11 @@ def _write_run_metadata(
     hit: bool,
 ) -> Path:
     ranges = [value for row in rows if (value := _finite_row_float(row, "range")) is not None]
+    wall_fps_values = [value for row in rows if (value := _finite_row_float(row, "wall_fps")) is not None and value > 0.0]
+    sim_fps_values = [value for row in rows if (value := _finite_row_float(row, "sim_sample_fps")) is not None and value > 0.0]
+    sim_clock_ratios = [value for row in rows if (value := _finite_row_float(row, "sim_clock_ratio")) is not None and value > 0.0]
+    load_factors = [value for row in rows if (value := _finite_row_float(row, "load_factor_g")) is not None]
+    load_factors_fd = [value for row in rows if (value := _finite_row_float(row, "load_factor_fd_g")) is not None]
     meta = {
         "script_name": script_name,
         "experiment_type": experiment_type,
@@ -646,6 +753,13 @@ def _write_run_metadata(
             "hit": bool(hit),
             "min_range_m": min(ranges) if ranges else None,
             "final_range_m": ranges[-1] if ranges else None,
+            "avg_wall_fps": float(np.mean(wall_fps_values)) if wall_fps_values else None,
+            "avg_sim_sample_fps": float(np.mean(sim_fps_values)) if sim_fps_values else None,
+            "avg_sim_clock_ratio": float(np.mean(sim_clock_ratios)) if sim_clock_ratios else None,
+            "avg_load_factor_g": float(np.mean(load_factors)) if load_factors else None,
+            "max_load_factor_g": max(load_factors) if load_factors else None,
+            "avg_load_factor_fd_g": float(np.mean(load_factors_fd)) if load_factors_fd else None,
+            "max_load_factor_fd_g": max(load_factors_fd) if load_factors_fd else None,
         },
     }
     metadata_path = csv_path.with_name(f"{csv_path.stem}_meta.json")
@@ -673,6 +787,10 @@ def _summarize_run(rows: Sequence[dict[str, float | int | str]]) -> None:
     valid = sum(int(row.get("valid", 0)) == 1 for row in rows)
     fallback = sum(row.get("guidance_mode") == "los_fallback" for row in rows)
     ranges = [value for row in rows if (value := finite_float(row, "range")) is not None]
+    wall_fps_values = [value for row in rows if (value := finite_float(row, "wall_fps")) is not None and value > 0.0]
+    sim_fps_values = [value for row in rows if (value := finite_float(row, "sim_sample_fps")) is not None and value > 0.0]
+    load_factors = [value for row in rows if (value := finite_float(row, "load_factor_g")) is not None]
+    load_factors_fd = [value for row in rows if (value := finite_float(row, "load_factor_fd_g")) is not None]
     final_range = ranges[-1] if ranges else None
     min_range = min(ranges) if ranges else None
 
@@ -695,7 +813,11 @@ def _summarize_run(rows: Sequence[dict[str, float | int | str]]) -> None:
         f"min_range={min_range if min_range is not None else float('nan'):.3f}, "
         f"final_range={final_range if final_range is not None else float('nan'):.3f}, "
         f"interceptor_avg_speed={interceptor_speed if interceptor_speed is not None else float('nan'):.3f}, "
-        f"intruder_avg_speed={intruder_speed if intruder_speed is not None else float('nan'):.3f}"
+        f"intruder_avg_speed={intruder_speed if intruder_speed is not None else float('nan'):.3f}, "
+        f"avg_wall_fps={float(np.mean(wall_fps_values)) if wall_fps_values else float('nan'):.2f}, "
+        f"avg_sim_fps={float(np.mean(sim_fps_values)) if sim_fps_values else float('nan'):.2f}, "
+        f"max_load_g={max(load_factors) if load_factors else float('nan'):.2f}, "
+        f"max_load_fd_g={max(load_factors_fd) if load_factors_fd else float('nan'):.2f}"
     )
 
 
@@ -1188,6 +1310,7 @@ def main() -> None:
         client.enableApiControl(True, vehicle_name=vehicle)
         client.armDisarm(True, vehicle_name=vehicle)
     _prepare_intercept_altitude(client, [args.interceptor, args.intruder], args)
+    _apply_start_geometry(client, args, origins)
 
     config = AirSimDetectionConfig(
         camera_name=args.camera,
@@ -1236,6 +1359,10 @@ def main() -> None:
     preview_recorder = _make_preview_recorder(airsim, args, csv_path.with_name(f"{csv_path.stem}_preview"))
     start = time.monotonic()
     last_loop_start = start
+    last_wall_t: Optional[float] = None
+    last_kin_t: Optional[float] = None
+    last_interceptor_vel: Optional[np.ndarray] = None
+    sim_start_t: Optional[float] = None
     frame_id = 0
     hit = False
 
@@ -1243,9 +1370,8 @@ def main() -> None:
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
         "ttc,valid,guidance_mode,reason,yaw_deg,pitch_deg,v_cmd,hit"
     )
-    while time.monotonic() - start < args.duration_s:
+    while True:
         loop_start = time.monotonic()
-        sim_t = loop_start - start
         loop_dt = target_dt if frame_id == 0 else max(1.0e-6, loop_start - last_loop_start)
         last_loop_start = loop_start
         command_duration = _command_duration(loop_dt, target_dt, args)
@@ -1267,9 +1393,42 @@ def main() -> None:
             vehicle_name=args.interceptor,
         )
 
+        state = client.getMultirotorState(vehicle_name=args.interceptor)
+        kin_t_abs = _kinematics_timestamp_s(state)
+        if kin_t_abs is not None and sim_start_t is None:
+            sim_start_t = kin_t_abs
+        sim_t = (
+            kin_t_abs - sim_start_t
+            if kin_t_abs is not None and sim_start_t is not None
+            else loop_start - start
+        )
+        if sim_t >= args.duration_s:
+            break
+
         interceptor_kin = _truth_kinematics(client, args.interceptor)
         interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
+        interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
+        interceptor_accel_norm = float(np.linalg.norm(interceptor_accel))
+        load_factor_g = interceptor_accel_norm / GRAVITY_MPS2
+        kin_t = kin_t_abs or _kinematics_timestamp_s(interceptor_kin)
+        wall_fps = 0.0 if last_wall_t is None else 1.0 / max(1.0e-6, loop_start - last_wall_t)
+        sim_sample_fps = ""
+        sim_clock_ratio = ""
+        accel_fd_norm = 0.0
+        load_factor_fd_g = 0.0
+        if kin_t is not None and last_kin_t is not None:
+            kin_dt = max(1.0e-6, kin_t - last_kin_t)
+            sim_sample_fps = 1.0 / kin_dt
+            sim_clock_ratio = kin_dt / max(1.0e-6, loop_start - float(last_wall_t or loop_start))
+            if last_interceptor_vel is not None:
+                accel_fd = (interceptor_vel - last_interceptor_vel) / kin_dt
+                accel_fd_norm = float(np.linalg.norm(accel_fd))
+                load_factor_fd_g = accel_fd_norm / GRAVITY_MPS2
+        last_wall_t = loop_start
+        if kin_t is not None:
+            last_kin_t = kin_t
+        last_interceptor_vel = np.array(interceptor_vel, dtype=float)
         intruder_pos = np.full(3, np.nan)
         rel = np.full(3, np.nan)
         range_m = float("nan")
@@ -1287,7 +1446,6 @@ def main() -> None:
         )
         hit = pair_collision.collided
 
-        state = client.getMultirotorState(vehicle_name=args.interceptor)
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
         attitude_buffer.push(AttitudeSample(timestamp=sim_t, R_IB=R_IB))
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
@@ -1539,7 +1697,12 @@ def main() -> None:
                 **experiment_fields,
                 "t": sim_t,
                 "loop_dt": loop_dt,
+                "wall_t": loop_start - start,
                 "frame_elapsed": frame_elapsed,
+                "wall_fps": wall_fps,
+                "sim_time_s": "" if kin_t is None or sim_start_t is None else kin_t - sim_start_t,
+                "sim_sample_fps": sim_sample_fps,
+                "sim_clock_ratio": sim_clock_ratio,
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
                 "detection_count": detection_count,
@@ -1624,6 +1787,13 @@ def main() -> None:
                 "v_cmd_x": float(v_cmd[0]),
                 "v_cmd_y": float(v_cmd[1]),
                 "v_cmd_z": float(v_cmd[2]),
+                "interceptor_accel_x": float(interceptor_accel[0]),
+                "interceptor_accel_y": float(interceptor_accel[1]),
+                "interceptor_accel_z": float(interceptor_accel[2]),
+                "interceptor_accel_norm_mps2": interceptor_accel_norm,
+                "load_factor_g": load_factor_g,
+                "interceptor_accel_fd_norm_mps2": accel_fd_norm,
+                "load_factor_fd_g": load_factor_fd_g,
                 "interceptor_x": float(interceptor_pos[0]),
                 "interceptor_y": float(interceptor_pos[1]),
                 "interceptor_z": float(interceptor_pos[2]),

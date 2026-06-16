@@ -59,13 +59,22 @@ from vision_guidance.airsim_adapter import (
     get_detections,
 )
 from vision_guidance.attitude_buffer import AttitudeHistoryBuffer
-from vision_guidance.geometry import airsim_camera_zero_to_body, camera_ray_from_pixel, los_camera_to_inertial
+from vision_guidance.geometry import (
+    airsim_camera_zero_to_body,
+    camera_ray_from_pixel,
+    los_camera_to_inertial,
+    normalize,
+    project_perpendicular,
+)
 from vision_guidance.los_filter import LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
 from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
 from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
+
+
+GRAVITY_MPS2 = 9.80665
 
 
 def parse_args() -> argparse.Namespace:
@@ -102,6 +111,37 @@ def parse_args() -> argparse.Namespace:
         default=30.0,
         help="Intruder starts this many meters above the interceptor before interception.",
     )
+    parser.add_argument(
+        "--start-horizontal-range-m",
+        type=float,
+        default=None,
+        help="If set, teleport vehicles to this initial horizontal range before strapdown PNG starts.",
+    )
+    parser.add_argument(
+        "--start-forward-offset-m",
+        type=float,
+        default=None,
+        help="Alternative to --start-horizontal-range-m: intruder forward offset from interceptor in world X.",
+    )
+    parser.add_argument(
+        "--start-lateral-offset-m",
+        type=float,
+        default=-20.0,
+        help="Intruder lateral offset from interceptor in world Y when start geometry is enabled.",
+    )
+    parser.add_argument(
+        "--start-interceptor-x-m",
+        type=float,
+        default=0.0,
+        help="Interceptor local NED X used when start geometry is enabled.",
+    )
+    parser.add_argument(
+        "--start-interceptor-y-m",
+        type=float,
+        default=0.0,
+        help="Interceptor local NED Y used when start geometry is enabled.",
+    )
+    parser.add_argument("--start-geometry-settle-s", type=float, default=0.5)
     parser.add_argument("--climb-speed", type=float, default=5.0)
     parser.add_argument("--climb-timeout-s", type=float, default=60.0)
     parser.add_argument("--settle-s", type=float, default=2.0)
@@ -160,6 +200,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ttc-min-area", type=float, default=0.0)
     parser.add_argument("--ttc-max-s", type=float, default=120.0)
+    parser.add_argument(
+        "--los-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the 6D LOS Kalman filter. Disable it for noiseless AirSim detection/pose analysis.",
+    )
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
@@ -224,6 +270,79 @@ def _align_body_yaw_to_target(client, airsim_module, args, origins: dict[str, np
     actual_yaw_deg = _body_yaw_deg(airsim_module, state.kinematics_estimated.orientation)
     print(f"Initial body yaw after alignment: commanded={yaw_deg:.2f}deg, actual={actual_yaw_deg:.2f}deg")
     return yaw_deg
+
+
+def _start_geometry_enabled(args) -> bool:
+    return args.start_horizontal_range_m is not None or args.start_forward_offset_m is not None
+
+
+def _local_start_z(vehicle: str, args) -> float:
+    altitude = abs(float(args.intercept_altitude_m))
+    if vehicle == args.intruder:
+        altitude += float(args.intruder_altitude_offset_m)
+    return -altitude
+
+
+def _start_geometry_offsets(args) -> tuple[float, float, float]:
+    lateral = float(args.start_lateral_offset_m)
+    if args.start_horizontal_range_m is not None and args.start_forward_offset_m is not None:
+        raise SystemExit("Use either --start-horizontal-range-m or --start-forward-offset-m, not both.")
+    if args.start_horizontal_range_m is not None:
+        horizontal_range = float(args.start_horizontal_range_m)
+        if horizontal_range <= 0.0:
+            raise SystemExit("--start-horizontal-range-m must be positive")
+        if abs(lateral) > horizontal_range:
+            raise SystemExit("--start-lateral-offset-m magnitude cannot exceed --start-horizontal-range-m")
+        forward = float(np.sqrt(max(0.0, horizontal_range * horizontal_range - lateral * lateral)))
+    elif args.start_forward_offset_m is not None:
+        forward = float(args.start_forward_offset_m)
+        horizontal_range = float(np.hypot(forward, lateral))
+    else:
+        forward = 0.0
+        horizontal_range = 0.0
+    return forward, lateral, horizontal_range
+
+
+def _apply_start_geometry(client, args, origins: dict[str, np.ndarray]) -> None:
+    if not _start_geometry_enabled(args):
+        return
+
+    forward, lateral, horizontal_range = _start_geometry_offsets(args)
+    interceptor_local = np.array(
+        [float(args.start_interceptor_x_m), float(args.start_interceptor_y_m), _local_start_z(args.interceptor, args)],
+        dtype=float,
+    )
+    interceptor_world = origins.get(args.interceptor, np.zeros(3, dtype=float)) + interceptor_local
+    intruder_world = interceptor_world + np.array([forward, lateral, -float(args.intruder_altitude_offset_m)], dtype=float)
+    intruder_local = intruder_world - origins.get(args.intruder, np.zeros(3, dtype=float))
+
+    for vehicle, local_position in [(args.interceptor, interceptor_local), (args.intruder, intruder_local)]:
+        client.moveToPositionAsync(
+            float(local_position[0]),
+            float(local_position[1]),
+            float(local_position[2]),
+            velocity=max(0.5, float(args.climb_speed)),
+            timeout_sec=max(1.0, float(args.climb_timeout_s)),
+            vehicle_name=vehicle,
+        ).join()
+        client.hoverAsync(vehicle_name=vehicle).join()
+    intruder_yaw_deg = _yaw_deg_from_velocity(_intruder_velocity(args))
+    client.rotateToYawAsync(
+        intruder_yaw_deg,
+        timeout_sec=args.initial_align_timeout_s,
+        margin=args.initial_align_margin_deg,
+        vehicle_name=args.intruder,
+    ).join()
+
+    if args.start_geometry_settle_s > 0.0:
+        time.sleep(float(args.start_geometry_settle_s))
+    print(
+        "Applied strapdown start geometry: "
+        f"horizontal_range={horizontal_range:.2f}m, forward={forward:.2f}m, lateral={lateral:.2f}m, "
+        f"altitude_offset={float(args.intruder_altitude_offset_m):.2f}m, "
+        f"interceptor_local={np.array2string(interceptor_local, precision=2)}, "
+        f"intruder_local={np.array2string(intruder_local, precision=2)}"
+    )
 
 
 def _yaw_rate_from_pixel_error(pixel_error_x: float, intrinsics, args) -> float:
@@ -310,6 +429,28 @@ def _row_float(row: dict[str, float | int | str], key: str, default: float = 0.0
         return float(value)
     except (TypeError, ValueError):
         return default
+
+
+def _kinematics_timestamp_s(kinematics) -> Optional[float]:
+    for name in ("time_stamp", "timestamp"):
+        value = getattr(kinematics, name, None)
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(number):
+            continue
+        return number * 1.0e-9 if number > 1.0e6 else number
+    return None
+
+
+def _linear_acceleration_mps2(kinematics) -> np.ndarray:
+    acceleration = getattr(kinematics, "linear_acceleration", None)
+    if acceleration is None:
+        return np.zeros(3, dtype=float)
+    return _vector_xyz(acceleration)
 
 
 def _rows_until_first_hit(rows: list[dict[str, float | int | str]]) -> list[dict[str, float | int | str]]:
@@ -492,6 +633,7 @@ def main() -> None:
         client.enableApiControl(True, vehicle_name=vehicle)
         client.armDisarm(True, vehicle_name=vehicle)
     _prepare_intercept_altitude(client, [args.interceptor, args.intruder], args)
+    _apply_start_geometry(client, args, origins)
     client.simSetCameraPose(args.camera, _fixed_camera_pose(airsim, args), vehicle_name=args.interceptor)
     print("Fixed strapdown camera pose set once; subsequent alignment rotates interceptor body yaw only.")
     if args.initial_truth_align:
@@ -533,13 +675,19 @@ def main() -> None:
     last_valid_ts: Optional[float] = None
     last_lambda_I: Optional[np.ndarray] = None
     last_omega_los: Optional[np.ndarray] = None
+    last_raw_lambda_I: Optional[np.ndarray] = None
+    last_raw_lambda_ts: Optional[float] = None
     last_v_cmd: Optional[np.ndarray] = None
+    last_wall_t: Optional[float] = None
+    last_kin_t: Optional[float] = None
+    last_interceptor_vel: Optional[np.ndarray] = None
     yaw_rate_samples: list[tuple[float, float]] = []
     rows: list[dict[str, float | int | str]] = []
     csv_path, plot_path = _output_paths_strapdown(args)
     preview_recorder = _make_preview_recorder(airsim, args, csv_path.with_name(f"{csv_path.stem}_preview"))
     start = time.monotonic()
     last_loop_start = start
+    sim_start_t: Optional[float] = None
     frame_id = 0
     hit = False
 
@@ -547,9 +695,8 @@ def main() -> None:
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
         "ttc,valid,guidance_mode,reason,yaw_rate,body_yaw,cmd_yaw,v_cmd,hit"
     )
-    while time.monotonic() - start < args.duration_s:
+    while True:
         loop_start = time.monotonic()
-        sim_t = loop_start - start
         loop_dt = target_dt if frame_id == 0 else max(1.0e-6, loop_start - last_loop_start)
         last_loop_start = loop_start
         command_duration = _command_duration(loop_dt, target_dt, args)
@@ -564,9 +711,41 @@ def main() -> None:
                 vehicle_name=args.intruder,
             )
 
+        state = client.getMultirotorState(vehicle_name=args.interceptor)
+        kin_t_abs = _kinematics_timestamp_s(state)
+        if kin_t_abs is not None and sim_start_t is None:
+            sim_start_t = kin_t_abs
+        sim_t = (
+            kin_t_abs - sim_start_t
+            if kin_t_abs is not None and sim_start_t is not None
+            else loop_start - start
+        )
+        if sim_t >= args.duration_s:
+            break
         interceptor_kin = _truth_kinematics(client, args.interceptor)
         interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
+        interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
+        interceptor_accel_norm = float(np.linalg.norm(interceptor_accel))
+        load_factor_g = interceptor_accel_norm / GRAVITY_MPS2
+        kin_t = kin_t_abs or _kinematics_timestamp_s(interceptor_kin)
+        wall_fps = 0.0 if last_wall_t is None else 1.0 / max(1.0e-6, loop_start - last_wall_t)
+        sim_sample_fps = ""
+        sim_clock_ratio = ""
+        accel_fd_norm = 0.0
+        load_factor_fd_g = 0.0
+        if kin_t is not None and last_kin_t is not None:
+            kin_dt = max(1.0e-6, kin_t - last_kin_t)
+            sim_sample_fps = 1.0 / kin_dt
+            sim_clock_ratio = kin_dt / max(1.0e-6, loop_start - float(last_wall_t or loop_start))
+            if last_interceptor_vel is not None:
+                accel_fd = (interceptor_vel - last_interceptor_vel) / kin_dt
+                accel_fd_norm = float(np.linalg.norm(accel_fd))
+                load_factor_fd_g = accel_fd_norm / GRAVITY_MPS2
+        last_wall_t = loop_start
+        if kin_t is not None:
+            last_kin_t = kin_t
+        last_interceptor_vel = np.array(interceptor_vel, dtype=float)
         intruder_pos = np.full(3, np.nan)
         rel = np.full(3, np.nan)
         range_m = float("nan")
@@ -584,10 +763,10 @@ def main() -> None:
         )
         hit = pair_collision.collided
 
-        state = client.getMultirotorState(vehicle_name=args.interceptor)
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
         attitude_buffer.push(AttitudeSample(timestamp=sim_t, R_IB=R_IB))
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
+        camera_world_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
 
         detections = list(get_detections(client, config))
         detection_count = len(detections)
@@ -614,6 +793,12 @@ def main() -> None:
         center: Optional[tuple[float, float]] = None
         frame_detection = None
         detection_clipped = False
+        lambda_I_measured: Optional[np.ndarray] = None
+        lambda_raw: Optional[np.ndarray] = None
+        omega_raw: Optional[np.ndarray] = None
+        los_dt_s: float | str = ""
+        los_angle_step_deg: float | str = ""
+        los_source = "none"
 
         if detection is None:
             reason = "no_detection"
@@ -640,19 +825,45 @@ def main() -> None:
             else:
                 los_C = camera_ray_from_pixel(*center, intrinsics)
                 lambda_I_measured = los_camera_to_inertial(los_C, R_BC, lookup.sample.R_IB)
-                los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
+                lambda_raw = normalize(lambda_I_measured)
+                if last_raw_lambda_I is not None and last_raw_lambda_ts is not None:
+                    raw_dt = max(1.0e-3, frame_detection.exposure_ts - last_raw_lambda_ts)
+                    los_dt_s = raw_dt
+                    raw_delta = project_perpendicular((lambda_raw - last_raw_lambda_I) / raw_dt, lambda_raw)
+                    omega_raw = np.cross(lambda_raw, raw_delta)
+                    dot_raw = float(np.clip(np.dot(last_raw_lambda_I, lambda_raw), -1.0, 1.0))
+                    los_angle_step_deg = float(np.degrees(np.arccos(dot_raw)))
+                else:
+                    omega_raw = np.zeros(3, dtype=float)
+                last_raw_lambda_I = np.array(lambda_raw, dtype=float)
+                last_raw_lambda_ts = frame_detection.exposure_ts
+
+                if args.los_filter:
+                    los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
+                    los_source = "kalman"
+                    los_valid = los.valid
+                    los_lambda = los.lambda_I
+                    los_omega = los.omega_los
+                    los_quality = los.quality
+                    los_reject_reason = los.reject_reason
+                else:
+                    los_source = "raw_fd"
+                    los_valid = True
+                    los_lambda = lambda_raw
+                    los_omega = omega_raw
+                    los_quality = 1.0
+                    los_reject_reason = None
                 ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
-                los_quality = los.quality
                 ttc_quality = ttc.quality
                 ttc_area = ttc.area_filtered
                 ttc_area_dot = ttc.area_dot_filtered
                 if ttc.ttc is not None:
                     ttc_value = f"{ttc.ttc:.3f}"
-                if not los.valid:
-                    reason = los.reject_reason or "los_invalid"
+                if not los_valid:
+                    reason = los_reject_reason or "los_invalid"
                 elif not ttc.valid or ttc.ttc is None:
-                    lambda_I = los.lambda_I
-                    omega_los = los.omega_los
+                    lambda_I = los_lambda
+                    omega_los = los_omega
                     reason = ttc.reject_reason or "ttc_invalid"
                     if _los_fallback_allowed(reason, args):
                         guidance_gain = max(0.0, args.los_fallback_gain)
@@ -665,8 +876,8 @@ def main() -> None:
                 else:
                     gain = gain_schedule.gain(ttc.ttc)
                     guidance_gain = gain
-                    omega_los = los.omega_los
-                    lambda_I = los.lambda_I
+                    omega_los = los_omega
+                    lambda_I = los_lambda
                     g_eval = gain * omega_los
                     valid = True
                     guidance_mode = "ttc_png"
@@ -825,8 +1036,13 @@ def main() -> None:
                 "frame": frame_id,
                 **experiment_fields,
                 "t": sim_t,
+                "wall_t": loop_start - start,
                 "loop_dt": loop_dt,
                 "frame_elapsed": frame_elapsed,
+                "wall_fps": wall_fps,
+                "sim_time_s": "" if kin_t is None else kin_t,
+                "sim_sample_fps": sim_sample_fps,
+                "sim_clock_ratio": sim_clock_ratio,
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
                 "detection_count": detection_count,
@@ -889,6 +1105,21 @@ def main() -> None:
                 "blind_elapsed_s": terminal_result.blind_elapsed_s,
                 "blind_decay": terminal_result.blind_decay,
                 "blind_sample_count": terminal_result.blind_sample_count,
+                "los_filter_enabled": int(args.los_filter),
+                "los_source": los_source,
+                "lambda_measured_x": 0.0 if lambda_I_measured is None else float(lambda_I_measured[0]),
+                "lambda_measured_y": 0.0 if lambda_I_measured is None else float(lambda_I_measured[1]),
+                "lambda_measured_z": 0.0 if lambda_I_measured is None else float(lambda_I_measured[2]),
+                "lambda_raw_x": 0.0 if lambda_raw is None else float(lambda_raw[0]),
+                "lambda_raw_y": 0.0 if lambda_raw is None else float(lambda_raw[1]),
+                "lambda_raw_z": 0.0 if lambda_raw is None else float(lambda_raw[2]),
+                "omega_raw_x": 0.0 if omega_raw is None else float(omega_raw[0]),
+                "omega_raw_y": 0.0 if omega_raw is None else float(omega_raw[1]),
+                "omega_raw_z": 0.0 if omega_raw is None else float(omega_raw[2]),
+                "omega_raw_norm_rad_s": 0.0 if omega_raw is None else float(np.linalg.norm(omega_raw)),
+                "omega_effective_norm_rad_s": 0.0 if omega_los is None else float(np.linalg.norm(omega_los)),
+                "los_dt_s": los_dt_s,
+                "los_angle_step_deg": los_angle_step_deg,
                 "lambda_x": 0.0 if lambda_I is None else float(lambda_I[0]),
                 "lambda_y": 0.0 if lambda_I is None else float(lambda_I[1]),
                 "lambda_z": 0.0 if lambda_I is None else float(lambda_I[2]),
@@ -910,9 +1141,19 @@ def main() -> None:
                 "v_cmd_x": float(v_cmd[0]),
                 "v_cmd_y": float(v_cmd[1]),
                 "v_cmd_z": float(v_cmd[2]),
+                "interceptor_accel_x": float(interceptor_accel[0]),
+                "interceptor_accel_y": float(interceptor_accel[1]),
+                "interceptor_accel_z": float(interceptor_accel[2]),
+                "interceptor_accel_norm_mps2": interceptor_accel_norm,
+                "load_factor_g": load_factor_g,
+                "interceptor_accel_fd_norm_mps2": accel_fd_norm,
+                "load_factor_fd_g": load_factor_fd_g,
                 "interceptor_x": float(interceptor_pos[0]),
                 "interceptor_y": float(interceptor_pos[1]),
                 "interceptor_z": float(interceptor_pos[2]),
+                "camera_world_x": float(camera_world_pos[0]),
+                "camera_world_y": float(camera_world_pos[1]),
+                "camera_world_z": float(camera_world_pos[2]),
                 "intruder_x": float(intruder_pos[0]) if args.diagnostic_truth else "",
                 "intruder_y": float(intruder_pos[1]) if args.diagnostic_truth else "",
                 "intruder_z": float(intruder_pos[2]) if args.diagnostic_truth else "",

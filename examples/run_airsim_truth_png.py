@@ -21,6 +21,7 @@ from vision_guidance.truth_png import compute_truth_png, integrate_velocity_comm
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AIRSIM_SETTINGS_PATH = Path.home() / "Documents" / "AirSim" / "settings.json"
 SETTINGS_EXAMPLE_PATH = PROJECT_ROOT / "config" / "airsim_blocks_settings.json"
+GRAVITY_MPS2 = 9.80665
 
 
 def parse_args() -> argparse.Namespace:
@@ -57,6 +58,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-s", type=float, default=2.0, help="Hover settle time after altitude preparation.")
     parser.add_argument("--settle-speed", type=float, default=0.5, help="Maximum speed treated as settled after hover.")
     parser.add_argument("--settle-timeout-s", type=float, default=8.0, help="Maximum extra hover-settle wait.")
+    parser.add_argument(
+        "--intruder-altitude-offset-m",
+        type=float,
+        default=0.0,
+        help="Intruder starts this many meters above the interceptor before interception.",
+    )
+    parser.add_argument("--start-horizontal-range-m", type=float, default=None)
+    parser.add_argument("--start-forward-offset-m", type=float, default=None)
+    parser.add_argument("--start-lateral-offset-m", type=float, default=-20.0)
+    parser.add_argument("--start-interceptor-x-m", type=float, default=0.0)
+    parser.add_argument("--start-interceptor-y-m", type=float, default=0.0)
+    parser.add_argument("--start-geometry-settle-s", type=float, default=0.5)
     parser.add_argument("--list-vehicles", action="store_true", help="Print AirSim vehicle names and exit.")
     parser.add_argument(
         "--settings-path",
@@ -65,6 +78,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--trajectory-dir", default=str(PROJECT_ROOT / "logs"))
     parser.add_argument("--trajectory-prefix", default="")
+    parser.add_argument("--print-every-n", type=int, default=10)
     parser.add_argument("--no-plot", action="store_true", help="Disable matplotlib trajectory output.")
     return parser.parse_args()
 
@@ -140,10 +154,38 @@ def _world_position(kinematics, vehicle_name: str, origins: dict[str, np.ndarray
     return origins.get(vehicle_name, np.zeros(3, dtype=float)) + _vector_xyz(kinematics.position)
 
 
+def _kinematics_timestamp_s(kinematics) -> float | None:
+    for name in ("time_stamp", "timestamp"):
+        value = getattr(kinematics, name, None)
+        if value is None:
+            continue
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            continue
+        if not np.isfinite(number):
+            continue
+        return number * 1.0e-9 if number > 1.0e6 else number
+    return None
+
+
+def _linear_acceleration_mps2(kinematics) -> np.ndarray:
+    acceleration = getattr(kinematics, "linear_acceleration", None)
+    if acceleration is None:
+        return np.zeros(3, dtype=float)
+    return _vector_xyz(acceleration)
+
+
 def _record_sample(
     rows: list[dict[str, float | int | str | bool]],
     experiment_fields: dict[str, float | int | str],
     t: float,
+    wall_t: float,
+    loop_dt: float,
+    wall_fps: float,
+    sim_time_s: float | str,
+    sim_sample_fps: float | str,
+    sim_clock_ratio: float | str,
     interceptor_name: str,
     intruder_name: str,
     interceptor_pos: np.ndarray,
@@ -162,10 +204,21 @@ def _record_sample(
     collision_reason: str,
     interceptor_collision_object: str,
     intruder_collision_object: str,
+    interceptor_accel: np.ndarray,
+    interceptor_accel_norm: float,
+    load_factor_g: float,
+    interceptor_accel_fd_norm: float,
+    load_factor_fd_g: float,
 ) -> None:
     row: dict[str, float | int | str | bool] = {
         **experiment_fields,
         "t": t,
+        "wall_t": wall_t,
+        "loop_dt": loop_dt,
+        "wall_fps": wall_fps,
+        "sim_time_s": sim_time_s,
+        "sim_sample_fps": sim_sample_fps,
+        "sim_clock_ratio": sim_clock_ratio,
         "range": range_m,
         "horizontal_range": float(np.linalg.norm((intruder_pos - interceptor_pos)[:2])),
         "vertical_error": float(intruder_pos[2] - interceptor_pos[2]),
@@ -186,10 +239,25 @@ def _record_sample(
         ("intruder_pos", intruder_pos),
         ("interceptor_vel", interceptor_vel),
         ("intruder_vel", intruder_vel),
+        ("interceptor_accel", interceptor_accel),
     ]:
         row[f"{prefix}_x"] = float(vector[0])
         row[f"{prefix}_y"] = float(vector[1])
         row[f"{prefix}_z"] = float(vector[2])
+    row["interceptor_accel_norm_mps2"] = interceptor_accel_norm
+    row["load_factor_g"] = load_factor_g
+    row["interceptor_accel_fd_norm_mps2"] = interceptor_accel_fd_norm
+    row["load_factor_fd_g"] = load_factor_fd_g
+    row["interceptor_x"] = float(interceptor_pos[0])
+    row["interceptor_y"] = float(interceptor_pos[1])
+    row["interceptor_z"] = float(interceptor_pos[2])
+    row["intruder_x"] = float(intruder_pos[0])
+    row["intruder_y"] = float(intruder_pos[1])
+    row["intruder_z"] = float(intruder_pos[2])
+    row["detected"] = 1
+    row["valid"] = int(guidance_valid)
+    row["guidance_mode"] = "truth_png" if guidance_valid else "invalid"
+    row["terminal_state"] = ""
     row["interceptor"] = interceptor_name
     row["intruder"] = intruder_name
     rows.append(row)
@@ -209,7 +277,10 @@ def _truth_experiment_fields(args, speed_cap: float, intruder_velocity: np.ndarr
         "max_accel": float(args.max_accel),
         "min_speed_ratio": float(args.min_speed_ratio),
         "intercept_altitude_m": float(args.intercept_altitude_m),
-        "intruder_altitude_offset_m": 0.0,
+        "intruder_altitude_offset_m": float(args.intruder_altitude_offset_m),
+        "start_horizontal_range_m": "" if args.start_horizontal_range_m is None else float(args.start_horizontal_range_m),
+        "start_forward_offset_m": "" if args.start_forward_offset_m is None else float(args.start_forward_offset_m),
+        "start_lateral_offset_m": float(args.start_lateral_offset_m),
         "rate_hz": float(args.rate_hz),
         "duration_s": float(args.duration_s),
         "altitude_correction": int(bool(args.altitude_correction)),
@@ -401,11 +472,12 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
     if not args.climb_to_altitude:
         return
 
-    target_z = -abs(args.intercept_altitude_m)
-    print(
-        f"Climbing vehicles to intercept altitude: {args.intercept_altitude_m:.1f} m "
-        f"(AirSim NED Z={target_z:.1f})"
-    )
+    target_z = {
+        args.interceptor: -abs(float(args.intercept_altitude_m)),
+        args.intruder: -(abs(float(args.intercept_altitude_m)) + float(args.intruder_altitude_offset_m)),
+    }
+    target_text = ", ".join(f"{vehicle}: NED_Z={target_z[vehicle]:.1f}" for vehicle in vehicles)
+    print(f"Climbing vehicles to intercept start altitudes: {target_text}")
     for future in [
         client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=vehicle)
         for vehicle in vehicles
@@ -413,7 +485,7 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
         future.join()
     for future in [
         client.moveToZAsync(
-            target_z,
+            target_z[vehicle],
             velocity=args.climb_speed,
             timeout_sec=args.climb_timeout_s,
             vehicle_name=vehicle,
@@ -442,6 +514,86 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
 def _intruder_velocity(args) -> np.ndarray:
     vy = args.intruder_speed if args.intruder_vy is None else args.intruder_vy
     return np.array([args.intruder_vx, vy, args.intruder_vz], dtype=float)
+
+
+def _yaw_deg_from_velocity(velocity: np.ndarray) -> float:
+    horizontal_speed = float(np.hypot(velocity[0], velocity[1]))
+    if horizontal_speed <= 1.0e-6:
+        return 0.0
+    return float(np.rad2deg(np.arctan2(velocity[1], velocity[0])))
+
+
+def _start_geometry_enabled(args) -> bool:
+    return args.start_horizontal_range_m is not None or args.start_forward_offset_m is not None
+
+
+def _local_start_z(vehicle: str, args) -> float:
+    altitude = abs(float(args.intercept_altitude_m))
+    if vehicle == args.intruder:
+        altitude += float(args.intruder_altitude_offset_m)
+    return -altitude
+
+
+def _start_geometry_offsets(args) -> tuple[float, float, float]:
+    lateral = float(args.start_lateral_offset_m)
+    if args.start_horizontal_range_m is not None and args.start_forward_offset_m is not None:
+        raise SystemExit("Use either --start-horizontal-range-m or --start-forward-offset-m, not both.")
+    if args.start_horizontal_range_m is not None:
+        horizontal_range = float(args.start_horizontal_range_m)
+        if horizontal_range <= 0.0:
+            raise SystemExit("--start-horizontal-range-m must be positive")
+        if abs(lateral) > horizontal_range:
+            raise SystemExit("--start-lateral-offset-m magnitude cannot exceed --start-horizontal-range-m")
+        forward = float(np.sqrt(max(0.0, horizontal_range * horizontal_range - lateral * lateral)))
+    elif args.start_forward_offset_m is not None:
+        forward = float(args.start_forward_offset_m)
+        horizontal_range = float(np.hypot(forward, lateral))
+    else:
+        forward = 0.0
+        horizontal_range = 0.0
+    return forward, lateral, horizontal_range
+
+
+def _apply_start_geometry(client, args, origins: dict[str, np.ndarray]) -> None:
+    if not _start_geometry_enabled(args):
+        return
+
+    forward, lateral, horizontal_range = _start_geometry_offsets(args)
+    interceptor_local = np.array(
+        [float(args.start_interceptor_x_m), float(args.start_interceptor_y_m), _local_start_z(args.interceptor, args)],
+        dtype=float,
+    )
+    interceptor_world = origins.get(args.interceptor, np.zeros(3, dtype=float)) + interceptor_local
+    intruder_world = interceptor_world + np.array([forward, lateral, -float(args.intruder_altitude_offset_m)], dtype=float)
+    intruder_local = intruder_world - origins.get(args.intruder, np.zeros(3, dtype=float))
+
+    for vehicle, local_position in [(args.interceptor, interceptor_local), (args.intruder, intruder_local)]:
+        client.moveToPositionAsync(
+            float(local_position[0]),
+            float(local_position[1]),
+            float(local_position[2]),
+            velocity=max(0.5, float(args.climb_speed)),
+            timeout_sec=max(1.0, float(args.climb_timeout_s)),
+            vehicle_name=vehicle,
+        ).join()
+        client.hoverAsync(vehicle_name=vehicle).join()
+    intruder_yaw_deg = _yaw_deg_from_velocity(_intruder_velocity(args))
+    client.rotateToYawAsync(
+        intruder_yaw_deg,
+        timeout_sec=max(1.0, float(args.climb_timeout_s)),
+        margin=3.0,
+        vehicle_name=args.intruder,
+    ).join()
+
+    if args.start_geometry_settle_s > 0.0:
+        time.sleep(float(args.start_geometry_settle_s))
+    print(
+        "Applied truth start geometry: "
+        f"horizontal_range={horizontal_range:.2f}m, forward={forward:.2f}m, lateral={lateral:.2f}m, "
+        f"altitude_offset={float(args.intruder_altitude_offset_m):.2f}m, "
+        f"interceptor_local={np.array2string(interceptor_local, precision=2)}, "
+        f"intruder_local={np.array2string(intruder_local, precision=2)}"
+    )
 
 
 def _horizontal_direction(vector: np.ndarray, fallback: np.ndarray) -> np.ndarray:
@@ -539,6 +691,7 @@ def main() -> None:
             ) from exc
 
     _prepare_intercept_altitude(client, [args.interceptor, args.intruder], args)
+    _apply_start_geometry(client, args, vehicle_origins)
 
     initial_interceptor_kin = _vehicle_truth_kinematics(client, args.interceptor)
     initial_intruder_kin = _vehicle_truth_kinematics(client, args.intruder)
@@ -564,6 +717,11 @@ def main() -> None:
     csv_path, plot_path = _output_paths(args)
     rows: list[dict[str, float | int | str | bool]] = []
     start = time.monotonic()
+    last_loop_start = start
+    last_wall_t: float | None = None
+    last_kin_t: float | None = None
+    last_interceptor_vel: np.ndarray | None = None
+    sim_start_t: float | None = None
     frame = 0
     hit = False
     last_range = float("inf")
@@ -575,9 +733,11 @@ def main() -> None:
     )
     print("frame,t,range,horizontal_range,vertical_error,closing_speed,valid,reject_reason,a_norm,v_cmd_norm,hit")
 
-    while time.monotonic() - start < args.duration_s:
-        now = time.monotonic()
-        sim_t = now - start
+    while True:
+        loop_start = time.monotonic()
+        wall_t = loop_start - start
+        loop_dt = dt if frame == 0 else max(1.0e-6, loop_start - last_loop_start)
+        last_loop_start = loop_start
 
         if args.enable_motion:
             client.moveByVelocityAsync(
@@ -588,12 +748,45 @@ def main() -> None:
                 vehicle_name=args.intruder,
             )
 
+        interceptor_state = client.getMultirotorState(vehicle_name=args.interceptor)
+        kin_t_abs = _kinematics_timestamp_s(interceptor_state) or _kinematics_timestamp_s(interceptor_state.kinematics_estimated)
         interceptor_kin = _vehicle_truth_kinematics(client, args.interceptor)
+        if kin_t_abs is not None and sim_start_t is None:
+            sim_start_t = kin_t_abs
+        sim_t = (
+            kin_t_abs - sim_start_t
+            if kin_t_abs is not None and sim_start_t is not None
+            else wall_t
+        )
+        if sim_t >= args.duration_s:
+            break
         intruder_kin = _vehicle_truth_kinematics(client, args.intruder)
         interceptor_pos = _world_position(interceptor_kin, args.interceptor, vehicle_origins)
         intruder_pos = _world_position(intruder_kin, args.intruder, vehicle_origins)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
         intruder_vel = _vector_xyz(intruder_kin.linear_velocity)
+        interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
+        interceptor_accel_norm = float(np.linalg.norm(interceptor_accel))
+        load_factor_g = interceptor_accel_norm / GRAVITY_MPS2
+        kin_t = kin_t_abs or _kinematics_timestamp_s(interceptor_kin)
+        wall_fps = 0.0 if last_wall_t is None else 1.0 / max(1.0e-6, loop_start - last_wall_t)
+        sim_time_s = "" if kin_t is None or sim_start_t is None else kin_t - sim_start_t
+        sim_sample_fps: float | str = ""
+        sim_clock_ratio: float | str = ""
+        accel_fd_norm = 0.0
+        load_factor_fd_g = 0.0
+        if kin_t is not None and last_kin_t is not None:
+            kin_dt = max(1.0e-6, kin_t - last_kin_t)
+            sim_sample_fps = 1.0 / kin_dt
+            sim_clock_ratio = kin_dt / max(1.0e-6, loop_start - float(last_wall_t or loop_start))
+            if last_interceptor_vel is not None:
+                accel_fd = (interceptor_vel - last_interceptor_vel) / kin_dt
+                accel_fd_norm = float(np.linalg.norm(accel_fd))
+                load_factor_fd_g = accel_fd_norm / GRAVITY_MPS2
+        last_wall_t = loop_start
+        if kin_t is not None:
+            last_kin_t = kin_t
+        last_interceptor_vel = np.array(interceptor_vel, dtype=float)
 
         relative_position = intruder_pos - interceptor_pos
         result = compute_truth_png(
@@ -626,6 +819,12 @@ def main() -> None:
             rows,
             experiment_fields,
             sim_t,
+            wall_t,
+            loop_dt,
+            wall_fps,
+            sim_time_s,
+            sim_sample_fps,
+            sim_clock_ratio,
             args.interceptor,
             args.intruder,
             interceptor_pos,
@@ -644,8 +843,14 @@ def main() -> None:
             pair_collision.reason,
             pair_collision.interceptor_object_name,
             pair_collision.intruder_object_name,
+            interceptor_accel,
+            interceptor_accel_norm,
+            load_factor_g,
+            accel_fd_norm,
+            load_factor_fd_g,
         )
-        _print_status(frame, sim_t, result, relative_position, accel, v_cmd, hit)
+        if args.print_every_n > 0 and (frame % args.print_every_n == 0 or hit):
+            _print_status(frame, sim_t, result, relative_position, accel, v_cmd, hit)
 
         if hit:
             print(
