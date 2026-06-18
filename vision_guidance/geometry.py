@@ -51,6 +51,19 @@ def rotation_z(theta_rad: float) -> np.ndarray:
     )
 
 
+def rotation_x(theta_rad: float) -> np.ndarray:
+    c = math.cos(theta_rad)
+    s = math.sin(theta_rad)
+    return np.array(
+        [
+            [1.0, 0.0, 0.0],
+            [0.0, c, -s],
+            [0.0, s, c],
+        ],
+        dtype=float,
+    )
+
+
 def camera_to_body_mount(pitch_up_deg: float = 45.0) -> np.ndarray:
     return rotation_y(math.radians(pitch_up_deg))
 
@@ -81,6 +94,21 @@ def airsim_gimbal_camera_to_body(yaw_rad: float, pitch_rad: float) -> np.ndarray
     """
 
     return rotation_z(yaw_rad) @ rotation_y(-pitch_rad) @ airsim_camera_zero_to_body()
+
+
+def airsim_fixed_camera_to_body(
+    yaw_rad: float = 0.0,
+    pitch_rad: float = 0.0,
+    roll_rad: float = 0.0,
+) -> np.ndarray:
+    """Camera-to-body rotation for a fixed AirSim camera mount.
+
+    The pitch convention matches :func:`airsim_gimbal_camera_to_body`: positive
+    pitch points the camera down in body NED coordinates, so a camera pitched
+    upward by 15 degrees should use ``pitch_rad=-deg2rad(15)``.
+    """
+
+    return rotation_z(yaw_rad) @ rotation_y(-pitch_rad) @ rotation_x(roll_rad) @ airsim_camera_zero_to_body()
 
 
 def los_camera_to_inertial(los_C: np.ndarray, R_BC: np.ndarray, R_IB: np.ndarray) -> np.ndarray:

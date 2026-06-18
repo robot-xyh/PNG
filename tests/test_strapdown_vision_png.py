@@ -7,6 +7,8 @@ import numpy as np
 
 from examples.run_airsim_strapdown_vision_png import (
     _append_yaw_rate_sample,
+    _apply_bbox_noise,
+    _fixed_camera_pose,
     _image_kf_takeover_allowed,
     _kf_yaw_rate_command,
     _output_paths_strapdown,
@@ -20,7 +22,7 @@ from examples.run_airsim_strapdown_vision_png import (
 )
 from vision_guidance.terminal_image_kf import TerminalImageEstimate
 from vision_guidance.terminal_extrapolation import BLIND_PUSH, TERMINAL_VISUAL
-from vision_guidance.types import CameraIntrinsics
+from vision_guidance.types import CameraIntrinsics, FrameDetection
 
 
 class StrapdownVisionPNGTest(unittest.TestCase):
@@ -166,8 +168,86 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         args = SimpleNamespace(terminal_bbox_area_ratio=0.25)
 
         self.assertEqual(_terminal_trigger_strapdown("bbox_clipped", True, 1.0, intrinsics, args), "bbox_clipped")
+        self.assertEqual(_terminal_trigger_strapdown("bbox_top_clipped", True, 1.0, intrinsics, args), "bbox_top_clipped")
         self.assertEqual(_terminal_trigger_strapdown("", True, 90000.0, intrinsics, args), "bbox_area_large")
         self.assertEqual(_terminal_trigger_strapdown("", True, 1000.0, intrinsics, args), "")
+
+    def test_bbox_noise_disabled_preserves_detection(self):
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+        detection = FrameDetection(1, 1.0, (100.0, 120.0, 180.0, 220.0), 1)
+        args = SimpleNamespace(bbox_noise=False, bbox_center_noise_px=3.0, bbox_area_noise_ratio=0.08)
+
+        noisy, info = _apply_bbox_noise(detection, intrinsics, np.random.default_rng(7), args)
+
+        self.assertEqual(noisy.bbox_xyxy, detection.bbox_xyxy)
+        self.assertEqual(info["raw_bbox"], detection.bbox_xyxy)
+        self.assertEqual(info["noisy_bbox"], detection.bbox_xyxy)
+        self.assertAlmostEqual(info["area_scale"], 1.0)
+
+    def test_bbox_noise_is_reproducible_with_seed(self):
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+        detection = FrameDetection(1, 1.0, (100.0, 120.0, 180.0, 220.0), 1)
+        args = SimpleNamespace(bbox_noise=True, bbox_center_noise_px=3.0, bbox_area_noise_ratio=0.08)
+
+        noisy_a, info_a = _apply_bbox_noise(detection, intrinsics, np.random.default_rng(123), args)
+        noisy_b, info_b = _apply_bbox_noise(detection, intrinsics, np.random.default_rng(123), args)
+
+        self.assertEqual(noisy_a.bbox_xyxy, noisy_b.bbox_xyxy)
+        self.assertAlmostEqual(info_a["dx"], info_b["dx"])
+        self.assertAlmostEqual(info_a["dy"], info_b["dy"])
+        self.assertAlmostEqual(info_a["area_scale"], info_b["area_scale"])
+
+    def test_bbox_noise_preserves_aspect_ratio_when_unclipped(self):
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+        detection = FrameDetection(1, 1.0, (200.0, 180.0, 300.0, 230.0), 1)
+        args = SimpleNamespace(bbox_noise=True, bbox_center_noise_px=0.0, bbox_area_noise_ratio=0.30)
+
+        noisy, info = _apply_bbox_noise(detection, intrinsics, np.random.default_rng(42), args)
+
+        self.assertAlmostEqual(noisy.width / noisy.height, detection.width / detection.height)
+        self.assertAlmostEqual(noisy.area / detection.area, info["area_scale"])
+
+    def test_bbox_noise_clamps_to_image_bounds(self):
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+        detection = FrameDetection(1, 1.0, (0.5, 0.5, 20.0, 30.0), 1)
+        args = SimpleNamespace(bbox_noise=True, bbox_center_noise_px=20.0, bbox_area_noise_ratio=1.0)
+
+        noisy, _ = _apply_bbox_noise(detection, intrinsics, np.random.default_rng(1), args)
+        x1, y1, x2, y2 = noisy.bbox_xyxy
+
+        self.assertGreaterEqual(x1, 0.0)
+        self.assertGreaterEqual(y1, 0.0)
+        self.assertLessEqual(x2, intrinsics.width)
+        self.assertLessEqual(y2, intrinsics.height)
+        self.assertGreater(x2, x1)
+        self.assertGreater(y2, y1)
+
+    def test_fixed_camera_pose_uses_positive_airsim_pitch_for_upward_mount(self):
+        class FakeAirSim:
+            @staticmethod
+            def Vector3r(x, y, z):
+                return (x, y, z)
+
+            @staticmethod
+            def to_quaternion(pitch, roll, yaw):
+                return (pitch, roll, yaw)
+
+            @staticmethod
+            def Pose(position, orientation):
+                return position, orientation
+
+        args = SimpleNamespace(
+            camera_x=0.0,
+            camera_y=0.0,
+            camera_z=-0.5,
+            camera_pitch_deg=-15.0,
+            camera_roll_deg=0.0,
+            camera_yaw_deg=0.0,
+        )
+
+        _, orientation = _fixed_camera_pose(FakeAirSim, args)
+
+        self.assertAlmostEqual(orientation[0], np.deg2rad(15.0))
 
     def test_default_output_prefix_is_strapdown(self):
         args = SimpleNamespace(trajectory_prefix="", trajectory_dir="/tmp")

@@ -21,7 +21,14 @@ class TTCTest(unittest.TestCase):
         det = FrameDetection(1, 0.1, (0, 100, 20, 120), 1)
         state = ttc.update(det, 640, 480)
         self.assertFalse(state.valid)
-        self.assertEqual(state.reject_reason, "bbox_clipped")
+        self.assertEqual(state.reject_reason, "bbox_left_clipped")
+
+    def test_ttc_reports_top_clipped_bbox(self):
+        ttc = ScaleExpansionTTC()
+        det = FrameDetection(1, 0.1, (100, 0, 140, 40), 1)
+        state = ttc.update(det, 640, 480)
+        self.assertFalse(state.valid)
+        self.assertEqual(state.reject_reason, "bbox_top_clipped")
 
 
 if __name__ == "__main__":

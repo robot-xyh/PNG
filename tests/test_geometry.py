@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from vision_guidance.geometry import (
+    airsim_fixed_camera_to_body,
     airsim_camera_zero_to_body,
     airsim_gimbal_camera_to_body,
     camera_ray_from_pixel,
@@ -39,6 +40,12 @@ class GeometryTest(unittest.TestCase):
         R_BC = airsim_gimbal_camera_to_body(0.0, np.deg2rad(20.0))
         forward_B = R_BC @ np.array([0.0, 0.0, 1.0])
         self.assertGreater(forward_B[2], 0.0)
+        self.assertAlmostEqual(np.linalg.norm(forward_B), 1.0)
+
+    def test_airsim_fixed_negative_pitch_points_up(self):
+        R_BC = airsim_fixed_camera_to_body(pitch_rad=np.deg2rad(-15.0))
+        forward_B = R_BC @ np.array([0.0, 0.0, 1.0])
+        self.assertLess(forward_B[2], 0.0)
         self.assertAlmostEqual(np.linalg.norm(forward_B), 1.0)
 
 

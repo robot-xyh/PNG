@@ -229,8 +229,8 @@ class TerminalExtrapolator:
         return self.samples[-1:] if self.samples else []
 
     def _cutoff_reason(self, detected: bool, area_ratio: float, reject_reason: str, gimbal_at_limit: bool) -> tuple[str, str]:
-        if reject_reason == "bbox_clipped":
-            return "bbox_clipped", "bbox_clipped"
+        if reject_reason.startswith("bbox_") and reject_reason.endswith("_clipped"):
+            return reject_reason, reject_reason
         if detected and area_ratio >= max(0.0, self.config.cutoff_area_ratio):
             return "bbox_area_large", "bbox_area_large"
         if detected and gimbal_at_limit and area_ratio >= max(0.0, self.config.terminal_gimbal_limit_area_ratio):

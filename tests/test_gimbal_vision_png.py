@@ -95,13 +95,13 @@ class GimbalVisionPNGTest(unittest.TestCase):
         enabled, scale, reason = _gimbal_update_profile(
             detected=True,
             terminal_state=TERMINAL_VISUAL,
-            terminal_reason="bbox_clipped",
+            terminal_reason="bbox_top_clipped",
             using_blind_push=False,
             args=args,
         )
         self.assertFalse(enabled)
         self.assertEqual(scale, 0.0)
-        self.assertEqual(reason, "bbox_clipped_hold")
+        self.assertEqual(reason, "bbox_top_clipped_hold")
 
         enabled, scale, reason = _gimbal_update_profile(
             detected=True,
@@ -276,6 +276,7 @@ class GimbalVisionPNGTest(unittest.TestCase):
         )
 
         self.assertEqual(_terminal_trigger("bbox_clipped", True, 1.0, 0.0, 0.0, intrinsics, args), "bbox_clipped")
+        self.assertEqual(_terminal_trigger("bbox_top_clipped", True, 1.0, 0.0, 0.0, intrinsics, args), "bbox_top_clipped")
         self.assertEqual(_terminal_trigger("", True, 90000.0, 0.0, 0.0, intrinsics, args), "bbox_area_large")
         self.assertEqual(
             _terminal_trigger("", True, 40000.0, np.deg2rad(78.0), 0.0, intrinsics, args),

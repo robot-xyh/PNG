@@ -47,14 +47,17 @@ class FrameDetection:
     def area(self) -> float:
         return self.width * self.height
 
-    def is_clipped(self, image_width: int, image_height: int, margin_px: float = 1.0) -> bool:
+    def clip_flags(self, image_width: int, image_height: int, margin_px: float = 1.0) -> dict[str, bool]:
         x1, y1, x2, y2 = self.bbox_xyxy
-        return (
-            x1 <= margin_px
-            or y1 <= margin_px
-            or x2 >= image_width - margin_px
-            or y2 >= image_height - margin_px
-        )
+        return {
+            "left": x1 <= margin_px,
+            "top": y1 <= margin_px,
+            "right": x2 >= image_width - margin_px,
+            "bottom": y2 >= image_height - margin_px,
+        }
+
+    def is_clipped(self, image_width: int, image_height: int, margin_px: float = 1.0) -> bool:
+        return any(self.clip_flags(image_width, image_height, margin_px).values())
 
 
 @dataclass(frozen=True)

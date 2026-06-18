@@ -36,8 +36,9 @@ class ScaleExpansionTTC:
         ts = detection.exposure_ts
         if area < self.config.min_area:
             return self._state(ts, None, 0.0, 0.0, False, "bbox_area_too_small")
-        if detection.is_clipped(image_width, image_height):
-            return self._state(ts, None, 0.0, 0.0, False, "bbox_clipped")
+        clip_reason = _bbox_clip_reason(detection, image_width, image_height)
+        if clip_reason:
+            return self._state(ts, None, 0.0, 0.0, False, clip_reason)
         if self.prev_raw_area is not None:
             ratio = max(area, self.prev_raw_area) / max(1e-9, min(area, self.prev_raw_area))
             if ratio > self.config.max_area_jump_ratio:
@@ -92,3 +93,11 @@ class ScaleExpansionTTC:
             valid=valid,
             reject_reason=reason,
         )
+
+
+def _bbox_clip_reason(detection: FrameDetection, image_width: int, image_height: int) -> str:
+    flags = detection.clip_flags(image_width, image_height)
+    for name in ("top", "bottom", "left", "right"):
+        if flags.get(name, False):
+            return f"bbox_{name}_clipped"
+    return ""

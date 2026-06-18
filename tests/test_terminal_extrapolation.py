@@ -96,6 +96,52 @@ class TerminalExtrapolationTest(unittest.TestCase):
         self.assertLess(result.v_cmd[2], 0.0)
         self.assertLess(result.v_cmd[0], 100.0)
 
+    def test_directional_clipped_bbox_enters_blind_push(self):
+        extrapolator = TerminalExtrapolator(
+            TerminalConfig(
+                terminal_enter_area_ratio=0.10,
+                min_tracking_time_s=0.0,
+                max_measurement_age_s=0.20,
+                command_average_window_s=0.10,
+                pitch_up_bias_mps=0.0,
+            )
+        )
+        extrapolator.update(
+            timestamp=0.0,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        result = extrapolator.update(
+            timestamp=0.05,
+            detected=True,
+            measurement_valid=False,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="bbox_top_clipped",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        self.assertEqual(result.state, BLIND_PUSH)
+        self.assertTrue(result.using_blind_push)
+        self.assertEqual(result.terminal_cutoff_source, "bbox_top_clipped")
+
     def test_soft_image_kf_measurement_arms_terminal_visual(self):
         extrapolator = TerminalExtrapolator(
             TerminalConfig(
