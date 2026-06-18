@@ -7,6 +7,7 @@ from vision_guidance.airsim_adapter import (
     airsim_orientation_to_R_IB,
     choose_detection,
     detection_to_frame_detection,
+    get_vehicle_object_collision,
     get_vehicle_pair_collision,
     infer_intrinsics_from_fov,
 )
@@ -135,6 +136,22 @@ class AirSimAdapterTest(unittest.TestCase):
         )
 
         self.assertTrue(result.collided)
+
+    def test_vehicle_object_collision_matches_actor_pattern(self):
+        client = CollisionClient({"Interceptor": make_collision(True, "IntruderActor_2")})
+
+        result = get_vehicle_object_collision(client, "Interceptor", ("IntruderActor*",))
+
+        self.assertTrue(result.collided)
+        self.assertEqual(result.reason, "interceptor_object_pattern_match")
+        self.assertEqual(result.interceptor_object_name, "IntruderActor_2")
+
+    def test_vehicle_object_collision_rejects_unrelated_object(self):
+        client = CollisionClient({"Interceptor": make_collision(True, "Wall")})
+
+        result = get_vehicle_object_collision(client, "Interceptor", ("IntruderActor*",))
+
+        self.assertFalse(result.collided)
 
 
 if __name__ == "__main__":

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import atexit
 import csv
 import json
 import os
@@ -21,6 +22,7 @@ from vision_guidance.airsim_adapter import (  # noqa: E402
     choose_detection,
     configure_detection_filter,
     detection_to_frame_detection,
+    get_vehicle_object_collision,
     get_vehicle_pair_collision,
     get_detections,
     infer_intrinsics_from_fov,
@@ -31,6 +33,7 @@ from vision_guidance.geometry import (  # noqa: E402
     camera_ray_from_pixel,
     los_camera_to_inertial,
     normalize,
+    project_perpendicular,
 )
 from vision_guidance.los_filter import LOSKalmanFilter6D  # noqa: E402
 from vision_guidance.png_eval import TTCGainSchedule  # noqa: E402
@@ -63,6 +66,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AirSim gimbal-camera pure-vision PNG validation.")
     parser.add_argument("--interceptor", default="Interceptor")
     parser.add_argument("--intruder", default="Intruder")
+    parser.add_argument(
+        "--intruder-actor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use a spawned scene Actor as the intruder target instead of a second AirSim vehicle.",
+    )
+    parser.add_argument("--intruder-actor-name", default="IntruderActor")
+    parser.add_argument("--intruder-actor-asset", default="1M_Cube_Chamfer")
+    parser.add_argument("--intruder-actor-scale", type=float, default=2.0)
+    parser.add_argument("--intruder-actor-physics", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--intruder-actor-blueprint", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--intruder-actor-respawn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collision-interceptor-pattern", action="append", default=None)
     parser.add_argument("--collision-intruder-pattern", action="append", default=None)
     parser.add_argument("--camera", default="0")
@@ -85,6 +100,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-command-duration-s", type=float, default=1.00)
     parser.add_argument("--enable-motion", action="store_true", help="Apply AirSim velocity commands.")
     parser.add_argument("--reset", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--px4-interceptor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Treat the interceptor as PX4 SITL and use PX4-friendly prep/state estimates.",
+    )
+    parser.add_argument(
+        "--px4-intruder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Treat the intruder as PX4 SITL for dual-SITL tests.",
+    )
+    parser.add_argument(
+        "--px4-max-vertical-speed",
+        type=float,
+        default=2.0,
+        help="PX4 SITL vertical speed clamp for commanded velocities.",
+    )
+    parser.add_argument(
+        "--px4-command-join",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Join PX4 interceptor velocity futures. Disable for high-rate Offboard setpoint streaming.",
+    )
+    parser.add_argument(
+        "--px4-command-mode",
+        choices=("velocity_simple", "velocity_yaw_rate"),
+        default="velocity_simple",
+        help="PX4 SITL velocity command mapping.",
+    )
     parser.add_argument("--climb-to-altitude", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--intercept-altitude-m", type=float, default=50.0)
     parser.add_argument(
@@ -162,6 +207,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ttc-min-area", type=float, default=0.0)
     parser.add_argument("--ttc-max-s", type=float, default=120.0)
+    parser.add_argument(
+        "--bbox-noise",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Inject repeatable synthetic noise into AirSim detection bbox before LOS/TTC processing.",
+    )
+    parser.add_argument("--bbox-center-noise-px", type=float, default=3.0)
+    parser.add_argument("--bbox-area-noise-ratio", type=float, default=0.08)
+    parser.add_argument("--bbox-noise-seed", type=int, default=20260617)
+    parser.add_argument(
+        "--los-filter",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Use the 6D LOS Kalman filter. Disable it for noiseless AirSim detection/pose analysis.",
+    )
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
@@ -231,8 +291,232 @@ def _truth_kinematics(client, vehicle_name: str):
     return client.simGetGroundTruthKinematics(vehicle_name=vehicle_name)
 
 
+def _is_px4_vehicle(vehicle_name: str, args) -> bool:
+    if getattr(args, "intruder_actor", False) and vehicle_name == getattr(args, "intruder", ""):
+        return False
+    return (getattr(args, "px4_interceptor", False) and vehicle_name == args.interceptor) or (
+        getattr(args, "px4_intruder", False) and vehicle_name == args.intruder
+    )
+
+
+def _guidance_kinematics(client, vehicle_name: str, args):
+    if _is_px4_vehicle(vehicle_name, args):
+        return client.getMultirotorState(vehicle_name=vehicle_name).kinematics_estimated
+    return _truth_kinematics(client, vehicle_name)
+
+
 def _world_position(kinematics, vehicle_name: str, origins: dict[str, np.ndarray]) -> np.ndarray:
     return origins.get(vehicle_name, np.zeros(3, dtype=float)) + _vector_xyz(kinematics.position)
+
+
+def _actor_name(args) -> str:
+    return str(getattr(args, "intruder_actor_name", "") or args.intruder)
+
+
+def _actor_pose(airsim_module, position: np.ndarray, yaw_deg: float = 0.0):
+    return airsim_module.Pose(
+        airsim_module.Vector3r(float(position[0]), float(position[1]), float(position[2])),
+        airsim_module.to_quaternion(0.0, 0.0, np.deg2rad(float(yaw_deg))),
+    )
+
+
+def _actor_position_from_pose(pose) -> np.ndarray:
+    return _vector_xyz(pose.position)
+
+
+def _intruder_truth_position(client, args, origins: dict[str, np.ndarray]) -> np.ndarray:
+    if getattr(args, "intruder_actor", False):
+        return _actor_position_from_pose(client.simGetObjectPose(_actor_name(args)))
+    intruder_kin = _guidance_kinematics(client, args.intruder, args)
+    return _world_position(intruder_kin, args.intruder, origins)
+
+
+def _spawn_or_move_intruder_actor(client, airsim_module, args, world_position: np.ndarray, yaw_deg: float) -> None:
+    object_name = _actor_name(args)
+    pose = _actor_pose(airsim_module, world_position, yaw_deg)
+    if args.intruder_actor_respawn:
+        try:
+            client.simDestroyObject(object_name)
+        except Exception:
+            pass
+    else:
+        try:
+            scene_objects = client.simListSceneObjects(f"{object_name}.*")
+        except Exception:
+            scene_objects = []
+        if object_name in scene_objects:
+            client.simSetObjectPose(object_name, pose, teleport=True)
+            return
+    spawned = False
+    try:
+        scale = airsim_module.Vector3r(
+            float(args.intruder_actor_scale),
+            float(args.intruder_actor_scale),
+            float(args.intruder_actor_scale),
+        )
+        spawned = bool(
+            client.simSpawnObject(
+                object_name,
+                args.intruder_actor_asset,
+                pose,
+                scale,
+                bool(args.intruder_actor_physics),
+                bool(args.intruder_actor_blueprint),
+            )
+        )
+    except Exception as exc:
+        print(f"intruder_actor_spawn_warning={exc}; trying simSetObjectPose on existing object")
+    if not spawned:
+        try:
+            client.simSetObjectPose(object_name, pose, teleport=True)
+        except Exception as exc:
+            raise SystemExit(
+                f"Failed to spawn or move intruder actor '{object_name}' with asset "
+                f"'{args.intruder_actor_asset}': {exc}"
+            ) from exc
+
+
+def _move_intruder_actor(client, airsim_module, args, world_position: np.ndarray, yaw_deg: float) -> None:
+    client.simSetObjectPose(_actor_name(args), _actor_pose(airsim_module, world_position, yaw_deg), teleport=True)
+
+
+def _actor_collision_patterns(args) -> tuple[str, ...]:
+    patterns = list(args.collision_intruder_pattern or [])
+    object_name = _actor_name(args)
+    asset = str(args.intruder_actor_asset or "")
+    patterns.extend([object_name, f"{object_name}*", asset, f"{asset}*"])
+    return tuple(pattern for pattern in patterns if pattern)
+
+
+def _configure_actor_detection_aliases(client, airsim_module, config: AirSimDetectionConfig, args) -> None:
+    if not args.intruder_actor:
+        return
+    image_type = getattr(airsim_module.ImageType, config.image_type_name)
+    aliases = {
+        str(args.mesh or ""),
+        _actor_name(args),
+    }
+    for alias in sorted(pattern for pattern in aliases if pattern):
+        try:
+            client.simAddDetectionFilterMeshName(
+                config.camera_name,
+                image_type,
+                alias,
+                vehicle_name=config.vehicle_name,
+            )
+        except Exception as exc:
+            print(f"actor_detection_alias_warning alias={alias}: {exc}")
+
+
+def _px4_local_target_z(vehicle: str, world_target_z: float, origins: dict[str, np.ndarray]) -> float:
+    return float(world_target_z - origins.get(vehicle, np.zeros(3, dtype=float))[2])
+
+
+def _px4_limited_velocity(v_cmd: np.ndarray, args) -> np.ndarray:
+    command = np.array(v_cmd, dtype=float)
+    vertical_limit = max(0.0, float(args.px4_max_vertical_speed))
+    if vertical_limit > 0.0:
+        command[2] = float(np.clip(command[2], -vertical_limit, vertical_limit))
+    return command
+
+
+def _ensure_px4_api_control(client, args, vehicle_name: str) -> bool:
+    if not _is_px4_vehicle(vehicle_name, args):
+        return True
+    try:
+        if not client.isApiControlEnabled(vehicle_name=vehicle_name):
+            client.enableApiControl(True, vehicle_name=vehicle_name)
+        armed_key = f"_px4_armed_once_{vehicle_name}"
+        if not getattr(args, armed_key, False):
+            client.armDisarm(True, vehicle_name=vehicle_name)
+            setattr(args, armed_key, True)
+        return True
+    except Exception as exc:
+        print(f"px4_api_control_warning vehicle={vehicle_name}: {exc}")
+        return False
+
+
+def _command_vehicle_velocity(
+    client,
+    airsim_module,
+    vehicle_name: str,
+    velocity: np.ndarray,
+    yaw_rate_deg_s: float,
+    command_duration: float,
+    args,
+):
+    command = _px4_limited_velocity(velocity, args) if _is_px4_vehicle(vehicle_name, args) else np.asarray(velocity, dtype=float)
+    if _is_px4_vehicle(vehicle_name, args):
+        _ensure_px4_api_control(client, args, vehicle_name)
+        if args.px4_command_mode == "velocity_simple":
+            return client.moveByVelocityAsync(
+                float(command[0]),
+                float(command[1]),
+                float(command[2]),
+                duration=command_duration,
+                vehicle_name=vehicle_name,
+            )
+    return client.moveByVelocityAsync(
+        float(command[0]),
+        float(command[1]),
+        float(command[2]),
+        duration=command_duration,
+        drivetrain=airsim_module.DrivetrainType.MaxDegreeOfFreedom,
+        yaw_mode=airsim_module.YawMode(is_rate=True, yaw_or_rate=yaw_rate_deg_s),
+        vehicle_name=vehicle_name,
+    )
+
+
+def _command_interceptor_velocity(client, airsim_module, v_cmd: np.ndarray, command_yaw_deg: float, command_duration: float, args):
+    yaw_rate_deg_s = 0.0
+    if args.yaw_control and not _is_px4_vehicle(args.interceptor, args):
+        drivetrain, yaw_mode = _air_sim_yaw_mode(airsim_module, v_cmd, args)
+        future = client.moveByVelocityAsync(
+            float(v_cmd[0]),
+            float(v_cmd[1]),
+            float(v_cmd[2]),
+            duration=command_duration,
+            drivetrain=drivetrain,
+            yaw_mode=yaw_mode,
+            vehicle_name=args.interceptor,
+        )
+    else:
+        future = _command_vehicle_velocity(client, airsim_module, args.interceptor, v_cmd, yaw_rate_deg_s, command_duration, args)
+    if args.px4_interceptor and args.px4_command_join:
+        future.join()
+    return future
+
+
+def _px4_keepalive(client, airsim_module, vehicles: Sequence[str], args, duration_s: float = 1.0) -> None:
+    px4_vehicles = [vehicle for vehicle in vehicles if _is_px4_vehicle(vehicle, args)]
+    if not px4_vehicles:
+        return
+    command_dt = 0.20
+    deadline = time.monotonic() + max(command_dt, float(duration_s))
+    while time.monotonic() < deadline:
+        for vehicle in px4_vehicles:
+            _command_vehicle_velocity(client, airsim_module, vehicle, np.zeros(3, dtype=float), 0.0, command_dt, args)
+        time.sleep(command_dt)
+
+
+def _register_px4_shutdown_stop(client, args) -> None:
+    if not (getattr(args, "px4_interceptor", False) or getattr(args, "px4_intruder", False)):
+        return
+
+    vehicles = [args.interceptor]
+    if getattr(args, "px4_intruder", False) and not getattr(args, "intruder_actor", False):
+        vehicles.append(args.intruder)
+
+    def stop_px4_vehicles() -> None:
+        for _ in range(10):
+            for vehicle in vehicles:
+                try:
+                    client.moveByVelocityAsync(0.0, 0.0, 0.0, duration=0.2, vehicle_name=vehicle)
+                except Exception:
+                    pass
+            time.sleep(0.05)
+
+    atexit.register(stop_px4_vehicles)
 
 
 def _kinematics_timestamp_s(kinematics) -> Optional[float]:
@@ -262,6 +546,59 @@ def _intruder_velocity(args) -> np.ndarray:
     return np.array([args.intruder_vx, vy, args.intruder_vz], dtype=float)
 
 
+def _apply_bbox_noise(frame_detection, intrinsics, rng: np.random.Generator, args):
+    if not args.bbox_noise:
+        return frame_detection, {
+            "dx": 0.0,
+            "dy": 0.0,
+            "area_scale": 1.0,
+            "raw_bbox": frame_detection.bbox_xyxy,
+            "noisy_bbox": frame_detection.bbox_xyxy,
+        }
+
+    x1, y1, x2, y2 = frame_detection.bbox_xyxy
+    width = max(1.0e-6, x2 - x1)
+    height = max(1.0e-6, y2 - y1)
+    cx = 0.5 * (x1 + x2)
+    cy = 0.5 * (y1 + y2)
+
+    center_sigma = max(0.0, float(args.bbox_center_noise_px))
+    area_sigma = max(0.0, float(args.bbox_area_noise_ratio))
+    dx = float(rng.normal(0.0, center_sigma)) if center_sigma > 0.0 else 0.0
+    dy = float(rng.normal(0.0, center_sigma)) if center_sigma > 0.0 else 0.0
+    area_scale = 1.0 + (float(rng.normal(0.0, area_sigma)) if area_sigma > 0.0 else 0.0)
+    area_scale = max(0.05, area_scale)
+    side_scale = float(np.sqrt(area_scale))
+
+    noisy_cx = cx + dx
+    noisy_cy = cy + dy
+    noisy_w = width * side_scale
+    noisy_h = height * side_scale
+    nx1 = max(0.0, noisy_cx - 0.5 * noisy_w)
+    ny1 = max(0.0, noisy_cy - 0.5 * noisy_h)
+    nx2 = min(float(intrinsics.width), noisy_cx + 0.5 * noisy_w)
+    ny2 = min(float(intrinsics.height), noisy_cy + 0.5 * noisy_h)
+    if nx2 <= nx1:
+        nx2 = min(float(intrinsics.width), nx1 + 1.0)
+    if ny2 <= ny1:
+        ny2 = min(float(intrinsics.height), ny1 + 1.0)
+
+    noisy = type(frame_detection)(
+        frame_id=frame_detection.frame_id,
+        exposure_ts=frame_detection.exposure_ts,
+        bbox_xyxy=(float(nx1), float(ny1), float(nx2), float(ny2)),
+        track_id=frame_detection.track_id,
+        score=frame_detection.score,
+    )
+    return noisy, {
+        "dx": dx,
+        "dy": dy,
+        "area_scale": area_scale,
+        "raw_bbox": frame_detection.bbox_xyxy,
+        "noisy_bbox": noisy.bbox_xyxy,
+    }
+
+
 def _target_altitude_m(vehicle: str, args) -> float:
     base_altitude = abs(float(args.intercept_altitude_m))
     if vehicle == args.intruder:
@@ -273,36 +610,179 @@ def _target_z_ned(vehicle: str, args) -> float:
     return -_target_altitude_m(vehicle, args)
 
 
-def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
+def _move_px4_vehicle_to_local(
+    client,
+    airsim_module,
+    vehicle_name: str,
+    local_position: np.ndarray,
+    args,
+    *,
+    label: str,
+) -> None:
+    target = np.asarray(local_position, dtype=float)
+    speed = max(0.5, float(args.climb_speed))
+    deadline = time.monotonic() + max(5.0, float(args.climb_timeout_s))
+    command_dt = 0.50
+    reached = False
+    last_print = 0.0
+    while time.monotonic() < deadline:
+        _ensure_px4_api_control(client, args, vehicle_name)
+        kin = _guidance_kinematics(client, vehicle_name, args)
+        position = _vector_xyz(kin.position)
+        velocity = _vector_xyz(kin.linear_velocity)
+        error = target - position
+        distance = float(np.linalg.norm(error))
+        if distance <= 1.0 and float(np.linalg.norm(velocity)) <= max(0.2, float(args.settle_speed)):
+            reached = True
+            break
+        direction = error / max(1.0e-6, distance)
+        command = direction * min(speed, 1.5 * distance)
+        command = _px4_limited_velocity(command, args)
+        client.moveByVelocityAsync(
+            float(command[0]),
+            float(command[1]),
+            float(command[2]),
+            duration=command_dt,
+            drivetrain=airsim_module.DrivetrainType.MaxDegreeOfFreedom,
+            yaw_mode=airsim_module.YawMode(is_rate=True, yaw_or_rate=0.0),
+            vehicle_name=vehicle_name,
+        )
+        for keepalive_vehicle in (args.interceptor, args.intruder):
+            if keepalive_vehicle != vehicle_name and _is_px4_vehicle(keepalive_vehicle, args):
+                client.moveByVelocityAsync(0.0, 0.0, 0.0, duration=command_dt, vehicle_name=keepalive_vehicle)
+        now = time.monotonic()
+        if now - last_print >= 2.0:
+            print(
+                f"px4_{label}_status vehicle={vehicle_name} pos={np.array2string(position, precision=2)} "
+                f"target={np.array2string(target, precision=2)} dist={distance:.2f}"
+            )
+            last_print = now
+        time.sleep(command_dt)
+    if not reached:
+        kin = _guidance_kinematics(client, vehicle_name, args)
+        position = _vector_xyz(kin.position)
+        raise SystemExit(
+            f"PX4 vehicle failed to reach {label}: vehicle={vehicle_name}, "
+            f"pos={np.array2string(position, precision=2)}, target={np.array2string(target, precision=2)}."
+        )
+
+
+def _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z: dict[str, float], args, origins: dict[str, np.ndarray]) -> None:
+    px4_vehicles = [vehicle for vehicle in vehicles if _is_px4_vehicle(vehicle, args)]
+    simple_vehicles = [vehicle for vehicle in vehicles if not _is_px4_vehicle(vehicle, args)]
+    print(f"Using PX4-friendly altitude preparation for: {_format_names(px4_vehicles)}")
+    for vehicle in simple_vehicles:
+        client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=vehicle).join()
+        client.moveToZAsync(
+            target_z[vehicle],
+            velocity=args.climb_speed,
+            timeout_sec=args.climb_timeout_s,
+            vehicle_name=vehicle,
+        ).join()
+        client.hoverAsync(vehicle_name=vehicle).join()
+
+    for vehicle in px4_vehicles:
+        for _ in range(6):
+            _ensure_px4_api_control(client, args, vehicle)
+            client.moveByVelocityAsync(0.0, 0.0, 0.0, duration=0.2, vehicle_name=vehicle)
+            time.sleep(0.1)
+
+    climb_speed = max(0.3, abs(float(args.climb_speed)))
+    settle_speed = max(0.1, float(args.settle_speed))
+    deadline = time.monotonic() + max(5.0, float(args.climb_timeout_s))
+    command_dt = 0.25
+    last_print = 0.0
+    reached: set[str] = set()
+    while time.monotonic() < deadline:
+        statuses = []
+        for vehicle in px4_vehicles:
+            if vehicle in reached:
+                continue
+            local_target_z = _px4_local_target_z(vehicle, target_z[vehicle], origins)
+            kin = _guidance_kinematics(client, vehicle, args)
+            position = _vector_xyz(kin.position)
+            velocity = _vector_xyz(kin.linear_velocity)
+            z_error = local_target_z - float(position[2])
+            if abs(z_error) <= 1.0 and abs(float(velocity[2])) <= settle_speed:
+                reached.add(vehicle)
+                continue
+            vz_cmd = float(np.clip(1.2 * z_error, -climb_speed, climb_speed))
+            client.moveByVelocityAsync(
+                0.0,
+                0.0,
+                vz_cmd,
+                duration=command_dt,
+                vehicle_name=vehicle,
+            )
+            statuses.append(
+                f"{vehicle}: z={position[2]:.2f} target={local_target_z:.2f} "
+                f"err={z_error:.2f} vz={velocity[2]:.2f} cmd={vz_cmd:.2f}"
+            )
+        if len(reached) == len(px4_vehicles):
+            break
+        now = time.monotonic()
+        if statuses and now - last_print >= 2.0:
+            print("px4_climb_status " + " | ".join(statuses))
+            last_print = now
+        time.sleep(command_dt)
+    missing = [vehicle for vehicle in px4_vehicles if vehicle not in reached]
+    if missing:
+        details = []
+        for vehicle in missing:
+            kin = _guidance_kinematics(client, vehicle, args)
+            position = _vector_xyz(kin.position)
+            details.append(f"{vehicle}: z={position[2]:.2f}, target={_px4_local_target_z(vehicle, target_z[vehicle], origins):.2f}")
+        raise SystemExit("PX4 vehicle failed to reach intercept altitude: " + "; ".join(details))
+
+    for vehicle in simple_vehicles:
+        client.hoverAsync(vehicle_name=vehicle)
+    if args.settle_s > 0.0:
+        time.sleep(args.settle_s)
+    for _ in range(4):
+        for vehicle in px4_vehicles:
+            client.moveByVelocityAsync(0.0, 0.0, 0.0, duration=0.25, vehicle_name=vehicle)
+        time.sleep(0.1)
+
+
+def _prepare_intercept_altitude(client, vehicles: Sequence[str], args, origins: dict[str, np.ndarray]) -> None:
     if not args.climb_to_altitude:
         return
+    target_z = {
+        args.interceptor: -abs(float(args.intercept_altitude_m)),
+        args.intruder: -(abs(float(args.intercept_altitude_m)) + float(args.intruder_altitude_offset_m)),
+    }
+    if args.intruder_actor:
+        target_z.pop(args.intruder, None)
     target_text = ", ".join(
-        f"{vehicle}: altitude={_target_altitude_m(vehicle, args):.1f}m, NED_Z={_target_z_ned(vehicle, args):.1f}"
+        f"{vehicle}: altitude={-target_z[vehicle]:.1f}m, NED_Z={target_z[vehicle]:.1f}"
         for vehicle in vehicles
     )
     print(f"Climbing vehicles to intercept start altitudes: {target_text}")
-    for future in [client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=v) for v in vehicles]:
-        future.join()
-    for future in [
-        client.moveToZAsync(_target_z_ned(v, args), velocity=args.climb_speed, timeout_sec=args.climb_timeout_s, vehicle_name=v)
-        for v in vehicles
-    ]:
-        future.join()
-    for vehicle in vehicles:
-        client.hoverAsync(vehicle_name=vehicle).join()
-    if args.settle_s > 0.0:
-        time.sleep(args.settle_s)
-    settle_start = time.monotonic()
-    while time.monotonic() - settle_start < args.settle_timeout_s:
-        speeds = [
-            float(np.linalg.norm(_vector_xyz(_truth_kinematics(client, vehicle).linear_velocity)))
-            for vehicle in vehicles
-        ]
-        if speeds and max(speeds) <= args.settle_speed:
-            break
-        for future in [client.hoverAsync(vehicle_name=vehicle) for vehicle in vehicles]:
+    if args.px4_interceptor or args.px4_intruder:
+        _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z, args, origins)
+    else:
+        for future in [client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=v) for v in vehicles]:
             future.join()
-        time.sleep(0.2)
+        for future in [
+            client.moveToZAsync(target_z[v], velocity=args.climb_speed, timeout_sec=args.climb_timeout_s, vehicle_name=v)
+            for v in vehicles
+        ]:
+            future.join()
+        for vehicle in vehicles:
+            client.hoverAsync(vehicle_name=vehicle).join()
+        if args.settle_s > 0.0:
+            time.sleep(args.settle_s)
+        settle_start = time.monotonic()
+        while time.monotonic() - settle_start < args.settle_timeout_s:
+            speeds = [
+                float(np.linalg.norm(_vector_xyz(_guidance_kinematics(client, vehicle, args).linear_velocity)))
+                for vehicle in vehicles
+            ]
+            if speeds and max(speeds) <= args.settle_speed:
+                break
+            for future in [client.hoverAsync(vehicle_name=vehicle) for vehicle in vehicles]:
+                future.join()
+            time.sleep(0.2)
     print("Altitude preparation complete; starting gimbal vision loop.")
 
 
@@ -311,7 +791,10 @@ def _start_geometry_enabled(args) -> bool:
 
 
 def _local_start_z(vehicle: str, args) -> float:
-    return _target_z_ned(vehicle, args)
+    altitude = abs(float(args.intercept_altitude_m))
+    if vehicle == args.intruder:
+        altitude += float(args.intruder_altitude_offset_m)
+    return -altitude
 
 
 def _start_geometry_offsets(args) -> tuple[float, float, float]:
@@ -334,36 +817,79 @@ def _start_geometry_offsets(args) -> tuple[float, float, float]:
     return forward, lateral, horizontal_range
 
 
-def _apply_start_geometry(client, args, origins: dict[str, np.ndarray]) -> None:
+def _interceptor_start_local(args, origins: dict[str, np.ndarray]) -> np.ndarray:
+    local = np.array(
+        [float(args.start_interceptor_x_m), float(args.start_interceptor_y_m), _local_start_z(args.interceptor, args)],
+        dtype=float,
+    )
+    if args.px4_interceptor:
+        local[2] = -abs(float(args.intercept_altitude_m)) - origins.get(args.interceptor, np.zeros(3, dtype=float))[2]
+    return local
+
+
+def _apply_start_geometry(client, airsim_module, args, origins: dict[str, np.ndarray]) -> None:
     if not _start_geometry_enabled(args):
         return
 
     forward, lateral, horizontal_range = _start_geometry_offsets(args)
-    interceptor_local = np.array(
-        [float(args.start_interceptor_x_m), float(args.start_interceptor_y_m), _local_start_z(args.interceptor, args)],
-        dtype=float,
-    )
-    interceptor_world = origins.get(args.interceptor, np.zeros(3, dtype=float)) + interceptor_local
-    intruder_world = interceptor_world + np.array([forward, lateral, -float(args.intruder_altitude_offset_m)], dtype=float)
+    if args.px4_interceptor:
+        interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
+        interceptor_local = _vector_xyz(interceptor_kin.position)
+        interceptor_world = _world_position(interceptor_kin, args.interceptor, origins)
+        state = client.getMultirotorState(vehicle_name=args.interceptor)
+        R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
+        forward_axis = np.array([R_IB[0, 0], R_IB[1, 0], 0.0], dtype=float)
+        right_axis = np.array([R_IB[0, 1], R_IB[1, 1], 0.0], dtype=float)
+        forward_norm = float(np.linalg.norm(forward_axis))
+        right_norm = float(np.linalg.norm(right_axis))
+        forward_axis = forward_axis / forward_norm if forward_norm > 1.0e-6 else np.array([1.0, 0.0, 0.0])
+        right_axis = right_axis / right_norm if right_norm > 1.0e-6 else np.array([0.0, 1.0, 0.0])
+        intruder_world = interceptor_world + forward * forward_axis + lateral * right_axis
+        intruder_world[2] = interceptor_world[2] - float(args.intruder_altitude_offset_m)
+    else:
+        interceptor_local = _interceptor_start_local(args, origins)
+        interceptor_world = origins.get(args.interceptor, np.zeros(3, dtype=float)) + interceptor_local
+        intruder_world = interceptor_world + np.array([forward, lateral, -float(args.intruder_altitude_offset_m)], dtype=float)
     intruder_local = intruder_world - origins.get(args.intruder, np.zeros(3, dtype=float))
 
-    for vehicle, local_position in [(args.interceptor, interceptor_local), (args.intruder, intruder_local)]:
+    if args.intruder_actor:
+        _spawn_or_move_intruder_actor(client, airsim_module, args, intruder_world, _yaw_deg_from_velocity(_intruder_velocity(args)))
+    else:
+        if _is_px4_vehicle(args.intruder, args):
+            _move_px4_vehicle_to_local(client, airsim_module, args.intruder, intruder_local, args, label="start")
+        else:
+            client.moveToPositionAsync(
+                float(intruder_local[0]),
+                float(intruder_local[1]),
+                float(intruder_local[2]),
+                velocity=max(0.5, float(args.climb_speed)),
+                timeout_sec=max(1.0, float(args.climb_timeout_s)),
+                vehicle_name=args.intruder,
+            ).join()
+            client.hoverAsync(vehicle_name=args.intruder).join()
+
+    if not args.px4_interceptor:
         client.moveToPositionAsync(
-            float(local_position[0]),
-            float(local_position[1]),
-            float(local_position[2]),
+            float(interceptor_local[0]),
+            float(interceptor_local[1]),
+            float(interceptor_local[2]),
             velocity=max(0.5, float(args.climb_speed)),
             timeout_sec=max(1.0, float(args.climb_timeout_s)),
-            vehicle_name=vehicle,
+            vehicle_name=args.interceptor,
         ).join()
-        client.hoverAsync(vehicle_name=vehicle).join()
+        client.hoverAsync(vehicle_name=args.interceptor).join()
     intruder_yaw_deg = _yaw_deg_from_velocity(_intruder_velocity(args))
-    client.rotateToYawAsync(
-        intruder_yaw_deg,
-        timeout_sec=max(1.0, float(args.climb_timeout_s)),
-        margin=3.0,
-        vehicle_name=args.intruder,
-    ).join()
+    if args.intruder_actor:
+        pass
+    elif _is_px4_vehicle(args.intruder, args):
+        _command_vehicle_velocity(client, airsim_module, args.intruder, np.zeros(3), 0.0, 0.5, args)
+    else:
+        client.rotateToYawAsync(
+            intruder_yaw_deg,
+            timeout_sec=max(1.0, float(args.climb_timeout_s)),
+            margin=3.0,
+            vehicle_name=args.intruder,
+        ).join()
 
     if args.start_geometry_settle_s > 0.0:
         time.sleep(float(args.start_geometry_settle_s))
@@ -420,8 +946,8 @@ def _gimbal_update_profile(
 ) -> tuple[bool, float, str]:
     if not detected:
         return False, 0.0, "no_detection"
-    if terminal_reason == "bbox_clipped":
-        return False, 0.0, "bbox_clipped_hold"
+    if _is_bbox_clipped_reason(terminal_reason):
+        return False, 0.0, f"{terminal_reason}_hold"
     if using_blind_push and args.terminal_freeze_gimbal_on_blind:
         return False, 0.0, "blind_push_hold"
     if terminal_state == TERMINAL_VISUAL or using_blind_push:
@@ -456,14 +982,14 @@ def _image_kf_takeover_allowed(
     if image_kf.mode != IMAGE_KF_PREDICT:
         return False, "image_kf_not_predict"
 
-    terminal_reasons = {"bbox_clipped", "bbox_area_large", "terminal_lost", "gimbal_limit"}
+    terminal_reasons = {"bbox_area_large", "terminal_lost", "gimbal_limit"}
     if terminal_result.using_blind_push:
         return True, "blind_push"
     if terminal_result.state in {TERMINAL_VISUAL, BLIND_PUSH}:
         return True, "terminal_state"
-    if terminal_result.reason in terminal_reasons:
+    if terminal_result.reason in terminal_reasons or _is_bbox_clipped_reason(terminal_result.reason):
         return True, terminal_result.reason
-    if reason in {"bbox_clipped", "no_detection"}:
+    if _is_bbox_clipped_reason(reason) or reason == "no_detection":
         return True, reason
     if profile == "strapdown" and reason == "los_innovation_reject":
         if area_ratio >= max(0.0, float(args.terminal_soft_enter_area_ratio)):
@@ -499,10 +1025,9 @@ def _gimbal_from_relative_body(relative_body: np.ndarray, args) -> tuple[float, 
 
 
 def _initial_truth_align_gimbal(client, args, origins: dict[str, np.ndarray]) -> tuple[float, float]:
-    interceptor_kin = _truth_kinematics(client, args.interceptor)
-    intruder_kin = _truth_kinematics(client, args.intruder)
+    interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
     interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
-    intruder_pos = _world_position(intruder_kin, args.intruder, origins)
+    intruder_pos = _intruder_truth_position(client, args, origins)
     state = client.getMultirotorState(vehicle_name=args.interceptor)
     R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
     camera_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
@@ -599,8 +1124,8 @@ def _terminal_area(frame_area: float, intrinsics, args) -> bool:
 
 
 def _terminal_trigger(reason: str, detected: bool, bbox_area: float, yaw_rad: float, pitch_rad: float, intrinsics, args) -> str:
-    if reason == "bbox_clipped":
-        return "bbox_clipped"
+    if _is_bbox_clipped_reason(reason):
+        return reason
     if detected and _terminal_area(bbox_area, intrinsics, args):
         return "bbox_area_large"
     if detected and _near_gimbal_limit(yaw_rad, pitch_rad, args) and _terminal_area(
@@ -610,6 +1135,10 @@ def _terminal_trigger(reason: str, detected: bool, bbox_area: float, yaw_rad: fl
     ):
         return "gimbal_limit"
     return ""
+
+
+def _is_bbox_clipped_reason(reason: str) -> bool:
+    return str(reason or "").startswith("bbox_") and str(reason or "").endswith("_clipped")
 
 
 def _command_duration(loop_dt: float, target_dt: float, args) -> float:
@@ -670,6 +1199,9 @@ def _experiment_fields(
         "camera_x": float(args.camera_x),
         "camera_y": float(args.camera_y),
         "camera_z": float(args.camera_z),
+        "camera_pitch_deg": float(getattr(args, "camera_pitch_deg", 0.0)),
+        "camera_roll_deg": float(getattr(args, "camera_roll_deg", 0.0)),
+        "camera_yaw_deg": float(getattr(args, "camera_yaw_deg", 0.0)),
         "fov_deg": float(args.fov_deg),
         "image_width_config": int(args.width),
         "image_height_config": int(args.height),
@@ -684,6 +1216,22 @@ def _experiment_fields(
         "terminal_image_kf_max_predict_s": float(args.terminal_image_kf_max_predict_s),
         "terminal_blind_duration_s": float(args.terminal_blind_duration_s),
         "terminal_command_average_window_s": float(args.terminal_command_average_window_s),
+        "terminal_pitch_up_bias_mps": float(args.terminal_pitch_up_bias_mps),
+        "reject_top_clipped_pitch": int(bool(getattr(args, "reject_top_clipped_pitch", False))),
+        "intruder_actor": int(bool(getattr(args, "intruder_actor", False))),
+        "intruder_actor_name": str(getattr(args, "intruder_actor_name", "")),
+        "intruder_actor_asset": str(getattr(args, "intruder_actor_asset", "")),
+        "intruder_actor_scale": float(getattr(args, "intruder_actor_scale", 0.0)),
+        "px4_interceptor": int(bool(getattr(args, "px4_interceptor", False))),
+        "px4_intruder": int(bool(getattr(args, "px4_intruder", False))),
+        "px4_max_vertical_speed": float(getattr(args, "px4_max_vertical_speed", 0.0)),
+        "px4_command_join": int(bool(getattr(args, "px4_command_join", False))),
+        "px4_command_mode": str(getattr(args, "px4_command_mode", "")),
+        "bbox_noise_enabled": int(bool(getattr(args, "bbox_noise", False))),
+        "bbox_noise_center_sigma_px": float(getattr(args, "bbox_center_noise_px", 0.0)),
+        "bbox_noise_area_sigma_ratio": float(getattr(args, "bbox_area_noise_ratio", 0.0)),
+        "bbox_noise_seed": int(getattr(args, "bbox_noise_seed", 0)),
+        "los_filter_enabled": int(bool(getattr(args, "los_filter", True))),
     }
 
 
@@ -983,7 +1531,8 @@ def _record_detection_preview(
     near_terminal = bool(
         hit
         or terminal_state in {TERMINAL_VISUAL, BLIND_PUSH, COMPLETE, ABORT_HOLD}
-        or reason in {"bbox_clipped", "bbox_area_large", "gimbal_limit", "terminal_lost"}
+        or _is_bbox_clipped_reason(reason)
+        or reason in {"bbox_area_large", "gimbal_limit", "terminal_lost"}
     )
     if getattr(args, "preview_near_terminal_only", True) and not near_terminal:
         return None
@@ -1293,24 +1842,49 @@ def main() -> None:
         raise SystemExit("--speed-ratio must be positive")
 
     client = airsim.MultirotorClient()
+    _register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()
     except Exception as exc:
         raise SystemExit("Failed to connect to AirSim RPC. Start Blocks first.") from exc
-    available = _require_vehicles(client, [args.interceptor, args.intruder])
+    required_vehicles = [args.interceptor] if args.intruder_actor else [args.interceptor, args.intruder]
+    available = _require_vehicles(client, required_vehicles)
     print(f"AirSim vehicles: {_format_names(available)}")
     if args.list_vehicles:
         return
 
-    origins = _load_vehicle_origins(args.settings_path, [args.interceptor, args.intruder])
-    if args.reset:
+    if args.intruder_actor:
+        args.px4_intruder = False
+        if args.mesh == "Intruder*":
+            args.mesh = _actor_name(args)
+    origins = _load_vehicle_origins(args.settings_path, required_vehicles)
+    if args.reset and (args.px4_interceptor or args.px4_intruder):
+        print("PX4 SITL mode: ignoring AirSim client.reset(); restart PX4/Blocks for a clean SITL session.")
+    elif args.reset:
         client.reset()
         time.sleep(1.0)
-    for vehicle in [args.interceptor, args.intruder]:
+    for vehicle in required_vehicles:
         client.enableApiControl(True, vehicle_name=vehicle)
-        client.armDisarm(True, vehicle_name=vehicle)
-    _prepare_intercept_altitude(client, [args.interceptor, args.intruder], args)
-    _apply_start_geometry(client, args, origins)
+        if _is_px4_vehicle(vehicle, args):
+            _ensure_px4_api_control(client, args, vehicle)
+        else:
+            client.armDisarm(True, vehicle_name=vehicle)
+    _prepare_intercept_altitude(client, required_vehicles, args, origins)
+    _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
+    _apply_start_geometry(client, airsim, args, origins)
+    _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
+    if args.intruder_actor and not _start_geometry_enabled(args):
+        interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
+        interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
+        actor_pos = interceptor_pos + np.array(
+            [
+                float(args.start_forward_offset_m or args.start_horizontal_range_m or 100.0),
+                float(args.start_lateral_offset_m),
+                -float(args.intruder_altitude_offset_m),
+            ],
+            dtype=float,
+        )
+        _spawn_or_move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(_intruder_velocity(args)))
 
     config = AirSimDetectionConfig(
         camera_name=args.camera,
@@ -1319,6 +1893,7 @@ def main() -> None:
         vehicle_name=args.interceptor,
     )
     configure_detection_filter(client, config)
+    _configure_actor_detection_aliases(client, airsim, config, args)
 
     attitude_buffer = AttitudeHistoryBuffer(duration_s=2.0)
     los_filter = LOSKalmanFilter6D()
@@ -1333,6 +1908,9 @@ def main() -> None:
     intruder_velocity_cmd = _intruder_velocity(args)
     intruder_speed = max(float(np.linalg.norm(intruder_velocity_cmd)), args.intruder_speed)
     speed_cap = args.speed_ratio * intruder_speed
+    actor_initial_pos: Optional[np.ndarray] = None
+    if args.intruder_actor:
+        actor_initial_pos = _intruder_truth_position(client, args, origins)
     if args.initial_truth_align:
         yaw_rad, pitch_rad = _initial_truth_align_gimbal(client, args, origins)
     else:
@@ -1362,9 +1940,12 @@ def main() -> None:
     last_wall_t: Optional[float] = None
     last_kin_t: Optional[float] = None
     last_interceptor_vel: Optional[np.ndarray] = None
+    last_raw_lambda_I: Optional[np.ndarray] = None
+    last_raw_lambda_ts: Optional[float] = None
     sim_start_t: Optional[float] = None
     frame_id = 0
     hit = False
+    bbox_noise_rng = np.random.default_rng(int(args.bbox_noise_seed))
 
     print(
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
@@ -1375,16 +1956,8 @@ def main() -> None:
         loop_dt = target_dt if frame_id == 0 else max(1.0e-6, loop_start - last_loop_start)
         last_loop_start = loop_start
         command_duration = _command_duration(loop_dt, target_dt, args)
-        if args.enable_motion:
-            client.moveByVelocityAsync(
-                float(intruder_velocity_cmd[0]),
-                float(intruder_velocity_cmd[1]),
-                float(intruder_velocity_cmd[2]),
-                duration=command_duration,
-                drivetrain=airsim.DrivetrainType.MaxDegreeOfFreedom,
-                yaw_mode=airsim.YawMode(is_rate=True, yaw_or_rate=0.0),
-                vehicle_name=args.intruder,
-            )
+        if args.enable_motion and not hit and not args.intruder_actor:
+            _command_vehicle_velocity(client, airsim, args.intruder, intruder_velocity_cmd, 0.0, command_duration, args)
         capture_yaw_rad = yaw_rad
         capture_pitch_rad = pitch_rad
         client.simSetCameraPose(
@@ -1405,7 +1978,11 @@ def main() -> None:
         if sim_t >= args.duration_s:
             break
 
-        interceptor_kin = _truth_kinematics(client, args.interceptor)
+        if args.enable_motion and args.intruder_actor and actor_initial_pos is not None and not hit:
+            actor_pos = actor_initial_pos + intruder_velocity_cmd * float(sim_t)
+            _move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(intruder_velocity_cmd))
+
+        interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
         interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
         interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
@@ -1433,17 +2010,23 @@ def main() -> None:
         rel = np.full(3, np.nan)
         range_m = float("nan")
         if args.diagnostic_truth:
-            intruder_kin = _truth_kinematics(client, args.intruder)
-            intruder_pos = _world_position(intruder_kin, args.intruder, origins)
+            intruder_pos = _intruder_truth_position(client, args, origins)
             rel = intruder_pos - interceptor_pos
             range_m = float(np.linalg.norm(rel))
-        pair_collision = get_vehicle_pair_collision(
-            client,
-            args.interceptor,
-            args.intruder,
-            interceptor_object_patterns=args.collision_interceptor_pattern,
-            intruder_object_patterns=args.collision_intruder_pattern,
-        )
+        if args.intruder_actor:
+            pair_collision = get_vehicle_object_collision(
+                client,
+                args.interceptor,
+                _actor_collision_patterns(args),
+            )
+        else:
+            pair_collision = get_vehicle_pair_collision(
+                client,
+                args.interceptor,
+                args.intruder,
+                interceptor_object_patterns=args.collision_interceptor_pattern,
+                intruder_object_patterns=args.collision_intruder_pattern,
+            )
         hit = pair_collision.collided
 
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
@@ -1473,7 +2056,22 @@ def main() -> None:
         detection_score = 0.0
         center: Optional[tuple[float, float]] = None
         frame_detection = None
+        bbox_noise_dx_px = 0.0
+        bbox_noise_dy_px = 0.0
+        bbox_noise_area_scale = 1.0
+        bbox_raw_xyxy = (0.0, 0.0, 0.0, 0.0)
+        bbox_noisy_xyxy = (0.0, 0.0, 0.0, 0.0)
         detection_clipped = False
+        bbox_left_clipped = False
+        bbox_right_clipped = False
+        bbox_top_clipped = False
+        bbox_bottom_clipped = False
+        lambda_I_measured: Optional[np.ndarray] = None
+        lambda_raw: Optional[np.ndarray] = None
+        omega_raw: Optional[np.ndarray] = None
+        los_dt_s: float | str = ""
+        los_angle_step_deg: float | str = ""
+        los_source = "none"
 
         if detection is None:
             reason = "no_detection"
@@ -1486,12 +2084,23 @@ def main() -> None:
                 track_id=1,
                 score=1.0,
             )
+            frame_detection, bbox_noise = _apply_bbox_noise(frame_detection, intrinsics, bbox_noise_rng, args)
+            bbox_noise_dx_px = float(bbox_noise["dx"])
+            bbox_noise_dy_px = float(bbox_noise["dy"])
+            bbox_noise_area_scale = float(bbox_noise["area_scale"])
+            bbox_raw_xyxy = tuple(float(value) for value in bbox_noise["raw_bbox"])
+            bbox_noisy_xyxy = tuple(float(value) for value in bbox_noise["noisy_bbox"])
             detection_score = frame_detection.score
             bbox_area = frame_detection.area
             center = frame_detection.center
             px_err_x = center[0] - intrinsics.cx
             px_err_y = center[1] - intrinsics.cy
-            detection_clipped = frame_detection.is_clipped(intrinsics.width, intrinsics.height)
+            clip_flags = frame_detection.clip_flags(intrinsics.width, intrinsics.height)
+            bbox_left_clipped = bool(clip_flags["left"])
+            bbox_right_clipped = bool(clip_flags["right"])
+            bbox_top_clipped = bool(clip_flags["top"])
+            bbox_bottom_clipped = bool(clip_flags["bottom"])
+            detection_clipped = any(clip_flags.values())
 
             lookup = attitude_buffer.lookup(frame_detection.exposure_ts)
             if not lookup.valid or lookup.sample is None:
@@ -1500,19 +2109,45 @@ def main() -> None:
                 R_BC = airsim_gimbal_camera_to_body(capture_yaw_rad, capture_pitch_rad)
                 los_C = camera_ray_from_pixel(*center, intrinsics)
                 lambda_I_measured = los_camera_to_inertial(los_C, R_BC, lookup.sample.R_IB)
-                los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
+                lambda_raw = normalize(lambda_I_measured)
+                if last_raw_lambda_I is not None and last_raw_lambda_ts is not None:
+                    raw_dt = max(1.0e-3, frame_detection.exposure_ts - last_raw_lambda_ts)
+                    los_dt_s = raw_dt
+                    raw_delta = project_perpendicular((lambda_raw - last_raw_lambda_I) / raw_dt, lambda_raw)
+                    omega_raw = np.cross(lambda_raw, raw_delta)
+                    dot_raw = float(np.clip(np.dot(last_raw_lambda_I, lambda_raw), -1.0, 1.0))
+                    los_angle_step_deg = float(np.degrees(np.arccos(dot_raw)))
+                else:
+                    omega_raw = np.zeros(3, dtype=float)
+                last_raw_lambda_I = np.array(lambda_raw, dtype=float)
+                last_raw_lambda_ts = frame_detection.exposure_ts
+
+                if args.los_filter:
+                    los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
+                    los_source = "kalman"
+                    los_valid = los.valid
+                    los_lambda = los.lambda_I
+                    los_omega = los.omega_los
+                    los_quality = los.quality
+                    los_reject_reason = los.reject_reason
+                else:
+                    los_source = "raw_fd"
+                    los_valid = True
+                    los_lambda = lambda_raw
+                    los_omega = omega_raw
+                    los_quality = 1.0
+                    los_reject_reason = None
                 ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
-                los_quality = los.quality
                 ttc_quality = ttc.quality
                 ttc_area = ttc.area_filtered
                 ttc_area_dot = ttc.area_dot_filtered
                 if ttc.ttc is not None:
                     ttc_value = f"{ttc.ttc:.3f}"
-                if not los.valid:
-                    reason = los.reject_reason or "los_invalid"
+                if not los_valid:
+                    reason = los_reject_reason or "los_invalid"
                 elif not ttc.valid or ttc.ttc is None:
-                    lambda_I = los.lambda_I
-                    omega_los = los.omega_los
+                    lambda_I = los_lambda
+                    omega_los = los_omega
                     reason = ttc.reject_reason or "ttc_invalid"
                     if _los_fallback_allowed(reason, args):
                         guidance_gain = max(0.0, args.los_fallback_gain)
@@ -1525,8 +2160,8 @@ def main() -> None:
                 else:
                     gain = gain_schedule.gain(ttc.ttc)
                     guidance_gain = gain
-                    omega_los = los.omega_los
-                    lambda_I = los.lambda_I
+                    omega_los = los_omega
+                    lambda_I = los_lambda
                     g_eval = gain * omega_los
                     valid = True
                     guidance_mode = "ttc_png"
@@ -1670,16 +2305,7 @@ def main() -> None:
             target_body_bearing_deg = target_body_bearing
             gimbal_body_bearing_error_deg = _wrap_angle_deg(float(np.rad2deg(yaw_rad)) - target_body_bearing)
         if args.enable_motion and not hit:
-            drivetrain, yaw_mode = _air_sim_yaw_mode(airsim, v_cmd, args)
-            client.moveByVelocityAsync(
-                float(v_cmd[0]),
-                float(v_cmd[1]),
-                float(v_cmd[2]),
-                duration=command_duration,
-                drivetrain=drivetrain,
-                yaw_mode=yaw_mode,
-                vehicle_name=args.interceptor,
-            )
+            _command_interceptor_velocity(client, airsim, v_cmd, cmd_yaw_deg, command_duration, args)
 
         frame_elapsed = time.monotonic() - loop_start
         vertical_error_sign = ""
@@ -1724,6 +2350,26 @@ def main() -> None:
                 "pixel_error_x": px_err_x,
                 "pixel_error_y": px_err_y,
                 "bbox_area": bbox_area,
+                "bbox_clipped": int(detection_clipped),
+                "bbox_left_clipped": int(bbox_left_clipped),
+                "bbox_right_clipped": int(bbox_right_clipped),
+                "bbox_top_clipped": int(bbox_top_clipped),
+                "bbox_bottom_clipped": int(bbox_bottom_clipped),
+                "bbox_noise_enabled": int(args.bbox_noise),
+                "bbox_noise_center_sigma_px": float(args.bbox_center_noise_px),
+                "bbox_noise_area_sigma_ratio": float(args.bbox_area_noise_ratio),
+                "bbox_noise_seed": int(args.bbox_noise_seed),
+                "bbox_noise_dx_px": bbox_noise_dx_px,
+                "bbox_noise_dy_px": bbox_noise_dy_px,
+                "bbox_noise_area_scale": bbox_noise_area_scale,
+                "bbox_raw_x1": bbox_raw_xyxy[0],
+                "bbox_raw_y1": bbox_raw_xyxy[1],
+                "bbox_raw_x2": bbox_raw_xyxy[2],
+                "bbox_raw_y2": bbox_raw_xyxy[3],
+                "bbox_noisy_x1": bbox_noisy_xyxy[0],
+                "bbox_noisy_y1": bbox_noisy_xyxy[1],
+                "bbox_noisy_x2": bbox_noisy_xyxy[2],
+                "bbox_noisy_y2": bbox_noisy_xyxy[3],
                 "gimbal_yaw_deg": float(np.rad2deg(yaw_rad)),
                 "gimbal_pitch_deg": float(np.rad2deg(pitch_rad)),
                 "body_yaw_deg": body_yaw_deg,
@@ -1737,6 +2383,19 @@ def main() -> None:
                 "ttc": "" if ttc_value == "" else float(ttc_value),
                 "ttc_area": ttc_area,
                 "ttc_area_dot": ttc_area_dot,
+                "los_source": los_source,
+                "los_filter_enabled": int(args.los_filter),
+                "lambda_meas_x": "" if lambda_I_measured is None else float(lambda_I_measured[0]),
+                "lambda_meas_y": "" if lambda_I_measured is None else float(lambda_I_measured[1]),
+                "lambda_meas_z": "" if lambda_I_measured is None else float(lambda_I_measured[2]),
+                "lambda_raw_x": "" if lambda_raw is None else float(lambda_raw[0]),
+                "lambda_raw_y": "" if lambda_raw is None else float(lambda_raw[1]),
+                "lambda_raw_z": "" if lambda_raw is None else float(lambda_raw[2]),
+                "omega_raw_x": "" if omega_raw is None else float(omega_raw[0]),
+                "omega_raw_y": "" if omega_raw is None else float(omega_raw[1]),
+                "omega_raw_z": "" if omega_raw is None else float(omega_raw[2]),
+                "los_dt_s": los_dt_s,
+                "los_angle_step_deg": los_angle_step_deg,
                 "valid": int(valid),
                 "guidance_mode": guidance_mode,
                 "reject_reason": reason,
@@ -1800,6 +2459,12 @@ def main() -> None:
                 "intruder_x": float(intruder_pos[0]) if args.diagnostic_truth else "",
                 "intruder_y": float(intruder_pos[1]) if args.diagnostic_truth else "",
                 "intruder_z": float(intruder_pos[2]) if args.diagnostic_truth else "",
+                "intruder_actor": int(args.intruder_actor),
+                "intruder_actor_name": _actor_name(args) if args.intruder_actor else "",
+                "px4_interceptor": int(args.px4_interceptor),
+                "px4_intruder": int(args.px4_intruder),
+                "px4_command_mode": args.px4_command_mode,
+                "px4_command_join": int(args.px4_command_join),
             }
         )
         if args.print_every_n > 0 and (frame_id % args.print_every_n == 0 or hit):

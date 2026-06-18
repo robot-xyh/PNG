@@ -14,7 +14,24 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from vision_guidance.airsim_adapter import get_vehicle_pair_collision  # noqa: E402
+from examples.run_airsim_gimbal_vision_png import (  # noqa: E402
+    _actor_collision_patterns as _sim_actor_collision_patterns,
+    _actor_name as _sim_actor_name,
+    _apply_start_geometry as _sim_apply_start_geometry,
+    _command_duration as _sim_command_duration,
+    _command_vehicle_velocity as _sim_command_vehicle_velocity,
+    _ensure_px4_api_control as _sim_ensure_px4_api_control,
+    _guidance_kinematics as _sim_guidance_kinematics,
+    _intruder_truth_position as _sim_intruder_truth_position,
+    _is_px4_vehicle as _sim_is_px4_vehicle,
+    _move_intruder_actor as _sim_move_intruder_actor,
+    _prepare_intercept_altitude as _sim_prepare_intercept_altitude,
+    _px4_keepalive as _sim_px4_keepalive,
+    _register_px4_shutdown_stop as _sim_register_px4_shutdown_stop,
+    _spawn_or_move_intruder_actor as _sim_spawn_or_move_intruder_actor,
+    _world_position as _sim_world_position,
+)
+from vision_guidance.airsim_adapter import get_vehicle_object_collision, get_vehicle_pair_collision  # noqa: E402
 from vision_guidance.truth_png import compute_truth_png, integrate_velocity_command  # noqa: E402
 
 
@@ -28,6 +45,18 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run truth-state classic PNG baseline in AirSim Blocks.")
     parser.add_argument("--interceptor", default="Interceptor")
     parser.add_argument("--intruder", default="Intruder")
+    parser.add_argument(
+        "--intruder-actor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use a spawned scene Actor as the intruder target instead of a second AirSim vehicle.",
+    )
+    parser.add_argument("--intruder-actor-name", default="IntruderActor")
+    parser.add_argument("--intruder-actor-asset", default="1M_Cube_Chamfer")
+    parser.add_argument("--intruder-actor-scale", type=float, default=2.0)
+    parser.add_argument("--intruder-actor-physics", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--intruder-actor-blueprint", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument("--intruder-actor-respawn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collision-interceptor-pattern", action="append", default=None)
     parser.add_argument("--collision-intruder-pattern", action="append", default=None)
     parser.add_argument("--intruder-speed", type=float, default=5.0)
@@ -38,8 +67,41 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--navigation-constant", type=float, default=3.0)
     parser.add_argument("--rate-hz", type=float, default=20.0)
     parser.add_argument("--duration-s", type=float, default=30.0)
+    parser.add_argument("--min-command-duration-s", type=float, default=0.10)
+    parser.add_argument("--command-duration-margin-s", type=float, default=0.05)
+    parser.add_argument("--max-command-duration-s", type=float, default=0.20)
     parser.add_argument("--enable-motion", action="store_true", help="Apply AirSim velocity commands.")
     parser.add_argument("--reset", action=argparse.BooleanOptionalAction, default=True, help="Reset AirSim before the run.")
+    parser.add_argument(
+        "--px4-interceptor",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Use PX4-friendly non-blocking altitude preparation for the interceptor.",
+    )
+    parser.add_argument(
+        "--px4-intruder",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Treat the intruder as PX4 SITL for dual-SITL tests.",
+    )
+    parser.add_argument(
+        "--px4-max-vertical-speed",
+        type=float,
+        default=2.0,
+        help="PX4 SITL vertical speed clamp for commanded velocities.",
+    )
+    parser.add_argument(
+        "--px4-command-join",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Join PX4 interceptor velocity futures. Disable for high-rate Offboard setpoint streaming.",
+    )
+    parser.add_argument(
+        "--px4-command-mode",
+        choices=("velocity_simple", "velocity_yaw_rate"),
+        default="velocity_simple",
+        help="PX4 SITL velocity command mapping.",
+    )
     parser.add_argument("--hit-radius-m", type=float, default=1.0, help="Deprecated; AirSim collision is the success criterion.")
     parser.add_argument("--max-accel", type=float, default=15.0)
     parser.add_argument("--min-speed-ratio", type=float, default=0.8)
@@ -70,6 +132,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--start-interceptor-x-m", type=float, default=0.0)
     parser.add_argument("--start-interceptor-y-m", type=float, default=0.0)
     parser.add_argument("--start-geometry-settle-s", type=float, default=0.5)
+    parser.add_argument("--initial-align-timeout-s", type=float, default=8.0)
+    parser.add_argument("--initial-align-margin-deg", type=float, default=3.0)
     parser.add_argument("--list-vehicles", action="store_true", help="Print AirSim vehicle names and exit.")
     parser.add_argument(
         "--settings-path",
@@ -115,6 +179,14 @@ def _vector_xyz(vector) -> np.ndarray:
 
 def _vehicle_truth_kinematics(client, vehicle_name: str):
     return client.simGetGroundTruthKinematics(vehicle_name=vehicle_name)
+
+
+def _vehicle_guidance_kinematics(client, vehicle_name: str, args):
+    if (getattr(args, "px4_interceptor", False) and vehicle_name == args.interceptor) or (
+        getattr(args, "px4_intruder", False) and vehicle_name == args.intruder
+    ):
+        return client.getMultirotorState(vehicle_name=vehicle_name).kinematics_estimated
+    return _vehicle_truth_kinematics(client, vehicle_name)
 
 
 def _load_vehicle_origins(settings_path: str, vehicles: Sequence[str]) -> dict[str, np.ndarray]:
@@ -286,6 +358,15 @@ def _truth_experiment_fields(args, speed_cap: float, intruder_velocity: np.ndarr
         "altitude_correction": int(bool(args.altitude_correction)),
         "vertical_kp": float(args.vertical_kp),
         "vertical_speed_limit": float(args.vertical_speed_limit),
+        "intruder_actor": int(bool(getattr(args, "intruder_actor", False))),
+        "intruder_actor_name": str(getattr(args, "intruder_actor_name", "")),
+        "intruder_actor_asset": str(getattr(args, "intruder_actor_asset", "")),
+        "intruder_actor_scale": float(getattr(args, "intruder_actor_scale", 0.0)),
+        "px4_interceptor": int(bool(getattr(args, "px4_interceptor", False))),
+        "px4_intruder": int(bool(getattr(args, "px4_intruder", False))),
+        "px4_max_vertical_speed": float(getattr(args, "px4_max_vertical_speed", 0.0)),
+        "px4_command_join": int(bool(getattr(args, "px4_command_join", False))),
+        "px4_command_mode": str(getattr(args, "px4_command_mode", "")),
     }
 
 
@@ -468,7 +549,12 @@ def _output_paths(args) -> tuple[Path, Path]:
     return base / f"{prefix}.csv", base / f"{prefix}.png"
 
 
-def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
+def _prepare_intercept_altitude(
+    client,
+    vehicles: Sequence[str],
+    args,
+    origins: dict[str, np.ndarray] | None = None,
+) -> None:
     if not args.climb_to_altitude:
         return
 
@@ -478,6 +564,11 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
     }
     target_text = ", ".join(f"{vehicle}: NED_Z={target_z[vehicle]:.1f}" for vehicle in vehicles)
     print(f"Climbing vehicles to intercept start altitudes: {target_text}")
+
+    if args.px4_interceptor:
+        _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z, args, origins or {})
+        return
+
     for future in [
         client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=vehicle)
         for vehicle in vehicles
@@ -501,13 +592,104 @@ def _prepare_intercept_altitude(client, vehicles: Sequence[str], args) -> None:
     while time.monotonic() - settle_start < args.settle_timeout_s:
         speeds = []
         for vehicle in vehicles:
-            velocity = _vector_xyz(_vehicle_truth_kinematics(client, vehicle).linear_velocity)
+            velocity = _vector_xyz(_vehicle_guidance_kinematics(client, vehicle, args).linear_velocity)
             speeds.append(float(np.linalg.norm(velocity)))
         if speeds and max(speeds) <= args.settle_speed:
             break
         for vehicle in vehicles:
             client.hoverAsync(vehicle_name=vehicle)
         time.sleep(0.2)
+    print("Altitude preparation complete; starting truth-PNG loop.")
+
+
+def _prepare_px4_mixed_intercept_altitude(
+    client,
+    vehicles: Sequence[str],
+    target_z: dict[str, float],
+    args,
+    origins: dict[str, np.ndarray],
+) -> None:
+    print("Using PX4-friendly mixed altitude preparation for interceptor.")
+    non_px4_vehicles = [vehicle for vehicle in vehicles if vehicle != args.interceptor]
+    for vehicle in non_px4_vehicles:
+        client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=vehicle).join()
+        client.moveToZAsync(
+            target_z[vehicle],
+            velocity=args.climb_speed,
+            timeout_sec=args.climb_timeout_s,
+            vehicle_name=vehicle,
+        ).join()
+        client.hoverAsync(vehicle_name=vehicle).join()
+
+    client.enableApiControl(True, vehicle_name=args.interceptor)
+    for attempt in range(1, 4):
+        try:
+            client.armDisarm(True, vehicle_name=args.interceptor)
+        except Exception as exc:
+            print(f"px4_arm_warning attempt={attempt}: {exc}")
+        time.sleep(0.3)
+
+    try:
+        client.takeoffAsync(timeout_sec=min(8.0, float(args.climb_timeout_s)), vehicle_name=args.interceptor)
+    except Exception as exc:
+        print(f"px4_takeoff_command_warning={exc}")
+
+    target = float(target_z[args.interceptor] - origins.get(args.interceptor, np.zeros(3, dtype=float))[2])
+    climb_speed = max(0.3, abs(float(args.climb_speed)))
+    settle_speed = max(0.1, float(args.settle_speed))
+    deadline = time.monotonic() + max(5.0, float(args.climb_timeout_s))
+    command_dt = 0.25
+    last_print = 0.0
+    reached = False
+
+    while time.monotonic() < deadline:
+        kin = _vehicle_guidance_kinematics(client, args.interceptor, args)
+        position = _vector_xyz(kin.position)
+        velocity = _vector_xyz(kin.linear_velocity)
+        z_error = target - float(position[2])
+        if abs(z_error) <= 1.0 and abs(float(velocity[2])) <= settle_speed:
+            reached = True
+            break
+
+        vz_cmd = float(np.clip(1.2 * z_error, -climb_speed, climb_speed))
+        try:
+            client.moveByVelocityZAsync(
+                0.0,
+                0.0,
+                target,
+                duration=command_dt,
+                vehicle_name=args.interceptor,
+            )
+        except Exception:
+            client.moveByVelocityAsync(
+                0.0,
+                0.0,
+                vz_cmd,
+                duration=command_dt,
+                vehicle_name=args.interceptor,
+            )
+        now = time.monotonic()
+        if now - last_print >= 2.0:
+            print(
+            f"px4_climb_status z={position[2]:.2f} local_target={target:.2f} "
+            f"z_error={z_error:.2f} vz={velocity[2]:.2f} vz_cmd={vz_cmd:.2f}"
+        )
+            last_print = now
+        time.sleep(command_dt)
+
+    if not reached:
+        kin = _vehicle_guidance_kinematics(client, args.interceptor, args)
+        position = _vector_xyz(kin.position)
+        raise SystemExit(
+            "PX4 interceptor failed to reach intercept altitude during preparation: "
+            f"z={position[2]:.2f}, local_target={target:.2f}. "
+            "Check PX4 offboard/takeoff readiness before running the intercept demo."
+        )
+
+    for vehicle in vehicles:
+        client.hoverAsync(vehicle_name=vehicle)
+    if args.settle_s > 0.0:
+        time.sleep(args.settle_s)
     print("Altitude preparation complete; starting truth-PNG loop.")
 
 
@@ -655,6 +837,7 @@ def main() -> None:
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
     client = airsim.MultirotorClient()
+    _sim_register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()
     except Exception as exc:
@@ -667,22 +850,30 @@ def main() -> None:
     if args.list_vehicles:
         return
 
-    _require_vehicles(client, [args.interceptor, args.intruder])
-    vehicle_origins = _load_vehicle_origins(args.settings_path, [args.interceptor, args.intruder])
+    required_vehicles = [args.interceptor] if args.intruder_actor else [args.interceptor, args.intruder]
+    _require_vehicles(client, required_vehicles)
+    if args.intruder_actor:
+        args.px4_intruder = False
+    vehicle_origins = _load_vehicle_origins(args.settings_path, required_vehicles)
     print(
         "Vehicle world origins from settings: "
         f"{args.interceptor}={vehicle_origins[args.interceptor].tolist()}, "
-        f"{args.intruder}={vehicle_origins[args.intruder].tolist()}"
+        f"{args.intruder}={vehicle_origins.get(args.intruder, np.zeros(3, dtype=float)).tolist()}"
     )
 
-    if args.reset:
+    if args.reset and (args.px4_interceptor or args.px4_intruder):
+        print("PX4 SITL mode: ignoring AirSim client.reset(); restart PX4/Blocks for a clean SITL session.")
+    elif args.reset:
         client.reset()
         time.sleep(1.0)
 
-    for vehicle in [args.interceptor, args.intruder]:
+    for vehicle in required_vehicles:
         try:
             client.enableApiControl(True, vehicle_name=vehicle)
-            client.armDisarm(True, vehicle_name=vehicle)
+            if _sim_is_px4_vehicle(vehicle, args):
+                _sim_ensure_px4_api_control(client, args, vehicle)
+            else:
+                client.armDisarm(True, vehicle_name=vehicle)
         except Exception as exc:
             raise SystemExit(
                 f"Failed to initialize vehicle {vehicle!r}: {exc}\n"
@@ -690,13 +881,26 @@ def main() -> None:
                 "If you just changed AirSim settings, restart Blocks before rerunning this script."
             ) from exc
 
-    _prepare_intercept_altitude(client, [args.interceptor, args.intruder], args)
-    _apply_start_geometry(client, args, vehicle_origins)
+    _sim_prepare_intercept_altitude(client, required_vehicles, args, vehicle_origins)
+    _sim_px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
+    _sim_apply_start_geometry(client, airsim, args, vehicle_origins)
+    _sim_px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
+    if args.intruder_actor and not _start_geometry_enabled(args):
+        interceptor_kin = _sim_guidance_kinematics(client, args.interceptor, args)
+        interceptor_pos = _sim_world_position(interceptor_kin, args.interceptor, vehicle_origins)
+        actor_pos = interceptor_pos + np.array(
+            [
+                float(args.start_forward_offset_m or args.start_horizontal_range_m or 100.0),
+                float(args.start_lateral_offset_m),
+                -float(args.intruder_altitude_offset_m),
+            ],
+            dtype=float,
+        )
+        _sim_spawn_or_move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(_intruder_velocity(args)))
 
-    initial_interceptor_kin = _vehicle_truth_kinematics(client, args.interceptor)
-    initial_intruder_kin = _vehicle_truth_kinematics(client, args.intruder)
-    initial_interceptor_pos = _world_position(initial_interceptor_kin, args.interceptor, vehicle_origins)
-    initial_intruder_pos = _world_position(initial_intruder_kin, args.intruder, vehicle_origins)
+    initial_interceptor_kin = _sim_guidance_kinematics(client, args.interceptor, args)
+    initial_interceptor_pos = _sim_world_position(initial_interceptor_kin, args.interceptor, vehicle_origins)
+    initial_intruder_pos = _sim_intruder_truth_position(client, args, vehicle_origins)
     initial_range = float(np.linalg.norm(initial_intruder_pos - initial_interceptor_pos))
     print(
         "Initial world positions after altitude prep: "
@@ -725,6 +929,7 @@ def main() -> None:
     frame = 0
     hit = False
     last_range = float("inf")
+    actor_initial_pos = _sim_intruder_truth_position(client, args, vehicle_origins) if args.intruder_actor else None
 
     print(
         "Truth PNG baseline: "
@@ -738,19 +943,14 @@ def main() -> None:
         wall_t = loop_start - start
         loop_dt = dt if frame == 0 else max(1.0e-6, loop_start - last_loop_start)
         last_loop_start = loop_start
+        command_duration = _sim_command_duration(loop_dt, dt, args)
 
-        if args.enable_motion:
-            client.moveByVelocityAsync(
-                float(intruder_velocity[0]),
-                float(intruder_velocity[1]),
-                float(intruder_velocity[2]),
-                duration=dt,
-                vehicle_name=args.intruder,
-            )
+        if args.enable_motion and not hit and not args.intruder_actor:
+            _sim_command_vehicle_velocity(client, airsim, args.intruder, intruder_velocity, 0.0, command_duration, args)
 
         interceptor_state = client.getMultirotorState(vehicle_name=args.interceptor)
         kin_t_abs = _kinematics_timestamp_s(interceptor_state) or _kinematics_timestamp_s(interceptor_state.kinematics_estimated)
-        interceptor_kin = _vehicle_truth_kinematics(client, args.interceptor)
+        interceptor_kin = _sim_guidance_kinematics(client, args.interceptor, args)
         if kin_t_abs is not None and sim_start_t is None:
             sim_start_t = kin_t_abs
         sim_t = (
@@ -760,11 +960,17 @@ def main() -> None:
         )
         if sim_t >= args.duration_s:
             break
-        intruder_kin = _vehicle_truth_kinematics(client, args.intruder)
-        interceptor_pos = _world_position(interceptor_kin, args.interceptor, vehicle_origins)
-        intruder_pos = _world_position(intruder_kin, args.intruder, vehicle_origins)
+        if args.enable_motion and args.intruder_actor and actor_initial_pos is not None and not hit:
+            actor_pos = actor_initial_pos + intruder_velocity * float(sim_t)
+            _sim_move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(intruder_velocity))
+        interceptor_pos = _sim_world_position(interceptor_kin, args.interceptor, vehicle_origins)
+        intruder_pos = _sim_intruder_truth_position(client, args, vehicle_origins)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
-        intruder_vel = _vector_xyz(intruder_kin.linear_velocity)
+        if args.intruder_actor:
+            intruder_vel = np.array(intruder_velocity, dtype=float)
+        else:
+            intruder_kin = _sim_guidance_kinematics(client, args.intruder, args)
+            intruder_vel = _vector_xyz(intruder_kin.linear_velocity)
         interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
         interceptor_accel_norm = float(np.linalg.norm(interceptor_accel))
         load_factor_g = interceptor_accel_norm / GRAVITY_MPS2
@@ -807,13 +1013,20 @@ def main() -> None:
         )
         v_cmd = _apply_altitude_correction(v_cmd, relative_position, intruder_vel, speed_cap, args)
 
-        pair_collision = get_vehicle_pair_collision(
-            client,
-            args.interceptor,
-            args.intruder,
-            interceptor_object_patterns=args.collision_interceptor_pattern,
-            intruder_object_patterns=args.collision_intruder_pattern,
-        )
+        if args.intruder_actor:
+            pair_collision = get_vehicle_object_collision(
+                client,
+                args.interceptor,
+                _sim_actor_collision_patterns(args),
+            )
+        else:
+            pair_collision = get_vehicle_pair_collision(
+                client,
+                args.interceptor,
+                args.intruder,
+                interceptor_object_patterns=args.collision_interceptor_pattern,
+                intruder_object_patterns=args.collision_intruder_pattern,
+            )
         hit = pair_collision.collided
         _record_sample(
             rows,
@@ -859,14 +1072,10 @@ def main() -> None:
             )
             break
 
-        if args.enable_motion:
-            client.moveByVelocityAsync(
-                float(v_cmd[0]),
-                float(v_cmd[1]),
-                float(v_cmd[2]),
-                duration=dt,
-                vehicle_name=args.interceptor,
-            )
+        if args.enable_motion and not hit:
+            future = _sim_command_vehicle_velocity(client, airsim, args.interceptor, v_cmd, 0.0, command_duration, args)
+            if args.px4_interceptor and args.px4_command_join:
+                future.join()
 
         last_range = result.range_m
         time.sleep(dt)

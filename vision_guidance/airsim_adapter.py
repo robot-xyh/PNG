@@ -92,6 +92,27 @@ def get_vehicle_pair_collision(
     )
 
 
+def get_vehicle_object_collision(
+    client: Any,
+    vehicle_name: str,
+    object_patterns: Sequence[str],
+) -> AirSimPairCollision:
+    """Return true when a vehicle collision names a non-vehicle scene object."""
+
+    collision_info = client.simGetCollisionInfo(vehicle_name=vehicle_name)
+    vehicle_hit = bool(getattr(collision_info, "has_collided", False))
+    object_name = str(getattr(collision_info, "object_name", "") or "")
+    matched = vehicle_hit and _collision_object_matches(object_name, object_patterns)
+    return AirSimPairCollision(
+        matched,
+        "interceptor_object_pattern_match" if matched else "",
+        vehicle_hit,
+        False,
+        object_name,
+        "",
+    )
+
+
 def _default_collision_patterns(vehicle_name: str) -> tuple[str, ...]:
     return (vehicle_name, f"{vehicle_name}*")
 
