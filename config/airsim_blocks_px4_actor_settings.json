@@ -1,0 +1,118 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/main/docs/settings_json.md",
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "ClockType": "SteppableClock",
+  "ClockSpeed": 1.0,
+  "ViewMode": "NoDisplay",
+  "OriginGeopoint": {
+    "Latitude": 47.641468,
+    "Longitude": -122.140165,
+    "Altitude": 122.0
+  },
+  "CameraDefaults": {
+    "X": 0,
+    "Y": 0,
+    "Z": 0,
+    "Pitch": 0,
+    "Roll": 0,
+    "Yaw": 0,
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 640,
+        "Height": 480,
+        "FOV_Degrees": 120,
+        "MotionBlurAmount": 0
+      }
+    ]
+  },
+  "SubWindows": [
+    {
+      "WindowID": 0,
+      "CameraName": "0",
+      "ImageType": 0,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 1,
+      "CameraName": "0",
+      "ImageType": 3,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 2,
+      "CameraName": "0",
+      "ImageType": 5,
+      "Visible": false,
+      "External": false
+    }
+  ],
+  "Vehicles": {
+    "Interceptor": {
+      "VehicleType": "PX4Multirotor",
+      "DefaultVehicleState": "Armed",
+      "AutoCreate": true,
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "EnableTrace": true,
+      "X": 200,
+      "Y": 0,
+      "Z": -2,
+      "Pitch": 0,
+      "Roll": 0,
+      "Yaw": 0,
+      "IsFpvVehicle": true,
+      "UseSerial": false,
+      "UseTcp": true,
+      "LockStep": true,
+      "LocalHostIp": "127.0.0.1",
+      "ControlIp": "127.0.0.1",
+      "UdpIp": "127.0.0.1",
+      "QgcHostIp": "",
+      "QgcPort": 0,
+      "LogViewerHostIp": "",
+      "LogViewerPort": 0,
+      "TcpPort": 4560,
+      "ControlPortLocal": 14540,
+      "ControlPortRemote": 14580,
+      "Sensors": {
+        "Barometer": {
+          "SensorType": 1,
+          "Enabled": true,
+          "PressureFactorSigma": 0.0001825
+        }
+      },
+      "Parameters": {
+        "NAV_RCL_ACT": 0,
+        "NAV_DLL_ACT": 0,
+        "COM_OBL_ACT": 1,
+        "COM_OF_LOSS_T": 30,
+        "COM_DISARM_PRFLT": 0,
+        "MPC_XY_VEL_MAX": 12,
+        "MPC_XY_CRUISE": 10,
+        "MPC_VEL_MANUAL": 12,
+        "MPC_ACC_HOR": 6,
+        "MPC_ACC_HOR_MAX": 10,
+        "MPC_Z_VEL_MAX_UP": 5,
+        "MPC_Z_VEL_MAX_DN": 3,
+        "MPC_TILTMAX_AIR": 60,
+        "LPE_LAT": 47.641468,
+        "LPE_LON": -122.140165
+      },
+      "Cameras": {
+        "0": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0,
+          "Pitch": 0,
+          "Roll": 0,
+          "Yaw": 0
+        }
+      }
+    }
+  }
+}

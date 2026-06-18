@@ -35,7 +35,7 @@ export __VK_LAYER_NV_optimus="${__VK_LAYER_NV_optimus:-NVIDIA_only}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/nvidia_icd.json}"
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
 
-DEFAULT_ARGS=("-windowed" "-ResX=1280" "-ResY=720")
+DEFAULT_ARGS=("-RenderOffscreen" "-NoSplash" "-NoVSync" "-BENCHMARK" "-FPS=20")
 if [[ "$#" -gt 0 ]]; then
   ARGS=("$@")
 else
@@ -62,6 +62,9 @@ fi
 cd "$BLOCKS_DIR"
 echo "Launching Blocks from: $BLOCKS_DIR"
 echo "Using Vulkan ICD: $VK_ICD_FILENAMES"
+if [[ "$#" -eq 0 ]]; then
+  echo "Using default offscreen args: ${DEFAULT_ARGS[*]}"
+fi
 if [[ "$HAS_SETTINGS" -eq 0 && -f "$DEFAULT_AIRSIM_SETTINGS" ]]; then
   echo "Using AirSim settings: $DEFAULT_AIRSIM_SETTINGS"
 fi

@@ -1,0 +1,107 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/main/docs/settings_json.md",
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "ClockSpeed": 1.0,
+  "ViewMode": "NoDisplay",
+  "CameraDirector": {
+    "FollowDistance": -3,
+    "X": -3,
+    "Y": 0,
+    "Z": -2,
+    "Pitch": 0,
+    "Roll": 0,
+    "Yaw": 0
+  },
+  "CameraDefaults": {
+    "X": 0,
+    "Y": 0,
+    "Z": 0,
+    "Pitch": 0,
+    "Roll": 0,
+    "Yaw": 0,
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 640,
+        "Height": 480,
+        "FOV_Degrees": 120,
+        "MotionBlurAmount": 0
+      }
+    ]
+  },
+  "SubWindows": [
+    {
+      "WindowID": 0,
+      "CameraName": "0",
+      "ImageType": 0,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 1,
+      "CameraName": "0",
+      "ImageType": 3,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 2,
+      "CameraName": "0",
+      "ImageType": 5,
+      "Visible": false,
+      "External": false
+    }
+  ],
+  "Vehicles": {
+    "Interceptor": {
+      "VehicleType": "SimpleFlight",
+      "DefaultVehicleState": "Armed",
+      "AutoCreate": true,
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "EnableTrace": false,
+      "X": 200,
+      "Y": 0,
+      "Z": -2,
+      "Pitch": 0,
+      "Roll": 0,
+      "Yaw": 0,
+      "IsFpvVehicle": true,
+      "Cameras": {
+        "0": {
+          "X": 0,
+          "Y": 0,
+          "Z": 0,
+          "Pitch": 0,
+          "Roll": 0,
+          "Yaw": 0
+        }
+      },
+      "RC": {
+        "RemoteControlID": 0,
+        "AllowAPIWhenDisconnected": true
+      }
+    },
+    "Intruder": {
+      "VehicleType": "SimpleFlight",
+      "DefaultVehicleState": "Armed",
+      "AutoCreate": true,
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "EnableTrace": false,
+      "X": 300,
+      "Y": -20,
+      "Z": -2,
+      "Pitch": 0,
+      "Roll": 0,
+      "Yaw": 90,
+      "RC": {
+        "RemoteControlID": 1,
+        "AllowAPIWhenDisconnected": true
+      }
+    }
+  }
+}
