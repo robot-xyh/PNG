@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -18,8 +19,9 @@ LOG_DIR = PROJECT_ROOT / "logs" / "strapdown_accuracy"
 TRUTH_DIR = LOG_DIR / "truth_required_load"
 REPORT_PATH = PROJECT_ROOT / "完整方案" / "捷联ClockSpeed1中心相机对比报告.md"
 ASSET_DIR = PROJECT_ROOT / "完整方案" / "assets" / "捷联ClockSpeed1中心相机对比报告"
+SENSOR_NOISE_SETTINGS_PATH = PROJECT_ROOT / "config" / "airsim_blocks_px4_actor_sensor_noise_settings.json"
 GRAVITY_MPS2 = 9.80665
-CASE_ORDER = "ABCDEFGHI"
+CASE_ORDER = "ABCDEFGHIJK"
 
 CASE_LABELS = {
     "A": "A c0.2 z+0.5m",
@@ -31,6 +33,8 @@ CASE_LABELS = {
     "G": "G c1.0 noisy raw",
     "H": "H PX4+Actor noisy raw",
     "I": "I PX4+Actor noisy KF",
+    "J": "J PX4+Actor sensor-noise KF",
+    "K": "K PX4+Actor sensor-noise raw",
 }
 
 CASE_TEXT = {
@@ -43,6 +47,8 @@ CASE_TEXT = {
     "G": "本轮 G：ClockSpeed=1.0，中心相机，bbox 中等噪声，LOS 滤波关闭。",
     "H": "本轮 H：PX4 SITL 拦截机 + 按轨迹移动的立方体 Actor 目标，中心相机，bbox 中等噪声，LOS 滤波关闭。",
     "I": "本轮 I：PX4 SITL 拦截机 + 按轨迹移动的立方体 Actor 目标，中心相机，bbox 中等噪声，LOS Kalman 滤波开启。",
+    "J": "本轮 J：PX4 SITL 拦截机 + 按轨迹移动的 1m x 1m x 0.5m Actor 目标，加入 IMU/GPS 噪声，bbox 中等噪声，LOS Kalman 滤波开启。",
+    "K": "本轮 K：PX4 SITL 拦截机 + 按轨迹移动的 1m x 1m x 0.5m Actor 目标，加入 IMU/GPS 噪声，bbox 中等噪声，LOS 滤波关闭。",
 }
 
 
@@ -220,7 +226,7 @@ def _latest_baseline_stamp() -> str:
     return candidates[-1].name.removeprefix("strapdown_clock0p2_extA_").removesuffix("_summary.csv")
 
 
-def load_rows(stamp: str, baseline_stamp: str, noise_stamp: str, sitl_stamp: str) -> list[CaseRow]:
+def load_rows(stamp: str, baseline_stamp: str, noise_stamp: str, sitl_stamp: str, sitl_sensor_stamp: str) -> list[CaseRow]:
     rows: list[CaseRow] = []
     if baseline_stamp:
         for label in "ABCD":
@@ -254,6 +260,15 @@ def load_rows(stamp: str, baseline_stamp: str, noise_stamp: str, sitl_stamp: str
                     LOG_DIR / f"strapdown_clock1_sitl_{label}_{sitl_stamp}_summary.csv",
                     label,
                     f"strapdown_clock1_sitl_{label}_truth_N3_{sitl_stamp}",
+                )
+            )
+    if sitl_sensor_stamp:
+        for label in ("J", "K"):
+            rows.extend(
+                _load_summary(
+                    LOG_DIR / f"strapdown_clock1_sitl_{label}_{sitl_sensor_stamp}_summary.csv",
+                    label,
+                    f"strapdown_clock1_sitl_{label}_truth_N3_{sitl_sensor_stamp}",
                 )
             )
     return sorted(rows, key=lambda row: (row.start_range_m, row.label))
@@ -423,6 +438,100 @@ def _group_summary(rows: list[CaseRow]) -> str:
     return "\n".join(lines)
 
 
+def _first_sample(rows: list[CaseRow], labels: tuple[str, ...]) -> dict[str, str]:
+    for row in rows:
+        if row.label not in labels or not row.csv_path.exists():
+            continue
+        samples = _read_csv(row.csv_path)
+        if samples:
+            return samples[0]
+    return {}
+
+
+def _sensor_rows(sensor: dict[str, object], keys: tuple[str, ...]) -> list[str]:
+    lines: list[str] = []
+    for key in keys:
+        if key in sensor:
+            lines.append(f"|`{key}`|`{sensor[key]}`|")
+    return lines
+
+
+def _noise_settings_markdown(rows: list[CaseRow], sitl_sensor_stamp: str) -> str:
+    sample = _first_sample(rows, ("J", "K"))
+    bbox_center = _float(sample.get("bbox_noise_center_sigma_px"), 3.0)
+    bbox_area = _float(sample.get("bbox_noise_area_sigma_ratio"), 0.08)
+    bbox_seed = _int(sample.get("bbox_noise_seed"), 20260617)
+    actor_asset = sample.get("intruder_actor_asset") or "1M_Cube_Chamfer"
+    actor_scale_x = _float(sample.get("intruder_actor_scale_x"), 1.0)
+    actor_scale_y = _float(sample.get("intruder_actor_scale_y"), 1.0)
+    actor_scale_z = _float(sample.get("intruder_actor_scale_z"), 0.5)
+
+    lines = [
+        "J/K 工况启用两类噪声：一类是视觉检测框噪声，直接作用在 `detect` 输出的 bbox center/area；另一类是 AirSim 传感器噪声，写入 PX4 SITL 拦截机的 `Sensors` 配置，影响 PX4 的仿真 IMU/GPS 输入。PNG 算法内部仍只使用视觉 bbox，不直接读取入侵目标真值。",
+        "",
+        "|项目|参数|值|",
+        "|---|---|---:|",
+        f"|bbox center 噪声|高斯标准差|`{bbox_center:.1f}px`|",
+        f"|bbox area 噪声|比例高斯标准差|`{100.0 * bbox_area:.1f}%`|",
+        f"|bbox 噪声随机种子|`bbox_noise_seed`|`{bbox_seed}`|",
+        f"|Actor 资源|`intruder_actor_asset`|`{actor_asset}`|",
+        f"|Actor 缩放|`scale_x, scale_y, scale_z`|`{actor_scale_x:g}, {actor_scale_y:g}, {actor_scale_z:g}`|",
+        "|Actor 名义尺寸|长 x 宽 x 高|`1m x 1m x 0.5m`|",
+        f"|AirSim settings|配置文件|`{SENSOR_NOISE_SETTINGS_PATH.relative_to(PROJECT_ROOT).as_posix()}`|",
+        f"|SITL sensor stamp|实验批次|`{sitl_sensor_stamp or 'N/A'}`|",
+    ]
+
+    sensors: dict[str, object] = {}
+    if SENSOR_NOISE_SETTINGS_PATH.exists():
+        try:
+            data = json.loads(SENSOR_NOISE_SETTINGS_PATH.read_text(encoding="utf-8"))
+            sensors = data.get("Vehicles", {}).get("Interceptor", {}).get("Sensors", {})
+        except (json.JSONDecodeError, OSError, AttributeError):
+            sensors = {}
+
+    imu = sensors.get("Imu", {}) if isinstance(sensors, dict) else {}
+    gps = sensors.get("Gps", {}) if isinstance(sensors, dict) else {}
+    if isinstance(imu, dict):
+        imu_rows = _sensor_rows(
+            imu,
+            (
+                "SensorType",
+                "Enabled",
+                "AngularRandomWalk",
+                "VelocityRandomWalk",
+                "GyroBiasStabilityTau",
+                "GyroBiasStability",
+                "AccelBiasStabilityTau",
+                "AccelBiasStability",
+            ),
+        )
+        if imu_rows:
+            lines.extend(["", "IMU 噪声参数：", "", "|参数|值|", "|---|---:|", *imu_rows])
+    if isinstance(gps, dict):
+        gps_rows = _sensor_rows(
+            gps,
+            (
+                "SensorType",
+                "Enabled",
+                "EphInitial",
+                "EpvInitial",
+                "EphFinal",
+                "EpvFinal",
+                "EphMin3d",
+                "EphMin2d",
+                "EphTimeConstant",
+                "EpvTimeConstant",
+                "UpdateLatency",
+                "UpdateFrequency",
+                "StartupDelay",
+            ),
+        )
+        if gps_rows:
+            lines.extend(["", "GPS 噪声参数：", "", "|参数|值|", "|---|---:|", *gps_rows])
+
+    return "\n".join(lines)
+
+
 def _norm_series(rows: list[dict[str, str]], keys: tuple[str, str, str]) -> list[float]:
     values: list[float] = []
     for row in rows:
@@ -434,7 +543,7 @@ def _norm_series(rows: list[dict[str, str]], keys: tuple[str, str, str]) -> list
 
 def _sitl_conclusion(groups: dict[str, list[CaseRow]]) -> str:
     lines: list[str] = []
-    for label in ("H", "I"):
+    for label in ("H", "I", "J", "K"):
         group = groups.get(label, [])
         if not group:
             continue
@@ -442,13 +551,28 @@ def _sitl_conclusion(groups: dict[str, list[CaseRow]]) -> str:
         for row in group:
             samples.extend(_read_csv(row.csv_path))
         hits = sum(row.hit for row in group)
+        hit_ranges = ", ".join(f"{row.start_range_m:.0f}m" for row in group if row.hit) or "-"
         min_range = min(row.min_range_m for row in group if math.isfinite(row.min_range_m))
         sim_fps = _percentile((row.avg_sim_sample_fps for row in group), 0.5)
         valid_frames = sum(row.valid_frames for row in group)
         total_frames = sum(row.frames for row in group)
+        detected_frames = sum(row.detected_frames for row in group)
         actual_speed = _percentile(_norm_series(samples, ("interceptor_vel_x", "interceptor_vel_y", "interceptor_vel_z")), 0.5)
         speed_cap = _percentile((_float(row.get("speed_cap")) for row in samples), 0.5)
         intruder_speed = _percentile((_float(row.get("intruder_speed")) for row in samples), 0.5)
+        yaw_errors = [
+            abs(_float(row.get("cmd_yaw_deg")) - _float(row.get("body_yaw_deg")))
+            for row in samples
+            if math.isfinite(_float(row.get("cmd_yaw_deg"))) and math.isfinite(_float(row.get("body_yaw_deg")))
+        ]
+        top_clip_ratio = (
+            sum(_bool(sample.get("bbox_top_clipped")) for sample in samples) / max(1, len(samples))
+        )
+        no_detection_ratio = (
+            sum(sample.get("guidance_mode") == "invalid" and sample.get("reject_reason") == "no_detection" for sample in samples)
+            / max(1, len(samples))
+        )
+        command_modes = sorted({str(sample.get("px4_command_mode", "")) for sample in samples if sample.get("px4_command_mode")})
         detection_names: set[str] = set()
         multi_name_frames = 0
         for sample in samples:
@@ -457,12 +581,22 @@ def _sitl_conclusion(groups: dict[str, list[CaseRow]]) -> str:
             if len(names) > 1:
                 multi_name_frames += 1
         lines.append(
-            f"- {label} 组 PX4+Actor 实测命中 `{hits}/{len(group)}`，最小原点距离 `{min_range:.3f}m`，"
-            f"有效视觉帧 `{valid_frames}/{total_frames}`，中位仿真采样率 `{sim_fps:.2f}Hz`，"
-            f"拦截机中位实际速度 `{actual_speed:.2f}m/s`，明显低于速度上限 `{speed_cap:.1f}m/s`；"
-            f"Actor 目标按 `{intruder_speed:.1f}m/s` 移动，因此当前失败主要受 PX4 Offboard 控制链路、"
-            "AirSim/PX4 同步采样率和实际速度响应限制影响，不能直接判定为 LOS+TTC 导引律失效。"
+            f"- {label} 组 PX4+Actor 实测命中 `{hits}/{len(group)}`，命中距离 `{hit_ranges}`，"
+            f"最小原点距离 `{min_range:.3f}m`；检测帧 `{detected_frames}/{total_frames}`，"
+            f"有效视觉帧 `{valid_frames}/{total_frames}`，中位仿真采样率 `{sim_fps:.2f}Hz`。"
+            f"本组 PX4 命令模式为 `{', '.join(command_modes) or '-'}`，拦截机中位实际速度 "
+            f"`{actual_speed:.2f}m/s`，速度上限 `{speed_cap:.1f}m/s`，Actor 目标速度 `{intruder_speed:.1f}m/s`。"
+            f"航向误差 P95 为 `{_percentile(yaw_errors, 0.95):.1f}deg`，top 裁切比例 "
+            f"`{100.0 * top_clip_ratio:.1f}%`，无检测 invalid 比例 `{100.0 * no_detection_ratio:.1f}%`。"
         )
+        if hits < len(group):
+            missed = ", ".join(f"{row.start_range_m:.0f}m" for row in group if not row.hit) or "-"
+            lines.append(
+                f"- {label} 组未命中距离 `{missed}`。这类失败应优先结合 bbox 裁切、无检测比例、"
+                "航向误差和 PX4 实际速度判断：若航向误差持续偏大，问题在捷联相机随 LOS 转向不足；"
+                "若 top 裁切后快速无检测，问题在末端视场和盲推窗口；若实际速度明显低于速度上限，"
+                "问题在 PX4 Offboard 速度响应。"
+            )
         if multi_name_frames or any(name != "IntruderActor" for name in detection_names):
             names_text = ", ".join(sorted(detection_names)) or "-"
             lines.append(
@@ -473,8 +607,9 @@ def _sitl_conclusion(groups: dict[str, list[CaseRow]]) -> str:
     if not lines:
         return ""
     lines.append(
-        "- 因此，H/I 在本报告中应作为“PX4 SITL 控制链路连通性与工程问题暴露”记录，而不是作为与 E/F/G "
-        "SimpleFlight 同权重的算法命中率对比。下一步应先把 PX4 实际速度闭环、Offboard 更新率和 Actor 生命周期稳定下来，再重新评估滤波开关的收益。"
+        "- 因此，H/I/J/K 在本报告中应作为“PX4 SITL 控制链路 + 视觉导引”的联合结果记录。"
+        "和 E/F/G SimpleFlight 相比，它额外包含 PX4 Offboard 航向/速度响应、EKF 状态估计、Actor 生命周期、"
+        "AirSim/PX4 同步时序等因素；评价算法收益时需要同时查看航向误差、速度响应和视觉质量门。"
     )
     return "\n".join(lines)
 
@@ -501,7 +636,7 @@ def _actual_conclusion(rows: list[CaseRow]) -> str:
         baseline_lines.append(f"{label}={hits}/{len(group)}, min={min_range:.3f}m")
     baseline_text = "; ".join(baseline_lines) or "无基线数据"
     noise_lines: list[str] = []
-    for label in ("F", "G", "H", "I"):
+    for label in ("F", "G", "H", "I", "J", "K"):
         group = groups.get(label, [])
         if not group:
             continue
@@ -540,6 +675,7 @@ def write_report(
     baseline_stamp: str,
     noise_stamp: str,
     sitl_stamp: str,
+    sitl_sensor_stamp: str,
     summary_path: Path,
     clip_path: Path,
     per_distance: dict[float, Path],
@@ -564,51 +700,56 @@ def write_report(
     case_lines = "\n".join(f"- {CASE_TEXT[label]}" for label in CASE_ORDER if label in present_labels)
     sitl_note = (
         ""
-        if {"H", "I"} & present_labels
-        else "\n- H/I PX4 SITL+Actor 工况尚未形成可统计结果；该工况只保留拦截机为 PX4 SITL，入侵目标为按轨迹移动的立方体 Actor，用于规避双 PX4 Offboard 链路不稳定。"
+        if {"H", "I", "J", "K"} & present_labels
+        else "\n- H/I/J/K PX4 SITL+Actor 工况尚未形成可统计结果；该工况只保留拦截机为 PX4 SITL，入侵目标为按轨迹移动的 Actor，用于规避双 PX4 Offboard 链路不稳定。"
     )
     report = f"""# 捷联视觉 PNG ClockSpeed 1 中心相机对比报告
 
 ## 1. 实验设置
 
-- 本轮：AirSim Blocks，`ClockSpeed=1.0`，捷联视觉 PNG；E/G/H 为 `--no-los-filter`，F/I 为 LOS Kalman 滤波开启。
+- 本轮：AirSim Blocks，`ClockSpeed=1.0`，捷联视觉 PNG；E/G/H/K 为 `--no-los-filter`，F/I/J 为 LOS Kalman 滤波开启。
 - 本轮相机：`camera_z=0`、`camera_pitch_deg=0`、`camera_roll_deg=0`、`camera_yaw_deg=0`，即视觉 LOS 求解时认为相机位于机体中心且无安装偏差。
 - 对比基线：上一轮四工况，`ClockSpeed=0.2`，baseline stamp `{baseline_stamp or 'N/A'}`。
 - 噪声工况：noise stamp `{noise_stamp or 'N/A'}`；bbox center 高斯噪声 `sigma=3px`，bbox area 比例高斯噪声 `sigma=8%`，保持宽高比缩放。该量级按工程经验近似代表 640x480、120deg FOV 下检测框边界抖动和尺度估计误差。
 - SITL 工况：sitl stamp `{sitl_stamp or 'N/A'}`；H/I 目标配置为 PX4 SITL 拦截机 + 按轨迹移动的立方体 Actor。PNG 内部仍只使用 AirSim detection bbox，Actor 真值只用于轨迹驱动、距离统计和碰撞评价。
-- 批量距离：`30-160m`，高度差 `20m`，入侵机速度 `5m/s`，拦截机速度上限为其 `2x`。
-- 注意：E/F/G 与 H/I 的飞控链路不同；H/I 结果包含 PX4 SITL Offboard 控制、EKF 状态估计和 AirSim 接口时序影响，不能与 SimpleFlight 工况只按算法开关直接等价比较。
+- SITL 传感器噪声工况：sitl sensor stamp `{sitl_sensor_stamp or 'N/A'}`；J/K 在 H/I 基础上增加 AirSim IMU/GPS 噪声，并将 Actor 目标尺寸改为约 `1m x 1m x 0.5m`。
+- 批量距离：E/F/G 使用 `30-160m`；H/I/J/K 使用 `40-140m`。统一高度差 `20m`，入侵目标速度 `5m/s`，拦截机速度上限为其 `2x`。
+- 注意：E/F/G 与 H/I/J/K 的飞控链路不同；H/I/J/K 结果包含 PX4 SITL Offboard 控制、EKF 状态估计和 AirSim 接口时序影响，不能与 SimpleFlight 工况只按算法开关直接等价比较。
 
 ## 2. 工况说明
 
 {case_lines}
 {sitl_note}
 
-## 3. 总览
+## 3. 噪声设置
+
+{_noise_settings_markdown(rows, sitl_sensor_stamp)}
+
+## 4. 总览
 
 ![summary]({_rel(summary_path)})
 
 ![clip]({_rel(clip_path)})
 
-## 4. 命中汇总
+## 5. 命中汇总
 
 {_group_summary(rows)}
 
-## 5. 明细表
+## 6. 明细表
 
 {_stats_table(rows)}
 
-## 6. 裁切统计
+## 7. 裁切统计
 
 {chr(10).join(clip_lines)}
 
-## 7. 单距离曲线
+## 8. 单距离曲线
 
 每张图包含视觉 PNG 速度指令等效需用过载、无人机实际过载、影子真值 PNG 理论需用过载、视觉 LOS 与相机光心真值 LOS 的误差、尺度膨胀 TTC，以及真实距离曲线。
 
 {image_lines}
 
-## 8. 实际结论
+## 9. 实际结论
 
 {_actual_conclusion(rows)}
 """
@@ -621,13 +762,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--baseline-stamp", default="")
     parser.add_argument("--noise-stamp", default="")
     parser.add_argument("--sitl-stamp", default="")
+    parser.add_argument("--sitl-sensor-stamp", default="")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     baseline_stamp = args.baseline_stamp or _latest_baseline_stamp()
-    rows = load_rows(args.stamp, baseline_stamp, args.noise_stamp, args.sitl_stamp)
+    rows = load_rows(args.stamp, baseline_stamp, args.noise_stamp, args.sitl_stamp, args.sitl_sensor_stamp)
     if not rows:
         raise SystemExit(f"no rows found for stamp {args.stamp}")
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
@@ -636,12 +778,24 @@ def main() -> None:
     plot_summary(rows, summary_path)
     clip_stats = plot_clips(rows, clip_path)
     per_distance = plot_per_distance(rows, ASSET_DIR)
-    write_report(rows, args.stamp, baseline_stamp, args.noise_stamp, args.sitl_stamp, summary_path, clip_path, per_distance, clip_stats)
+    write_report(
+        rows,
+        args.stamp,
+        baseline_stamp,
+        args.noise_stamp,
+        args.sitl_stamp,
+        args.sitl_sensor_stamp,
+        summary_path,
+        clip_path,
+        per_distance,
+        clip_stats,
+    )
     print(f"report={REPORT_PATH}")
     print(f"stamp={args.stamp}")
     print(f"baseline_stamp={baseline_stamp}")
     print(f"noise_stamp={args.noise_stamp}")
     print(f"sitl_stamp={args.sitl_stamp}")
+    print(f"sitl_sensor_stamp={args.sitl_sensor_stamp}")
 
 
 if __name__ == "__main__":
