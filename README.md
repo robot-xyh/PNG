@@ -20,8 +20,9 @@ run object detection and does not send MAVLink or flight-control commands.
 
 ## Detection Input Contract
 
-The detector/tracker is intentionally skipped for now. Future YOLO/ByteTrack
-integration only needs to produce:
+The AirSim validation scripts default to the built-in AirSim detection API, but
+the gimbal and strapdown paths can also use YOLOv8 + ByteTrack. Both detector
+sources are converted into the same contract:
 
 ```text
 FrameDetection:
@@ -41,9 +42,26 @@ python3 examples/run_synthetic.py
 
 ## AirSim Blocks Example
 
-The AirSim path uses the built-in detection API. It only converts detected
-`box2D` into `FrameDetection`; it does not read the intruder's true pose,
-`relative_pose`, `geo_point`, or true velocity.
+The AirSim path uses the built-in detection API by default. It only converts
+detected `box2D` into `FrameDetection`; it does not read the intruder's true
+pose, `relative_pose`, `geo_point`, or true velocity.
+
+The gimbal and strapdown validation scripts can replace AirSim detection with
+YOLOv8 + ByteTrack:
+
+```bash
+python3 -m pip install torch ultralytics lap opencv-python
+
+python3 examples/run_airsim_strapdown_vision_png.py \
+  --enable-motion \
+  --detector-source yolo_bytetrack \
+  --yolo-model /path/to/uav_yolov8.pt \
+  --yolo-class-id 0
+```
+
+YOLO mode is fail-fast: if the model path, dependencies, or `--yolo-class-id`
+are missing, the script exits instead of silently falling back to AirSim
+detection. ByteTrack `track_id` is logged and used for target continuity.
 
 Expected AirSim setup:
 

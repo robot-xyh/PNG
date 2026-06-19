@@ -72,6 +72,7 @@ from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
 from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
+from vision_guidance.yolo_bytetrack_detector import add_detector_args, create_detection_provider
 
 
 GRAVITY_MPS2 = 9.80665
@@ -299,6 +300,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
+    add_detector_args(parser)
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
     parser.add_argument("--show-window", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--window-scale", type=float, default=0.75)
@@ -1188,28 +1190,32 @@ def _draw_detection_window_strapdown(
     reason: str,
     ttc_text: str,
     args,
+    image_bgr=None,
 ) -> bool:
     if display is None or display.get("failed"):
         return False
     cv2 = display["cv2"]
     airsim_module = display["airsim"]
     try:
-        raw_image = client.simGetImage(
-            config.camera_name,
-            getattr(airsim_module.ImageType, config.image_type_name),
-            vehicle_name=config.vehicle_name,
-        )
-        if raw_image is None:
-            display["image_failures"] += 1
-            if display["image_failures"] <= 3:
-                print("OpenCV display: simGetImage returned no image.")
-            return False
-        image = _decode_airsim_image(cv2, raw_image)
-        if image is None:
-            display["image_failures"] += 1
-            if display["image_failures"] <= 3:
-                print("OpenCV display: failed to decode AirSim image.")
-            return False
+        if image_bgr is None:
+            raw_image = client.simGetImage(
+                config.camera_name,
+                getattr(airsim_module.ImageType, config.image_type_name),
+                vehicle_name=config.vehicle_name,
+            )
+            if raw_image is None:
+                display["image_failures"] += 1
+                if display["image_failures"] <= 3:
+                    print("OpenCV display: simGetImage returned no image.")
+                return False
+            image = _decode_airsim_image(cv2, raw_image)
+            if image is None:
+                display["image_failures"] += 1
+                if display["image_failures"] <= 3:
+                    print("OpenCV display: failed to decode AirSim image.")
+                return False
+        else:
+            image = np.array(image_bgr, copy=True)
         if image.ndim == 2:
             image = cv2.cvtColor(image, cv2.COLOR_GRAY2BGR)
         elif image.shape[2] == 4:
@@ -1302,6 +1308,7 @@ def main() -> None:
     print(f"AirSim vehicles: {_format_names(available)}")
     if args.list_vehicles:
         return
+    detector = create_detection_provider(args, airsim_module=airsim)
 
     if args.intruder_actor:
         args.px4_intruder = False
@@ -1347,8 +1354,9 @@ def main() -> None:
         mesh_name_pattern=args.mesh,
         vehicle_name=args.interceptor,
     )
-    configure_detection_filter(client, config)
-    _configure_actor_detection_aliases(client, airsim, config, args)
+    if args.detector_source == "airsim":
+        configure_detection_filter(client, config)
+        _configure_actor_detection_aliases(client, airsim, config, args)
 
     attitude_buffer = AttitudeHistoryBuffer(duration_s=2.0)
     los_filter = LOSKalmanFilter6D()
@@ -1375,11 +1383,18 @@ def main() -> None:
         intruder_velocity_cmd=intruder_velocity_cmd,
         intrinsics=intrinsics,
     )
-    _warmup_detection(client, config, args)
+    if args.detector_source == "airsim":
+        _warmup_detection(client, config, args)
+    else:
+        print(
+            "YOLO ByteTrack detector active: "
+            f"model={args.yolo_model}, class_id={args.yolo_class_id}, tracker={args.yolo_tracker}"
+        )
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     display = _make_display(airsim, args.show_window)
 
     active_name: Optional[str] = None
+    active_track_id: Optional[int] = None
     last_valid_ts: Optional[float] = None
     last_lambda_I: Optional[np.ndarray] = None
     last_omega_los: Optional[np.ndarray] = None
@@ -1480,11 +1495,21 @@ def main() -> None:
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
         camera_world_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
 
-        detections = list(get_detections(client, config))
+        detector_frame = detector.detect(
+            client=client,
+            config=config,
+            frame_id=frame_id,
+            exposure_ts=sim_t,
+            active_name=active_name,
+            active_track_id=active_track_id,
+        )
+        detections = detector_frame.detections
         detection_count = len(detections)
         detection_names = _detection_names(detections)
-        detection = choose_detection(detections, preferred_name=active_name)
+        detection = detector_frame.selected
         detected = detection is not None
+        detector_stats = detector_frame.stats
+        detector_image = detector_frame.image_bgr
         px_err_x = 0.0
         px_err_y = 0.0
         yaw_rate_cmd_deg_s = 0.0
@@ -1521,18 +1546,32 @@ def main() -> None:
         los_dt_s: float | str = ""
         los_angle_step_deg: float | str = ""
         los_source = "none"
+        track_switched = False
 
         if detection is None:
-            reason = "no_detection"
+            reason = str(detector_stats.get("detector_reject_reason") or "no_detection")
         else:
             active_name = getattr(detection, "name", None) or active_name
-            frame_detection = detection_to_frame_detection(
-                detection=detection,
-                frame_id=frame_id,
-                exposure_ts=sim_t,
-                track_id=1,
-                score=1.0,
-            )
+            frame_detection = detector_frame.frame_detection
+            if frame_detection is None:
+                reason = str(detector_stats.get("detector_reject_reason") or "no_detection")
+            else:
+                track_switched = active_track_id is not None and int(frame_detection.track_id) != int(active_track_id)
+                if track_switched:
+                    los_filter.reset()
+                    ttc_filter.reset()
+                    terminal_image_kf.reset()
+                    terminal_extrapolator = TerminalExtrapolator(_terminal_config_from_args(args))
+                    yaw_rate_samples.clear()
+                    last_lambda_I = None
+                    last_omega_los = None
+                    last_raw_lambda_I = None
+                    last_raw_lambda_ts = None
+                    last_valid_ts = None
+                    lambda_I = None
+                    omega_los = None
+                active_track_id = int(frame_detection.track_id)
+        if frame_detection is not None:
             frame_detection, bbox_noise = _apply_bbox_noise(frame_detection, intrinsics, bbox_noise_rng, args)
             bbox_noise_dx_px = float(bbox_noise["dx"])
             bbox_noise_dy_px = float(bbox_noise["dy"])
@@ -1639,7 +1678,7 @@ def main() -> None:
             detected=detected,
             measurement_valid=detected,
             clipped=detection_clipped or pitch_measurement_rejected,
-            track_id=1 if detected else None,
+            track_id=active_track_id if detected else None,
         )
 
         if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
@@ -1722,6 +1761,7 @@ def main() -> None:
             reason,
             ttc_value,
             args,
+            image_bgr=detector_image,
         )
         preview_lines = _preview_lines(
             profile="strapdown",
@@ -1750,6 +1790,7 @@ def main() -> None:
             guidance_mode=guidance_mode,
             reason=reason,
             hit=hit,
+            image_bgr=detector_image,
         )
 
         cmd_yaw_deg = _yaw_deg_from_velocity(v_cmd)
@@ -1803,6 +1844,20 @@ def main() -> None:
                 "detection_names": detection_names,
                 "detected": int(detected),
                 "target_name": active_name or "",
+                "target_track_id": "" if active_track_id is None else int(active_track_id),
+                "track_switched": int(track_switched),
+                "detector_source": str(detector_stats.get("detector_source", args.detector_source)),
+                "detector_reject_reason": str(detector_stats.get("detector_reject_reason", "")),
+                "detector_raw_count": detector_stats.get("detector_raw_count", ""),
+                "detector_class_filtered_count": detector_stats.get("detector_class_filtered_count", ""),
+                "detector_track_filtered_count": detector_stats.get("detector_track_filtered_count", ""),
+                "yolo_raw_count": detector_stats.get("yolo_raw_count", ""),
+                "yolo_class_filtered_count": detector_stats.get("yolo_class_filtered_count", ""),
+                "yolo_track_filtered_count": detector_stats.get("yolo_track_filtered_count", ""),
+                "yolo_track_missing_count": detector_stats.get("yolo_track_missing_count", ""),
+                "yolo_selected_track_id": detector_stats.get("yolo_selected_track_id", ""),
+                "yolo_selected_class_id": detector_stats.get("yolo_selected_class_id", ""),
+                "yolo_selected_score": detector_stats.get("yolo_selected_score", ""),
                 "image_width": intrinsics.width,
                 "image_height": intrinsics.height,
                 "range": range_m,
