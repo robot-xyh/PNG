@@ -90,11 +90,23 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intruder-actor-name", default="IntruderActor")
     parser.add_argument("--intruder-actor-asset", default="1M_Cube_Chamfer")
     parser.add_argument("--intruder-actor-scale", type=float, default=2.0)
+    parser.add_argument("--intruder-actor-scale-x", type=float, default=None)
+    parser.add_argument("--intruder-actor-scale-y", type=float, default=None)
+    parser.add_argument("--intruder-actor-scale-z", type=float, default=None)
     parser.add_argument("--intruder-actor-physics", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--intruder-actor-blueprint", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--intruder-actor-respawn", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--collision-interceptor-pattern", action="append", default=None)
     parser.add_argument("--collision-intruder-pattern", action="append", default=None)
+    parser.add_argument(
+        "--collision-max-range-m",
+        type=float,
+        default=8.0,
+        help=(
+            "Accept AirSim collision as a hit only when diagnostic truth range is below this value. "
+            "This rejects stale has_collided state when running multiple actor cases without reset."
+        ),
+    )
     parser.add_argument("--camera", default="0")
     parser.add_argument("--mesh", default="Intruder*")
     parser.add_argument("--width", type=int, default=640)
@@ -256,6 +268,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--ttc-min-area", type=float, default=0.0)
     parser.add_argument("--ttc-max-s", type=float, default=120.0)
     parser.add_argument(
+        "--guidance-law",
+        choices=("ttc_png", "fixed_vm_png"),
+        default="ttc_png",
+        help=(
+            "Guidance gain source. ttc_png uses scale-expansion TTC scheduling; "
+            "fixed_vm_png ignores TTC for guidance and uses N*Vm with Vm=speed_ratio*intruder_speed."
+        ),
+    )
+    parser.add_argument(
+        "--navigation-constant",
+        type=float,
+        default=3.0,
+        help="Navigation constant N used by --guidance-law fixed_vm_png.",
+    )
+    parser.add_argument(
         "--bbox-noise",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -371,7 +398,7 @@ def _apply_bbox_noise(frame_detection, intrinsics, rng: np.random.Generator, arg
 
 def _initial_truth_yaw_deg(client, args, origins: dict[str, np.ndarray]) -> float:
     interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
-    interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
+    interceptor_pos = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
     intruder_pos = _intruder_truth_position(client, args, origins)
     state = client.getMultirotorState(vehicle_name=args.interceptor)
     R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
@@ -480,6 +507,20 @@ def _world_position(kinematics, vehicle_name: str, origins: dict[str, np.ndarray
     return origins.get(vehicle_name, np.zeros(3, dtype=float)) + _vector_xyz(kinematics.position)
 
 
+def _object_world_position(client, object_name: str) -> np.ndarray:
+    pose = client.simGetObjectPose(object_name)
+    return _vector_xyz(pose.position)
+
+
+def _vehicle_truth_position(client, vehicle_name: str, origins: dict[str, np.ndarray], kinematics=None) -> np.ndarray:
+    try:
+        return _object_world_position(client, vehicle_name)
+    except Exception:
+        if kinematics is None:
+            kinematics = _truth_kinematics(client, vehicle_name)
+        return _world_position(kinematics, vehicle_name, origins)
+
+
 def _actor_name(args) -> str:
     return str(getattr(args, "intruder_actor_name", "") or args.intruder)
 
@@ -495,11 +536,20 @@ def _actor_position_from_pose(pose) -> np.ndarray:
     return _vector_xyz(pose.position)
 
 
+def _actor_scale_xyz(args) -> tuple[float, float, float]:
+    base = float(getattr(args, "intruder_actor_scale", 1.0))
+    return (
+        float(getattr(args, "intruder_actor_scale_x", None) if getattr(args, "intruder_actor_scale_x", None) is not None else base),
+        float(getattr(args, "intruder_actor_scale_y", None) if getattr(args, "intruder_actor_scale_y", None) is not None else base),
+        float(getattr(args, "intruder_actor_scale_z", None) if getattr(args, "intruder_actor_scale_z", None) is not None else base),
+    )
+
+
 def _intruder_truth_position(client, args, origins: dict[str, np.ndarray]) -> np.ndarray:
     if getattr(args, "intruder_actor", False):
-        return _actor_position_from_pose(client.simGetObjectPose(_actor_name(args)))
+        return _object_world_position(client, _actor_name(args))
     intruder_kin = _guidance_kinematics(client, args.intruder, args)
-    return _world_position(intruder_kin, args.intruder, origins)
+    return _vehicle_truth_position(client, args.intruder, origins, kinematics=intruder_kin)
 
 
 def _spawn_or_move_intruder_actor(client, airsim_module, args, world_position: np.ndarray, yaw_deg: float) -> None:
@@ -512,6 +562,12 @@ def _spawn_or_move_intruder_actor(client, airsim_module, args, world_position: n
             pass
     else:
         try:
+            moved = client.simSetObjectPose(object_name, pose, teleport=True)
+            if moved is None or bool(moved):
+                return
+        except Exception:
+            pass
+        try:
             scene_objects = client.simListSceneObjects(f"{object_name}.*")
         except Exception:
             scene_objects = []
@@ -520,10 +576,11 @@ def _spawn_or_move_intruder_actor(client, airsim_module, args, world_position: n
             return
     spawned = False
     try:
+        scale_x, scale_y, scale_z = _actor_scale_xyz(args)
         scale = airsim_module.Vector3r(
-            float(args.intruder_actor_scale),
-            float(args.intruder_actor_scale),
-            float(args.intruder_actor_scale),
+            scale_x,
+            scale_y,
+            scale_z,
         )
         spawned = bool(
             client.simSpawnObject(
@@ -856,7 +913,7 @@ def _apply_start_geometry(client, airsim_module, args, origins: dict[str, np.nda
     if args.px4_interceptor:
         interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
         interceptor_local = _vector_xyz(interceptor_kin.position)
-        interceptor_world = _world_position(interceptor_kin, args.interceptor, origins)
+        interceptor_world = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
         state = client.getMultirotorState(vehicle_name=args.interceptor)
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
         forward_axis = np.array([R_IB[0, 0], R_IB[1, 0], 0.0], dtype=float)
@@ -1189,6 +1246,38 @@ def _draw_detection_window_strapdown(
         return False
 
 
+def _collision_time_stamp_s(time_stamp_ns: int) -> str | float:
+    if not time_stamp_ns:
+        return ""
+    return float(time_stamp_ns) * 1.0e-9
+
+
+def _collision_snapshot(client, args):
+    if args.intruder_actor:
+        return get_vehicle_object_collision(
+            client,
+            args.interceptor,
+            _actor_collision_patterns(args),
+        )
+    return get_vehicle_pair_collision(
+        client,
+        args.interceptor,
+        args.intruder,
+        interceptor_object_patterns=args.collision_interceptor_pattern,
+        intruder_object_patterns=args.collision_intruder_pattern,
+    )
+
+
+def _collision_is_new(pair_collision, baseline_collision) -> bool:
+    interceptor_ts = int(getattr(pair_collision, "interceptor_time_stamp_ns", 0) or 0)
+    intruder_ts = int(getattr(pair_collision, "intruder_time_stamp_ns", 0) or 0)
+    baseline_interceptor_ts = int(getattr(baseline_collision, "interceptor_time_stamp_ns", 0) or 0)
+    baseline_intruder_ts = int(getattr(baseline_collision, "intruder_time_stamp_ns", 0) or 0)
+    if interceptor_ts or intruder_ts or baseline_interceptor_ts or baseline_intruder_ts:
+        return interceptor_ts > baseline_interceptor_ts or intruder_ts > baseline_intruder_ts
+    return True
+
+
 def main() -> None:
     args = parse_args()
     try:
@@ -1199,6 +1288,8 @@ def main() -> None:
         raise SystemExit("--rate-hz must be positive")
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
+    if args.navigation_constant <= 0.0:
+        raise SystemExit("--navigation-constant must be positive")
 
     client = airsim.MultirotorClient()
     _register_px4_shutdown_stop(client, args)
@@ -1234,7 +1325,7 @@ def main() -> None:
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     if args.intruder_actor and not _start_geometry_enabled(args):
         interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
-        interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
+        interceptor_pos = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
         actor_pos = interceptor_pos + np.array(
             [
                 float(args.start_forward_offset_m or args.start_horizontal_range_m or 100.0),
@@ -1271,6 +1362,7 @@ def main() -> None:
     intruder_velocity_cmd = _intruder_velocity(args)
     intruder_speed = max(float(np.linalg.norm(intruder_velocity_cmd)), args.intruder_speed)
     speed_cap = args.speed_ratio * intruder_speed
+    fixed_vm_gain = float(args.navigation_constant) * float(speed_cap)
     actor_initial_pos: Optional[np.ndarray] = None
     if args.intruder_actor:
         actor_initial_pos = _intruder_truth_position(client, args, origins)
@@ -1312,6 +1404,7 @@ def main() -> None:
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
         "ttc,valid,guidance_mode,reason,yaw_rate,body_yaw,cmd_yaw,v_cmd,hit"
     )
+    baseline_collision = _collision_snapshot(client, args)
     while True:
         loop_start = time.monotonic()
         loop_dt = target_dt if frame_id == 0 else max(1.0e-6, loop_start - last_loop_start)
@@ -1335,7 +1428,7 @@ def main() -> None:
             actor_pos = actor_initial_pos + intruder_velocity_cmd * float(sim_t)
             _move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(intruder_velocity_cmd))
         interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
-        interceptor_pos = _world_position(interceptor_kin, args.interceptor, origins)
+        interceptor_pos = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
         interceptor_accel = _linear_acceleration_mps2(interceptor_kin)
         interceptor_accel_norm = float(np.linalg.norm(interceptor_accel))
@@ -1365,21 +1458,22 @@ def main() -> None:
             intruder_pos = _intruder_truth_position(client, args, origins)
             rel = intruder_pos - interceptor_pos
             range_m = float(np.linalg.norm(rel))
-        if args.intruder_actor:
-            pair_collision = get_vehicle_object_collision(
-                client,
-                args.interceptor,
-                _actor_collision_patterns(args),
-            )
+        pair_collision = _collision_snapshot(client, args)
+        raw_collision_hit = bool(pair_collision.collided)
+        collision_new = _collision_is_new(pair_collision, baseline_collision)
+        collision_range_gate_m = max(0.0, float(args.collision_max_range_m))
+        collision_range_ok = (
+            not args.diagnostic_truth
+            or not np.isfinite(range_m)
+            or range_m <= collision_range_gate_m
+        )
+        hit = raw_collision_hit and collision_new and collision_range_ok
+        if raw_collision_hit and not collision_new:
+            pair_collision_reason = f"{pair_collision.reason}:stale_time_reject"
+        elif raw_collision_hit and not collision_range_ok:
+            pair_collision_reason = f"{pair_collision.reason}:range_gate_reject"
         else:
-            pair_collision = get_vehicle_pair_collision(
-                client,
-                args.interceptor,
-                args.intruder,
-                interceptor_object_patterns=args.collision_interceptor_pattern,
-                intruder_object_patterns=args.collision_intruder_pattern,
-            )
-        hit = pair_collision.collided
+            pair_collision_reason = pair_collision.reason
 
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
         attitude_buffer.push(AttitudeSample(timestamp=sim_t, R_IB=R_IB))
@@ -1495,14 +1589,25 @@ def main() -> None:
                     los_omega = omega_raw
                     los_quality = 1.0
                     los_reject_reason = None
-                ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
-                ttc_quality = ttc.quality
-                ttc_area = ttc.area_filtered
-                ttc_area_dot = ttc.area_dot_filtered
-                if ttc.ttc is not None:
-                    ttc_value = f"{ttc.ttc:.3f}"
+                if args.guidance_law == "ttc_png":
+                    ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
+                    ttc_quality = ttc.quality
+                    ttc_area = ttc.area_filtered
+                    ttc_area_dot = ttc.area_dot_filtered
+                    if ttc.ttc is not None:
+                        ttc_value = f"{ttc.ttc:.3f}"
                 if not los_valid:
                     reason = los_reject_reason or "los_invalid"
+                elif args.guidance_law == "fixed_vm_png":
+                    guidance_gain = fixed_vm_gain
+                    omega_los = los_omega
+                    lambda_I = los_lambda
+                    g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                    valid = True
+                    guidance_mode = "fixed_vm_png"
+                    last_valid_ts = sim_t
+                    last_lambda_I = lambda_I
+                    last_omega_los = omega_los
                 elif not ttc.valid or ttc.ttc is None:
                     lambda_I = los_lambda
                     omega_los = los_omega
@@ -1663,7 +1768,7 @@ def main() -> None:
             try:
                 post_command_kin = _guidance_kinematics(client, args.interceptor, args)
                 post_command_vel = _vector_xyz(post_command_kin.linear_velocity)
-                post_command_pos = _world_position(post_command_kin, args.interceptor, origins)
+                post_command_pos = _vehicle_truth_position(client, args.interceptor, origins, kinematics=post_command_kin)
             except Exception:
                 pass
 
@@ -1690,6 +1795,10 @@ def main() -> None:
                 "sim_clock_ratio": sim_clock_ratio,
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
+                "guidance_law": args.guidance_law,
+                "navigation_constant": float(args.navigation_constant),
+                "vm_png_gain": fixed_vm_gain,
+                "ttc_used_for_guidance": int(args.guidance_law == "ttc_png"),
                 "detection_count": detection_count,
                 "detection_names": detection_names,
                 "detected": int(detected),
@@ -1703,9 +1812,21 @@ def main() -> None:
                 "v_cmd_z_sign": float(np.sign(v_cmd[2])),
                 "vertical_command_consistent": vertical_command_consistent,
                 "hit": int(hit),
-                "collision_reason": pair_collision.reason,
+                "collision_reason": pair_collision_reason,
+                "collision_raw_hit": int(raw_collision_hit),
+                "collision_new": int(collision_new),
+                "collision_range_gate_m": collision_range_gate_m,
+                "collision_range_ok": int(collision_range_ok),
+                "collision_accepted": int(hit),
+                "collision_interceptor_time_s": _collision_time_stamp_s(pair_collision.interceptor_time_stamp_ns),
+                "collision_intruder_time_s": _collision_time_stamp_s(pair_collision.intruder_time_stamp_ns),
+                "collision_baseline_interceptor_time_s": _collision_time_stamp_s(baseline_collision.interceptor_time_stamp_ns),
+                "collision_baseline_intruder_time_s": _collision_time_stamp_s(baseline_collision.intruder_time_stamp_ns),
                 "interceptor_collision_object": pair_collision.interceptor_object_name,
                 "intruder_collision_object": pair_collision.intruder_object_name,
+                "intruder_actor_scale_x": _actor_scale_xyz(args)[0],
+                "intruder_actor_scale_y": _actor_scale_xyz(args)[1],
+                "intruder_actor_scale_z": _actor_scale_xyz(args)[2],
                 "pixel_error_x": px_err_x,
                 "pixel_error_y": px_err_y,
                 "bbox_area": bbox_area,
@@ -1847,7 +1968,7 @@ def main() -> None:
             )
         if hit:
             print(
-                f"hit=True collision=True reason={pair_collision.reason} "
+                f"hit=True collision=True reason={pair_collision_reason} "
                 f"range={range_m:.3f}m t={sim_t:.3f}s"
             )
             break

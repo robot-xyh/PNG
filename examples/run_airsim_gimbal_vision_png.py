@@ -1232,6 +1232,8 @@ def _experiment_fields(
         "bbox_noise_area_sigma_ratio": float(getattr(args, "bbox_area_noise_ratio", 0.0)),
         "bbox_noise_seed": int(getattr(args, "bbox_noise_seed", 0)),
         "los_filter_enabled": int(bool(getattr(args, "los_filter", True))),
+        "guidance_law": str(getattr(args, "guidance_law", "ttc_png")),
+        "navigation_constant": float(getattr(args, "navigation_constant", 0.0)),
     }
 
 

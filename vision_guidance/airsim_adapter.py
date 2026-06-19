@@ -26,6 +26,8 @@ class AirSimPairCollision:
     intruder_has_collided: bool
     interceptor_object_name: str
     intruder_object_name: str
+    interceptor_time_stamp_ns: int = 0
+    intruder_time_stamp_ns: int = 0
 
 
 def quaternion_to_rotation_matrix(w: float, x: float, y: float, z: float) -> np.ndarray:
@@ -67,6 +69,8 @@ def get_vehicle_pair_collision(
     intruder_hit = bool(getattr(intruder_info, "has_collided", False))
     interceptor_object = str(getattr(interceptor_info, "object_name", "") or "")
     intruder_object = str(getattr(intruder_info, "object_name", "") or "")
+    interceptor_time_stamp_ns = _collision_time_stamp_ns(interceptor_info)
+    intruder_time_stamp_ns = _collision_time_stamp_ns(intruder_info)
     interceptor_patterns = tuple(interceptor_object_patterns or _default_collision_patterns(interceptor))
     intruder_patterns = tuple(intruder_object_patterns or _default_collision_patterns(intruder))
 
@@ -80,6 +84,8 @@ def get_vehicle_pair_collision(
             intruder_hit,
             interceptor_object,
             intruder_object,
+            interceptor_time_stamp_ns,
+            intruder_time_stamp_ns,
         )
 
     return AirSimPairCollision(
@@ -89,6 +95,8 @@ def get_vehicle_pair_collision(
         intruder_hit,
         interceptor_object,
         intruder_object,
+        interceptor_time_stamp_ns,
+        intruder_time_stamp_ns,
     )
 
 
@@ -102,6 +110,7 @@ def get_vehicle_object_collision(
     collision_info = client.simGetCollisionInfo(vehicle_name=vehicle_name)
     vehicle_hit = bool(getattr(collision_info, "has_collided", False))
     object_name = str(getattr(collision_info, "object_name", "") or "")
+    vehicle_time_stamp_ns = _collision_time_stamp_ns(collision_info)
     matched = vehicle_hit and _collision_object_matches(object_name, object_patterns)
     return AirSimPairCollision(
         matched,
@@ -110,6 +119,8 @@ def get_vehicle_object_collision(
         False,
         object_name,
         "",
+        vehicle_time_stamp_ns,
+        0,
     )
 
 
@@ -126,6 +137,16 @@ def _collision_object_matches(object_name: str, patterns: Sequence[str]) -> bool
         if normalized_pattern and fnmatchcase(normalized_object, normalized_pattern):
             return True
     return False
+
+
+def _collision_time_stamp_ns(collision_info: Any) -> int:
+    for name in ("time_stamp", "timestamp"):
+        value = getattr(collision_info, name, 0)
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
 
 
 def detection_to_frame_detection(
