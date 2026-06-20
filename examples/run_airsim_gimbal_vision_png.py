@@ -234,6 +234,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--window-scale", type=float, default=0.75)
     parser.add_argument("--record-preview", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--preview-dir", default="")
+    parser.add_argument(
+        "--preview-every-s",
+        type=float,
+        default=0.0,
+        help="When positive, save one annotated recognition frame per this many simulation seconds.",
+    )
     parser.add_argument("--preview-every-n", type=int, default=20)
     parser.add_argument("--preview-max-frames", type=int, default=12)
     parser.add_argument("--preview-near-terminal-only", action=argparse.BooleanOptionalAction, default=True)
@@ -994,7 +1000,7 @@ def _image_kf_takeover_allowed(
         return True, "terminal_state"
     if terminal_result.reason in terminal_reasons or _is_bbox_clipped_reason(terminal_result.reason):
         return True, terminal_result.reason
-    if _is_bbox_clipped_reason(reason) or reason == "no_detection":
+    if _is_bbox_clipped_reason(reason) or _is_short_visual_loss_reason(reason):
         return True, reason
     if profile == "strapdown" and reason == "los_innovation_reject":
         if area_ratio >= max(0.0, float(args.terminal_soft_enter_area_ratio)):
@@ -1002,6 +1008,16 @@ def _image_kf_takeover_allowed(
     if not detected and area_ratio >= max(0.0, float(args.terminal_soft_enter_area_ratio)):
         return True, "soft_terminal_loss"
     return False, "not_terminal"
+
+
+def _is_short_visual_loss_reason(reason: str) -> bool:
+    text = str(reason or "")
+    return (
+        text == "no_detection"
+        or text == "los_innovation_reject"
+        or text.endswith("_missing")
+        or text.startswith("yolo_")
+    )
 
 
 def _empty_image_kf_estimate(timestamp: float) -> TerminalImageEstimate:
@@ -1291,6 +1307,7 @@ def _write_run_metadata(
     wall_fps_values = [value for row in rows if (value := _finite_row_float(row, "wall_fps")) is not None and value > 0.0]
     sim_fps_values = [value for row in rows if (value := _finite_row_float(row, "sim_sample_fps")) is not None and value > 0.0]
     sim_clock_ratios = [value for row in rows if (value := _finite_row_float(row, "sim_clock_ratio")) is not None and value > 0.0]
+    detector_fps_values = [value for row in rows if (value := _finite_row_float(row, "detector_fps")) is not None and value > 0.0]
     load_factors = [value for row in rows if (value := _finite_row_float(row, "load_factor_g")) is not None]
     load_factors_fd = [value for row in rows if (value := _finite_row_float(row, "load_factor_fd_g")) is not None]
     meta = {
@@ -1319,6 +1336,8 @@ def _write_run_metadata(
             "avg_wall_fps": float(np.mean(wall_fps_values)) if wall_fps_values else None,
             "avg_sim_sample_fps": float(np.mean(sim_fps_values)) if sim_fps_values else None,
             "avg_sim_clock_ratio": float(np.mean(sim_clock_ratios)) if sim_clock_ratios else None,
+            "avg_detector_fps": float(np.mean(detector_fps_values)) if detector_fps_values else None,
+            "p50_detector_fps": float(np.percentile(detector_fps_values, 50)) if detector_fps_values else None,
             "avg_load_factor_g": float(np.mean(load_factors)) if load_factors else None,
             "max_load_factor_g": max(load_factors) if load_factors else None,
             "avg_load_factor_fd_g": float(np.mean(load_factors_fd)) if load_factors_fd else None,
@@ -1352,6 +1371,7 @@ def _summarize_run(rows: Sequence[dict[str, float | int | str]]) -> None:
     ranges = [value for row in rows if (value := finite_float(row, "range")) is not None]
     wall_fps_values = [value for row in rows if (value := finite_float(row, "wall_fps")) is not None and value > 0.0]
     sim_fps_values = [value for row in rows if (value := finite_float(row, "sim_sample_fps")) is not None and value > 0.0]
+    detector_fps_values = [value for row in rows if (value := finite_float(row, "detector_fps")) is not None and value > 0.0]
     load_factors = [value for row in rows if (value := finite_float(row, "load_factor_g")) is not None]
     load_factors_fd = [value for row in rows if (value := finite_float(row, "load_factor_fd_g")) is not None]
     final_range = ranges[-1] if ranges else None
@@ -1379,6 +1399,8 @@ def _summarize_run(rows: Sequence[dict[str, float | int | str]]) -> None:
         f"intruder_avg_speed={intruder_speed if intruder_speed is not None else float('nan'):.3f}, "
         f"avg_wall_fps={float(np.mean(wall_fps_values)) if wall_fps_values else float('nan'):.2f}, "
         f"avg_sim_fps={float(np.mean(sim_fps_values)) if sim_fps_values else float('nan'):.2f}, "
+        f"avg_detector_fps={float(np.mean(detector_fps_values)) if detector_fps_values else float('nan'):.2f}, "
+        f"p50_detector_fps={float(np.percentile(detector_fps_values, 50)) if detector_fps_values else float('nan'):.2f}, "
         f"max_load_g={max(load_factors) if load_factors else float('nan'):.2f}, "
         f"max_load_fd_g={max(load_factors_fd) if load_factors_fd else float('nan'):.2f}"
     )
@@ -1541,6 +1563,7 @@ def _record_detection_preview(
     reason: str,
     hit: bool,
     image_bgr=None,
+    timestamp: Optional[float] = None,
 ):
     if recorder is None or recorder.get("failed"):
         return None
@@ -1554,11 +1577,17 @@ def _record_detection_preview(
         or _is_bbox_clipped_reason(reason)
         or reason in {"bbox_area_large", "gimbal_limit", "terminal_lost"}
     )
-    if getattr(args, "preview_near_terminal_only", True) and not near_terminal:
-        return None
-    every_n = max(1, int(getattr(args, "preview_every_n", 1)))
-    if not near_terminal and frame_id % every_n != 0:
-        return None
+    preview_every_s = max(0.0, float(getattr(args, "preview_every_s", 0.0) or 0.0))
+    if preview_every_s > 0.0 and timestamp is not None:
+        preview_bucket = int(np.floor(float(timestamp) / preview_every_s))
+        if not hit and recorder.get("last_preview_bucket") == preview_bucket:
+            return None
+    else:
+        if getattr(args, "preview_near_terminal_only", True) and not near_terminal:
+            return None
+        every_n = max(1, int(getattr(args, "preview_every_n", 1)))
+        if not near_terminal and frame_id % every_n != 0:
+            return None
 
     cv2 = recorder["cv2"]
     image = _annotated_detection_image(
@@ -1592,6 +1621,8 @@ def _record_detection_preview(
         print(f"Preview recorder failed to write {output_path}; disabling preview recording.")
         return None
     recorder["saved"] = int(recorder.get("saved", 0)) + 1
+    if preview_every_s > 0.0 and timestamp is not None:
+        recorder["last_preview_bucket"] = int(np.floor(float(timestamp) / preview_every_s))
     return output_path
 
 

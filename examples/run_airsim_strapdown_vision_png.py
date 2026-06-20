@@ -69,6 +69,7 @@ from vision_guidance.geometry import (
 from vision_guidance.los_filter import LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
 from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
+from vision_guidance.terminal_image_kf import center_from_angle_error
 from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
@@ -158,7 +159,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--px4-command-mode",
         choices=("velocity_simple", "velocity_yaw_rate"),
-        default="velocity_simple",
+        default="velocity_yaw_rate",
         help=(
             "PX4 SITL velocity command mapping. velocity_simple avoids AirSim "
             "drivetrain/yaw arguments because Blocks 1.8.1 PX4 ignores them in "
@@ -239,6 +240,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminal-image-kf-max-angle-rad", type=float, default=1.0)
     parser.add_argument("--terminal-image-kf-max-rate-rad-s", type=float, default=8.0)
     parser.add_argument(
+        "--terminal-image-kf-guidance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "When image KF is predicting during short visual loss, rebuild strapdown LOS/LOS-rate "
+            "from the predicted image angles and keep velocity guidance active."
+        ),
+    )
+    parser.add_argument(
+        "--ignore-pseudo-track-switch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Do not reset LOS/TTC/KF state when YOLO pseudo track id -1 alternates with a real ByteTrack id.",
+    )
+    parser.add_argument(
         "--terminal-yaw-rate-extrapolation",
         action=argparse.BooleanOptionalAction,
         default=True,
@@ -268,6 +284,21 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--ttc-min-area", type=float, default=0.0)
     parser.add_argument("--ttc-max-s", type=float, default=120.0)
+    parser.add_argument(
+        "--ttc-soft-guidance",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "For ttc_png, keep LOS/Vm guidance active when TTC is unavailable; "
+            "TTC only schedules gain when valid."
+        ),
+    )
+    parser.add_argument(
+        "--ttc-soft-min-gain-scale",
+        type=float,
+        default=0.55,
+        help="Minimum LOS+Vm gain scale used by --ttc-soft-guidance when TTC is valid and large.",
+    )
     parser.add_argument(
         "--guidance-law",
         choices=("ttc_png", "fixed_vm_png"),
@@ -300,12 +331,47 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
+    parser.add_argument(
+        "--frame-guard",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Prioritize keeping the target in the strapdown camera frame before aggressive PNG correction.",
+    )
+    parser.add_argument("--frame-guard-enter-error-ratio", type=float, default=0.42)
+    parser.add_argument("--frame-guard-exit-error-ratio", type=float, default=0.28)
+    parser.add_argument("--frame-guard-area-mid-ratio", type=float, default=0.0012)
+    parser.add_argument("--frame-guard-area-ratio", type=float, default=0.004)
+    parser.add_argument("--frame-guard-ttc-mid-s", type=float, default=2.5)
+    parser.add_argument("--frame-guard-ttc-terminal-s", type=float, default=1.2)
+    parser.add_argument("--frame-guard-hold-s", type=float, default=0.65)
+    parser.add_argument("--frame-guard-min-speed-ratio", type=float, default=1.30)
+    parser.add_argument("--frame-guard-mid-speed-ratio", type=float, default=1.60)
+    parser.add_argument("--frame-guard-lateral-scale", type=float, default=0.55)
+    parser.add_argument("--frame-guard-vertical-scale", type=float, default=0.85)
+    parser.add_argument("--frame-guard-yaw-gain-scale", type=float, default=1.45)
+    parser.add_argument("--frame-guard-max-yaw-rate-deg", type=float, default=60.0)
+    parser.add_argument("--frame-guard-vertical-error-gain", type=float, default=0.012)
     add_detector_args(parser)
+    parser.add_argument(
+        "--shadow-airsim-detect",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Also run AirSim built-in detection on the same frame for diagnostics. "
+            "The shadow detector is logged only and never feeds guidance."
+        ),
+    )
     parser.add_argument("--detection-warmup-s", type=float, default=1.0)
     parser.add_argument("--show-window", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--window-scale", type=float, default=0.75)
     parser.add_argument("--record-preview", action=argparse.BooleanOptionalAction, default=False)
     parser.add_argument("--preview-dir", default="")
+    parser.add_argument(
+        "--preview-every-s",
+        type=float,
+        default=0.0,
+        help="When positive, save one annotated recognition frame per this many simulation seconds.",
+    )
     parser.add_argument("--preview-every-n", type=int, default=20)
     parser.add_argument("--preview-max-frames", type=int, default=12)
     parser.add_argument("--preview-near-terminal-only", action=argparse.BooleanOptionalAction, default=True)
@@ -636,6 +702,78 @@ def _configure_actor_detection_aliases(client, airsim_module, config: AirSimDete
             )
         except Exception as exc:
             print(f"actor_detection_alias_warning alias={alias}: {exc}")
+
+
+def _shadow_airsim_detection(client, config: AirSimDetectionConfig, active_name: Optional[str], intrinsics) -> dict[str, float | int | str]:
+    start = time.monotonic()
+    try:
+        detections = list(get_detections(client, config))
+        selected = choose_detection(detections, preferred_name=active_name)
+    except Exception as exc:
+        return {
+            "shadow_airsim_enabled": 1,
+            "shadow_airsim_elapsed_s": time.monotonic() - start,
+            "shadow_airsim_fps": 0.0,
+            "shadow_airsim_detection_count": 0,
+            "shadow_airsim_detected": 0,
+            "shadow_airsim_target_name": "",
+            "shadow_airsim_bbox_area": 0.0,
+            "shadow_airsim_pixel_error_x": 0.0,
+            "shadow_airsim_pixel_error_y": 0.0,
+            "shadow_airsim_reject_reason": f"shadow_exception:{exc}",
+        }
+
+    elapsed = time.monotonic() - start
+    fps = 1.0 / max(1.0e-6, elapsed)
+    if selected is None:
+        return {
+            "shadow_airsim_enabled": 1,
+            "shadow_airsim_elapsed_s": elapsed,
+            "shadow_airsim_fps": fps,
+            "shadow_airsim_detection_count": len(detections),
+            "shadow_airsim_detected": 0,
+            "shadow_airsim_target_name": "",
+            "shadow_airsim_bbox_area": 0.0,
+            "shadow_airsim_pixel_error_x": 0.0,
+            "shadow_airsim_pixel_error_y": 0.0,
+            "shadow_airsim_reject_reason": "no_detection",
+        }
+
+    box = selected.box2D
+    x1 = float(box.min.x_val)
+    y1 = float(box.min.y_val)
+    x2 = float(box.max.x_val)
+    y2 = float(box.max.y_val)
+    area = max(0.0, x2 - x1) * max(0.0, y2 - y1)
+    center_x = 0.5 * (x1 + x2)
+    center_y = 0.5 * (y1 + y2)
+    return {
+        "shadow_airsim_enabled": 1,
+        "shadow_airsim_elapsed_s": elapsed,
+        "shadow_airsim_fps": fps,
+        "shadow_airsim_detection_count": len(detections),
+        "shadow_airsim_detected": 1,
+        "shadow_airsim_target_name": str(getattr(selected, "name", "") or ""),
+        "shadow_airsim_bbox_area": area,
+        "shadow_airsim_pixel_error_x": center_x - float(intrinsics.cx),
+        "shadow_airsim_pixel_error_y": center_y - float(intrinsics.cy),
+        "shadow_airsim_reject_reason": "",
+    }
+
+
+def _empty_shadow_airsim_stats() -> dict[str, float | int | str]:
+    return {
+        "shadow_airsim_enabled": 0,
+        "shadow_airsim_elapsed_s": 0.0,
+        "shadow_airsim_fps": 0.0,
+        "shadow_airsim_detection_count": "",
+        "shadow_airsim_detected": "",
+        "shadow_airsim_target_name": "",
+        "shadow_airsim_bbox_area": "",
+        "shadow_airsim_pixel_error_x": "",
+        "shadow_airsim_pixel_error_y": "",
+        "shadow_airsim_reject_reason": "",
+    }
 
 
 def _px4_local_target_z(vehicle: str, world_target_z: float, origins: dict[str, np.ndarray]) -> float:
@@ -1057,12 +1195,158 @@ def _kf_yaw_rate_command(image_kf, args) -> float:
     return float(np.clip(command, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
 
 
+def _image_kf_los_guidance_estimate(image_kf, intrinsics, R_BC: np.ndarray, R_IB: np.ndarray):
+    theta = np.array([image_kf.theta_x, image_kf.theta_y], dtype=float)
+    theta_dot = np.array([image_kf.theta_dot_x, image_kf.theta_dot_y], dtype=float)
+    if not np.all(np.isfinite(theta)) or not np.all(np.isfinite(theta_dot)):
+        return None, None
+
+    center_now = center_from_angle_error(theta, intrinsics)
+    los_C_now = camera_ray_from_pixel(*center_now, intrinsics)
+    lambda_I = los_camera_to_inertial(los_C_now, R_BC, R_IB)
+
+    dt = 0.02
+    center_next = center_from_angle_error(theta + theta_dot * dt, intrinsics)
+    los_C_next = camera_ray_from_pixel(*center_next, intrinsics)
+    lambda_next_I = los_camera_to_inertial(los_C_next, R_BC, R_IB)
+    lambda_dot_I = project_perpendicular((lambda_next_I - lambda_I) / dt, lambda_I)
+    omega_los = np.cross(lambda_I, lambda_dot_I)
+    if not np.all(np.isfinite(lambda_I)) or not np.all(np.isfinite(omega_los)):
+        return None, None
+    return lambda_I, omega_los
+
+
+def _image_error_ratio(px_err_x: float, px_err_y: float, intrinsics) -> float:
+    half_w = max(1.0, 0.5 * float(intrinsics.width))
+    half_h = max(1.0, 0.5 * float(intrinsics.height))
+    return float(max(abs(float(px_err_x)) / half_w, abs(float(px_err_y)) / half_h))
+
+
+def _bbox_area_ratio(bbox_area: float, intrinsics) -> float:
+    return float(max(0.0, float(bbox_area)) / max(1.0, float(intrinsics.width * intrinsics.height)))
+
+
+def _scheduled_speed_cap(
+    *,
+    base_speed_cap: float,
+    intruder_speed: float,
+    error_ratio: float,
+    area_ratio: float,
+    ttc_s: Optional[float],
+    args,
+) -> tuple[float, str]:
+    if not bool(args.frame_guard):
+        return float(base_speed_cap), "base"
+    min_speed = max(0.1, float(args.frame_guard_min_speed_ratio) * float(intruder_speed))
+    mid_speed = max(min_speed, float(args.frame_guard_mid_speed_ratio) * float(intruder_speed))
+    base_speed = max(mid_speed, float(base_speed_cap))
+    area_mid = max(0.0, float(args.frame_guard_area_mid_ratio))
+    area_terminal = max(area_mid, float(args.frame_guard_area_ratio))
+    ttc_terminal = max(0.0, float(args.frame_guard_ttc_terminal_s))
+    ttc_mid = max(ttc_terminal, float(args.frame_guard_ttc_mid_s))
+    ttc_finite = ttc_s is not None and np.isfinite(float(ttc_s)) and float(ttc_s) > 0.0
+    terminal_by_ttc = bool(ttc_finite and float(ttc_s) <= ttc_terminal)
+    mid_by_ttc = bool(ttc_finite and float(ttc_s) <= ttc_mid)
+    if area_ratio >= area_terminal or error_ratio >= max(0.0, float(args.frame_guard_enter_error_ratio)) or terminal_by_ttc:
+        return min(base_speed, min_speed), "terminal_capture"
+    if area_ratio >= area_mid or error_ratio >= max(0.0, float(args.frame_guard_exit_error_ratio)) or mid_by_ttc:
+        return min(base_speed, mid_speed), "frame_guard"
+    return float(base_speed_cap), "base"
+
+
+def _apply_frame_guard_velocity(
+    v_cmd: np.ndarray,
+    *,
+    lambda_I: Optional[np.ndarray],
+    scheduled_speed_cap: float,
+    error_ratio: float,
+    area_ratio: float,
+    speed_schedule_mode: str,
+    args,
+) -> tuple[np.ndarray, int, str]:
+    command = np.array(v_cmd, dtype=float)
+    if not bool(args.frame_guard):
+        return command, 0, "disabled"
+
+    enter_error = max(0.0, float(args.frame_guard_enter_error_ratio))
+    exit_error = max(0.0, float(args.frame_guard_exit_error_ratio))
+    area_mid = max(0.0, float(args.frame_guard_area_mid_ratio))
+    area_terminal = max(area_mid, float(args.frame_guard_area_ratio))
+    active = (
+        error_ratio >= exit_error
+        or area_ratio >= area_mid
+        or str(speed_schedule_mode) in {"frame_guard", "terminal_capture"}
+    )
+    if not active:
+        norm = float(np.linalg.norm(command))
+        if norm > scheduled_speed_cap > 1.0e-6:
+            command *= scheduled_speed_cap / norm
+        return command, 0, "inactive"
+
+    if lambda_I is None or float(np.linalg.norm(lambda_I)) <= 1.0e-6:
+        forward = normalize(np.array([1.0, 0.0, 0.0], dtype=float))
+    else:
+        forward = normalize(np.asarray(lambda_I, dtype=float))
+    forward_component = float(np.dot(command, forward))
+    lateral = command - forward_component * forward
+    lateral[2] = 0.0
+    vertical = float(command[2])
+
+    forward_component = float(np.clip(forward_component, 0.0, scheduled_speed_cap))
+    lateral *= max(0.0, float(args.frame_guard_lateral_scale))
+    vertical *= max(0.0, float(args.frame_guard_vertical_scale))
+    command = forward_component * forward + lateral
+    command[2] = float(np.clip(vertical, -args.max_vision_vertical_speed, args.max_vision_vertical_speed))
+    norm = float(np.linalg.norm(command))
+    if norm > scheduled_speed_cap > 1.0e-6:
+        command *= scheduled_speed_cap / norm
+    mode = (
+        "terminal_capture"
+        if error_ratio >= enter_error or area_ratio >= area_terminal or str(speed_schedule_mode) == "terminal_capture"
+        else "frame_guard"
+    )
+    return command, 1, mode
+
+
+def _frame_guard_yaw_rate(yaw_rate_deg_s: float, px_err_x: float, intrinsics, args) -> tuple[float, int]:
+    if not bool(args.frame_guard):
+        return yaw_rate_deg_s, 0
+    error_ratio = abs(float(px_err_x)) / max(1.0, 0.5 * float(intrinsics.width))
+    if error_ratio < max(0.0, float(args.frame_guard_exit_error_ratio)):
+        return yaw_rate_deg_s, 0
+    scaled = float(yaw_rate_deg_s) * max(0.0, float(args.frame_guard_yaw_gain_scale))
+    limit = max(0.0, min(float(args.max_yaw_rate_deg), float(args.frame_guard_max_yaw_rate_deg)))
+    return float(np.clip(scaled, -limit, limit)), 1
+
+
+def _frame_guard_vertical_bias(px_err_y: float, intrinsics, args) -> float:
+    if not bool(args.frame_guard):
+        return 0.0
+    error_ratio = abs(float(px_err_y)) / max(1.0, 0.5 * float(intrinsics.height))
+    if error_ratio < max(0.0, float(args.frame_guard_exit_error_ratio)):
+        return 0.0
+    # AirSim NED: negative Z is up. Pixel y below center is positive, so command down;
+    # pixel y above center is negative, so command up.
+    return float(np.clip(float(px_err_y) * float(args.frame_guard_vertical_error_gain), -args.max_vision_vertical_speed, args.max_vision_vertical_speed))
+
+
 def _terminal_trigger_strapdown(reason: str, detected: bool, bbox_area: float, intrinsics, args) -> str:
     if reason.startswith("bbox_") and reason.endswith("_clipped"):
         return reason
     if detected and _terminal_area(bbox_area, intrinsics, args):
         return "bbox_area_large"
     return ""
+
+
+def _is_short_visual_loss_reason(reason: str) -> bool:
+    text = str(reason or "")
+    return (
+        text == "no_detection"
+        or text == "los_innovation_reject"
+        or text.endswith("_missing")
+        or text.startswith("yolo_")
+        or text.startswith("bbox_") and text.endswith("_clipped")
+    )
 
 
 def _row_float(row: dict[str, float | int | str], key: str, default: float = 0.0) -> float:
@@ -1354,7 +1638,7 @@ def main() -> None:
         mesh_name_pattern=args.mesh,
         vehicle_name=args.interceptor,
     )
-    if args.detector_source == "airsim":
+    if args.detector_source == "airsim" or args.shadow_airsim_detect:
         configure_detection_filter(client, config)
         _configure_actor_detection_aliases(client, airsim, config, args)
 
@@ -1386,9 +1670,16 @@ def main() -> None:
     if args.detector_source == "airsim":
         _warmup_detection(client, config, args)
     else:
+        yolo_device_text = "unknown"
+        try:
+            yolo_device_text = str(getattr(detector, "runtime_info", {}))
+        except Exception:
+            pass
         print(
             "YOLO ByteTrack detector active: "
-            f"model={args.yolo_model}, class_id={args.yolo_class_id}, tracker={args.yolo_tracker}"
+            f"model={args.yolo_model}, class_id={args.yolo_class_id}, tracker={args.yolo_tracker}, "
+            f"device_arg={args.yolo_device or 'auto'}, runtime={yolo_device_text}, "
+            f"untracked_fallback={args.yolo_allow_untracked_fallback}"
         )
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     display = _make_display(airsim, args.show_window)
@@ -1414,6 +1705,10 @@ def main() -> None:
     frame_id = 0
     hit = False
     bbox_noise_rng = np.random.default_rng(int(args.bbox_noise_seed))
+    last_frame_guard_ts: Optional[float] = None
+    last_frame_guard_error_ratio = 0.0
+    last_frame_guard_area_ratio = 0.0
+    last_frame_guard_ttc: Optional[float] = None
 
     print(
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
@@ -1495,6 +1790,7 @@ def main() -> None:
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
         camera_world_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
 
+        detector_start = time.monotonic()
         detector_frame = detector.detect(
             client=client,
             config=config,
@@ -1503,6 +1799,8 @@ def main() -> None:
             active_name=active_name,
             active_track_id=active_track_id,
         )
+        detector_elapsed_s = time.monotonic() - detector_start
+        detector_fps = 1.0 / max(1.0e-6, detector_elapsed_s)
         detections = detector_frame.detections
         detection_count = len(detections)
         detection_names = _detection_names(detections)
@@ -1510,6 +1808,11 @@ def main() -> None:
         detected = detection is not None
         detector_stats = detector_frame.stats
         detector_image = detector_frame.image_bgr
+        shadow_airsim_stats = (
+            _shadow_airsim_detection(client, config, active_name, intrinsics)
+            if args.shadow_airsim_detect
+            else _empty_shadow_airsim_stats()
+        )
         px_err_x = 0.0
         px_err_y = 0.0
         yaw_rate_cmd_deg_s = 0.0
@@ -1556,7 +1859,18 @@ def main() -> None:
             if frame_detection is None:
                 reason = str(detector_stats.get("detector_reject_reason") or "no_detection")
             else:
-                track_switched = active_track_id is not None and int(frame_detection.track_id) != int(active_track_id)
+                previous_track_id = active_track_id
+                current_track_id = int(frame_detection.track_id)
+                pseudo_track_switch = (
+                    bool(args.ignore_pseudo_track_switch)
+                    and previous_track_id is not None
+                    and (int(previous_track_id) < 0 or current_track_id < 0)
+                )
+                track_switched = (
+                    previous_track_id is not None
+                    and current_track_id != int(previous_track_id)
+                    and not pseudo_track_switch
+                )
                 if track_switched:
                     los_filter.reset()
                     ttc_filter.reset()
@@ -1570,7 +1884,7 @@ def main() -> None:
                     last_valid_ts = None
                     lambda_I = None
                     omega_los = None
-                active_track_id = int(frame_detection.track_id)
+                active_track_id = current_track_id
         if frame_detection is not None:
             frame_detection, bbox_noise = _apply_bbox_noise(frame_detection, intrinsics, bbox_noise_rng, args)
             bbox_noise_dx_px = float(bbox_noise["dx"])
@@ -1651,7 +1965,15 @@ def main() -> None:
                     lambda_I = los_lambda
                     omega_los = los_omega
                     reason = ttc.reject_reason or "ttc_invalid"
-                    if _los_fallback_allowed(reason, args):
+                    if bool(args.ttc_soft_guidance):
+                        guidance_gain = fixed_vm_gain
+                        g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                        valid = True
+                        guidance_mode = "ttc_soft_vm"
+                        last_valid_ts = sim_t
+                        last_lambda_I = lambda_I
+                        last_omega_los = omega_los
+                    elif _los_fallback_allowed(reason, args):
                         guidance_gain = max(0.0, args.los_fallback_gain)
                         g_eval = guidance_gain * omega_los
                         valid = True
@@ -1661,10 +1983,16 @@ def main() -> None:
                         last_omega_los = omega_los
                 else:
                     gain = gain_schedule.gain(ttc.ttc)
-                    guidance_gain = gain
                     omega_los = los_omega
                     lambda_I = los_lambda
-                    g_eval = gain * omega_los
+                    if bool(args.ttc_soft_guidance):
+                        gain_scale = gain / max(1.0e-6, float(gain_schedule.max_gain))
+                        min_scale = float(np.clip(float(args.ttc_soft_min_gain_scale), 0.0, 1.0))
+                        guidance_gain = fixed_vm_gain * float(np.clip(gain_scale, min_scale, 1.0))
+                        g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                    else:
+                        guidance_gain = gain
+                        g_eval = gain * omega_los
                     valid = True
                     guidance_mode = "ttc_png"
                     last_valid_ts = sim_t
@@ -1678,16 +2006,152 @@ def main() -> None:
             detected=detected,
             measurement_valid=detected,
             clipped=detection_clipped or pitch_measurement_rejected,
-            track_id=active_track_id if detected else None,
+            track_id=(
+                None
+                if (
+                    not detected
+                    or active_track_id is None
+                    or (bool(args.ignore_pseudo_track_switch) and int(active_track_id) < 0)
+                )
+                else active_track_id
+            ),
         )
+
+        image_kf_guidance_used = False
+        if (
+            not valid
+            and bool(args.terminal_image_kf_guidance)
+            and image_kf.valid
+            and image_kf.mode == IMAGE_KF_PREDICT
+            and _is_short_visual_loss_reason(reason)
+        ):
+            predicted_lambda_I, predicted_omega_los = _image_kf_los_guidance_estimate(image_kf, intrinsics, R_BC, R_IB)
+            if predicted_lambda_I is not None and predicted_omega_los is not None:
+                lambda_I = predicted_lambda_I
+                omega_los = predicted_omega_los
+                if args.guidance_law == "fixed_vm_png" or bool(args.ttc_soft_guidance):
+                    guidance_gain = fixed_vm_gain
+                    g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                    guidance_mode = "fixed_vm_png_kf_predict" if args.guidance_law == "fixed_vm_png" else "ttc_soft_vm_kf_predict"
+                else:
+                    gain = gain_schedule.gain(max(1.0, min(6.0, image_kf.age_s + 1.0)))
+                    guidance_gain = gain
+                    g_eval = gain * omega_los
+                    guidance_mode = "ttc_png_kf_predict"
+                valid = True
+                los_source = "image_kf_predict"
+                los_quality = image_kf.quality
+                reason = "image_kf_predict"
+                last_valid_ts = sim_t
+                last_lambda_I = lambda_I
+                last_omega_los = omega_los
+                image_kf_guidance_used = True
 
         if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
             lambda_I = last_lambda_I
             omega_los = last_omega_los
 
+        image_error_ratio = _image_error_ratio(px_err_x, px_err_y, intrinsics) if detected else 0.0
+        area_ratio = _bbox_area_ratio(bbox_area, intrinsics) if detected else 0.0
+        ttc_numeric: Optional[float] = None
+        if ttc_value != "":
+            try:
+                ttc_numeric = float(ttc_value)
+            except (TypeError, ValueError):
+                ttc_numeric = None
+        if bool(args.frame_guard):
+            ttc_close = ttc_numeric is not None and ttc_numeric > 0.0 and ttc_numeric <= max(0.0, float(args.frame_guard_ttc_mid_s))
+            current_guard_risk = (
+                detected
+                and (
+                    image_error_ratio >= max(0.0, float(args.frame_guard_exit_error_ratio))
+                    or area_ratio >= max(0.0, float(args.frame_guard_area_mid_ratio))
+                    or ttc_close
+                    or detection_clipped
+                    or pitch_measurement_rejected
+                )
+            )
+            if current_guard_risk:
+                last_frame_guard_ts = sim_t
+                last_frame_guard_error_ratio = image_error_ratio
+                last_frame_guard_area_ratio = area_ratio
+                last_frame_guard_ttc = ttc_numeric
+        if image_kf.valid:
+            try:
+                kf_center = center_from_angle_error(np.array([image_kf.theta_x, image_kf.theta_y], dtype=float), intrinsics)
+                image_error_ratio_kf = _image_error_ratio(kf_center[0] - intrinsics.cx, kf_center[1] - intrinsics.cy, intrinsics)
+            except Exception:
+                image_error_ratio_kf = 0.0
+        else:
+            image_error_ratio_kf = 0.0
+        guard_hold_age_s: float | str = ""
+        guard_hold_active = False
+        if (
+            bool(args.frame_guard)
+            and last_frame_guard_ts is not None
+            and sim_t - last_frame_guard_ts <= max(0.0, float(args.frame_guard_hold_s))
+        ):
+            guard_hold_active = True
+            guard_hold_age_s = float(sim_t - last_frame_guard_ts)
+        effective_image_error_ratio = image_error_ratio
+        effective_area_ratio = area_ratio
+        effective_ttc = ttc_numeric
+        if guard_hold_active:
+            effective_image_error_ratio = max(effective_image_error_ratio, last_frame_guard_error_ratio)
+            effective_area_ratio = max(effective_area_ratio, last_frame_guard_area_ratio)
+            if effective_ttc is None:
+                effective_ttc = last_frame_guard_ttc
+        if image_kf.valid and not detected:
+            effective_image_error_ratio = max(effective_image_error_ratio, image_error_ratio_kf)
+        frame_guard_yaw_px_err_x = px_err_x
+        frame_guard_px_err_y = px_err_y
+        if not detected and image_kf.valid:
+            try:
+                frame_guard_yaw_px_err_x = float(intrinsics.fx * np.tan(float(image_kf.theta_x)))
+                frame_guard_px_err_y = float(intrinsics.fy * np.tan(float(image_kf.theta_y)))
+            except Exception:
+                frame_guard_yaw_px_err_x = 0.0
+                frame_guard_px_err_y = 0.0
+        scheduled_speed_cap, speed_schedule_mode = _scheduled_speed_cap(
+            base_speed_cap=speed_cap,
+            intruder_speed=intruder_speed,
+            error_ratio=effective_image_error_ratio,
+            area_ratio=effective_area_ratio,
+            ttc_s=effective_ttc,
+            args=args,
+        )
         raw_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
         _append_yaw_rate_sample(yaw_rate_samples, sim_t, raw_yaw_rate_cmd_deg_s, valid, args)
-        candidate_v_cmd = _guidance_velocity(interceptor_vel, lambda_I, omega_los if valid else None, guidance_gain, speed_cap, args)
+        candidate_v_cmd = _guidance_velocity(
+            interceptor_vel,
+            lambda_I,
+            omega_los if valid else None,
+            guidance_gain,
+            scheduled_speed_cap,
+            args,
+        )
+        frame_guard_vertical_bias = (
+            _frame_guard_vertical_bias(frame_guard_px_err_y, intrinsics, args)
+            if (detected or (image_kf.valid and not detected))
+            else 0.0
+        )
+        if frame_guard_vertical_bias:
+            candidate_v_cmd[2] = float(
+                np.clip(
+                    candidate_v_cmd[2] + frame_guard_vertical_bias,
+                    -args.max_vision_vertical_speed,
+                    args.max_vision_vertical_speed,
+                )
+            )
+        candidate_v_cmd, frame_guard_active, frame_guard_mode = _apply_frame_guard_velocity(
+            candidate_v_cmd,
+            lambda_I=lambda_I,
+            scheduled_speed_cap=scheduled_speed_cap,
+            error_ratio=effective_image_error_ratio,
+            area_ratio=effective_area_ratio,
+            speed_schedule_mode=speed_schedule_mode,
+            args=args,
+        )
         terminal_result = terminal_extrapolator.update(
             timestamp=sim_t,
             detected=detected,
@@ -1700,13 +2164,25 @@ def main() -> None:
             v_cmd=candidate_v_cmd,
             lambda_I=lambda_I,
             omega_los=omega_los if valid else None,
-            speed_cap=speed_cap,
+            speed_cap=scheduled_speed_cap,
             max_vertical_speed=args.max_vision_vertical_speed,
             gimbal_at_limit=False,
             safety_ok=_airsim_safety_ok(client, args.interceptor),
             soft_measurement_valid=image_kf.valid,
         )
         v_cmd = terminal_result.v_cmd
+        v_cmd, frame_guard_active_post, frame_guard_mode_post = _apply_frame_guard_velocity(
+            v_cmd,
+            lambda_I=lambda_I,
+            scheduled_speed_cap=scheduled_speed_cap,
+            error_ratio=effective_image_error_ratio,
+            area_ratio=effective_area_ratio,
+            speed_schedule_mode=speed_schedule_mode,
+            args=args,
+        )
+        if frame_guard_active_post:
+            frame_guard_active = frame_guard_active_post
+            frame_guard_mode = frame_guard_mode_post
         if args.px4_interceptor:
             v_cmd = _px4_limited_velocity(v_cmd, args)
         if terminal_result.using_blind_push:
@@ -1744,10 +2220,21 @@ def main() -> None:
             yaw_rate_blind_sample_count = 0
             yaw_rate_blind_decay = image_kf.quality
             yaw_rate_source = "kf"
+        if image_kf_guidance_used and yaw_rate_source == "none":
+            yaw_rate_cmd_deg_s = _kf_yaw_rate_command(image_kf, args)
+            yaw_rate_source = "kf_guidance"
         elif terminal_result.using_blind_push:
             yaw_rate_source = "window_hold"
         elif terminal_result.state == TERMINAL_VISUAL:
             yaw_rate_source = "measurement_scaled"
+        yaw_rate_cmd_deg_s, frame_guard_yaw_active = _frame_guard_yaw_rate(
+            yaw_rate_cmd_deg_s,
+            frame_guard_yaw_px_err_x,
+            intrinsics,
+            args,
+        )
+        if frame_guard_yaw_active and yaw_rate_source in {"measurement", "none"}:
+            yaw_rate_source = "frame_guard"
 
         stop_requested = _draw_detection_window_strapdown(
             display,
@@ -1791,6 +2278,7 @@ def main() -> None:
             reason=reason,
             hit=hit,
             image_bgr=detector_image,
+            timestamp=sim_t,
         )
 
         cmd_yaw_deg = _yaw_deg_from_velocity(v_cmd)
@@ -1831,6 +2319,8 @@ def main() -> None:
                 "loop_dt": loop_dt,
                 "frame_elapsed": frame_elapsed,
                 "wall_fps": wall_fps,
+                "detector_elapsed_s": detector_elapsed_s,
+                "detector_fps": detector_fps,
                 "sim_time_s": "" if kin_t is None else kin_t,
                 "sim_sample_fps": sim_sample_fps,
                 "sim_clock_ratio": sim_clock_ratio,
@@ -1839,7 +2329,33 @@ def main() -> None:
                 "guidance_law": args.guidance_law,
                 "navigation_constant": float(args.navigation_constant),
                 "vm_png_gain": fixed_vm_gain,
-                "ttc_used_for_guidance": int(args.guidance_law == "ttc_png"),
+                "ttc_used_for_guidance": int(args.guidance_law == "ttc_png" and not args.ttc_soft_guidance),
+                "ttc_soft_guidance": int(args.ttc_soft_guidance),
+                "ttc_soft_min_gain_scale": float(args.ttc_soft_min_gain_scale),
+                "scheduled_speed_cap": scheduled_speed_cap,
+                "speed_schedule_mode": speed_schedule_mode,
+                "frame_guard_enabled": int(args.frame_guard),
+                "frame_guard_active": frame_guard_active,
+                "frame_guard_mode": frame_guard_mode,
+                "frame_guard_yaw_active": frame_guard_yaw_active,
+                "frame_guard_vertical_bias": frame_guard_vertical_bias,
+                "frame_guard_enter_error_ratio": float(args.frame_guard_enter_error_ratio),
+                "frame_guard_exit_error_ratio": float(args.frame_guard_exit_error_ratio),
+                "frame_guard_area_mid_ratio": float(args.frame_guard_area_mid_ratio),
+                "frame_guard_area_ratio": float(args.frame_guard_area_ratio),
+                "frame_guard_ttc_mid_s": float(args.frame_guard_ttc_mid_s),
+                "frame_guard_ttc_terminal_s": float(args.frame_guard_ttc_terminal_s),
+                "frame_guard_hold_s": float(args.frame_guard_hold_s),
+                "frame_guard_hold_active": int(guard_hold_active),
+                "frame_guard_hold_age_s": guard_hold_age_s,
+                "frame_guard_effective_error_ratio": effective_image_error_ratio,
+                "frame_guard_effective_area_ratio": effective_area_ratio,
+                "frame_guard_effective_ttc": "" if effective_ttc is None else float(effective_ttc),
+                "frame_guard_image_kf_error_ratio": image_error_ratio_kf,
+                "frame_guard_yaw_px_err_x": frame_guard_yaw_px_err_x,
+                "frame_guard_px_err_y": frame_guard_px_err_y,
+                "frame_guard_min_speed_ratio": float(args.frame_guard_min_speed_ratio),
+                "frame_guard_mid_speed_ratio": float(args.frame_guard_mid_speed_ratio),
                 "detection_count": detection_count,
                 "detection_names": detection_names,
                 "detected": int(detected),
@@ -1858,6 +2374,17 @@ def main() -> None:
                 "yolo_selected_track_id": detector_stats.get("yolo_selected_track_id", ""),
                 "yolo_selected_class_id": detector_stats.get("yolo_selected_class_id", ""),
                 "yolo_selected_score": detector_stats.get("yolo_selected_score", ""),
+                "yolo_selected_source": detector_stats.get("yolo_selected_source", ""),
+                "yolo_requested_device": detector_stats.get("yolo_requested_device", ""),
+                "yolo_runtime_device": detector_stats.get("yolo_runtime_device", ""),
+                "yolo_cuda_available": detector_stats.get("yolo_cuda_available", ""),
+                "yolo_gpu_name": detector_stats.get("yolo_gpu_name", ""),
+                "yolo_allow_untracked_fallback": detector_stats.get("yolo_allow_untracked_fallback", ""),
+                "yolo_used_untracked_fallback": detector_stats.get("yolo_used_untracked_fallback", ""),
+                "yolo_single_target_mode": detector_stats.get("yolo_single_target_mode", ""),
+                "yolo_single_target_selected": detector_stats.get("yolo_single_target_selected", ""),
+                "yolo_single_target_distance_px": detector_stats.get("yolo_single_target_distance_px", ""),
+                **shadow_airsim_stats,
                 "image_width": intrinsics.width,
                 "image_height": intrinsics.height,
                 "range": range_m,
@@ -1885,6 +2412,8 @@ def main() -> None:
                 "pixel_error_x": px_err_x,
                 "pixel_error_y": px_err_y,
                 "bbox_area": bbox_area,
+                "bbox_area_ratio": area_ratio,
+                "image_error_ratio": image_error_ratio,
                 "bbox_noise_enabled": int(args.bbox_noise),
                 "bbox_noise_center_sigma_px": float(args.bbox_center_noise_px),
                 "bbox_noise_area_sigma_ratio": float(args.bbox_area_noise_ratio),
@@ -1923,6 +2452,7 @@ def main() -> None:
                 "image_kf_age_s": image_kf.age_s,
                 "image_kf_quality": image_kf.quality,
                 "image_kf_reject_reason": image_kf.reject_reason,
+                "image_kf_guidance_used": int(image_kf_guidance_used),
                 "body_yaw_deg": body_yaw_deg,
                 "cmd_yaw_deg": cmd_yaw_deg,
                 "yaw_error_deg": yaw_error_deg,
