@@ -61,6 +61,28 @@ def add_detector_args(parser: Any) -> None:
     parser.add_argument("--yolo-imgsz", type=int, default=640)
     parser.add_argument("--yolo-device", default="", help="Ultralytics device string, for example '0', 'cpu', or empty for auto.")
     parser.add_argument("--yolo-tracker", default="bytetrack.yaml")
+    parser.add_argument(
+        "--yolo-allow-untracked-fallback",
+        action="store_true",
+        help=(
+            "When ByteTrack has not assigned an id, use the highest-confidence YOLO box "
+            "as a temporary pseudo track instead of rejecting the frame."
+        ),
+    )
+    parser.add_argument(
+        "--yolo-single-target-mode",
+        action="store_true",
+        help=(
+            "Use a single-target continuity selector. This is useful when the scene has only one "
+            "real target and ByteTrack ids are intermittent."
+        ),
+    )
+    parser.add_argument(
+        "--yolo-single-target-max-center-jump-px",
+        type=float,
+        default=220.0,
+        help="Maximum bbox center jump accepted by --yolo-single-target-mode.",
+    )
 
 
 def create_detection_provider(args: Any, airsim_module: Any = None):
@@ -76,6 +98,9 @@ def create_detection_provider(args: Any, airsim_module: Any = None):
             imgsz=int(getattr(args, "yolo_imgsz", 640)),
             device=str(getattr(args, "yolo_device", "") or ""),
             tracker=str(getattr(args, "yolo_tracker", "bytetrack.yaml") or "bytetrack.yaml"),
+            allow_untracked_fallback=bool(getattr(args, "yolo_allow_untracked_fallback", False)),
+            single_target_mode=bool(getattr(args, "yolo_single_target_mode", False)),
+            single_target_max_center_jump_px=float(getattr(args, "yolo_single_target_max_center_jump_px", 220.0)),
             airsim_module=airsim_module,
         )
     raise ValueError(f"unsupported detector source: {source}")
@@ -123,6 +148,16 @@ class AirSimBuiltinDetector:
                 "yolo_selected_track_id": "",
                 "yolo_selected_class_id": "",
                 "yolo_selected_score": "",
+                "yolo_selected_source": "",
+                "yolo_requested_device": "",
+                "yolo_runtime_device": "",
+                "yolo_cuda_available": "",
+                "yolo_gpu_name": "",
+                "yolo_allow_untracked_fallback": "",
+                "yolo_used_untracked_fallback": "",
+                "yolo_single_target_mode": "",
+                "yolo_single_target_selected": "",
+                "yolo_single_target_distance_px": "",
             },
         )
 
@@ -140,6 +175,9 @@ class YoloByteTrackDetector:
         imgsz: int = 640,
         device: str = "",
         tracker: str = "bytetrack.yaml",
+        allow_untracked_fallback: bool = False,
+        single_target_mode: bool = False,
+        single_target_max_center_jump_px: float = 220.0,
         airsim_module: Any = None,
         model_factory: Optional[Callable[[str], Any]] = None,
         image_reader: Optional[Callable[[Any, AirSimDetectionConfig], np.ndarray]] = None,
@@ -153,8 +191,14 @@ class YoloByteTrackDetector:
         self.imgsz = max(1, int(imgsz))
         self.device = str(device or "")
         self.tracker = str(tracker or "bytetrack.yaml")
+        self.allow_untracked_fallback = bool(allow_untracked_fallback)
+        self.single_target_mode = bool(single_target_mode)
+        self.single_target_max_center_jump_px = max(0.0, float(single_target_max_center_jump_px))
         self.airsim_module = airsim_module
         self.image_reader = image_reader
+        self.runtime_info = _torch_runtime_info()
+        self._last_selected_center: Optional[tuple[float, float]] = None
+        self._last_selected_area: Optional[float] = None
 
         path = Path(str(model_path or "")).expanduser()
         if not path.exists():
@@ -194,6 +238,16 @@ class YoloByteTrackDetector:
             "yolo_selected_track_id": "",
             "yolo_selected_class_id": "",
             "yolo_selected_score": "",
+            "yolo_selected_source": "",
+            "yolo_requested_device": self.device or "auto",
+            "yolo_runtime_device": self._runtime_device(),
+            "yolo_cuda_available": int(bool(self.runtime_info.get("cuda_available", False))),
+            "yolo_gpu_name": str(self.runtime_info.get("gpu_name", "")),
+            "yolo_allow_untracked_fallback": int(self.allow_untracked_fallback),
+            "yolo_used_untracked_fallback": 0,
+            "yolo_single_target_mode": int(self.single_target_mode),
+            "yolo_single_target_selected": 0,
+            "yolo_single_target_distance_px": "",
         }
         image_bgr = self._read_scene_image(client, config)
         if image_bgr is None:
@@ -217,23 +271,58 @@ class YoloByteTrackDetector:
         stats["detector_class_filtered_count"] = stats["yolo_class_filtered_count"]
         stats["detector_track_filtered_count"] = stats["yolo_track_filtered_count"]
 
-        selected = _select_yolo_detection(detections, active_track_id)
+        selected, selector_source, selector_distance_px = _select_yolo_detection(
+            detections,
+            active_track_id,
+            allow_untracked_fallback=self.allow_untracked_fallback,
+            single_target_mode=self.single_target_mode,
+            last_center=self._last_selected_center,
+            last_area=self._last_selected_area,
+            max_center_jump_px=self.single_target_max_center_jump_px,
+        )
         frame_detection = None
-        if selected is not None and selected.track_id is not None:
+        if selected is not None and (selected.track_id is not None or self.allow_untracked_fallback):
+            frame_track_id = int(selected.track_id) if selected.track_id is not None else -1
+            selected_center = _bbox_center(selected)
+            selected_area = _bbox_area(selected)
             frame_detection = detection_to_frame_detection(
                 selected,
                 frame_id=frame_id,
                 exposure_ts=exposure_ts,
-                track_id=int(selected.track_id),
+                track_id=frame_track_id,
                 score=float(selected.score),
             )
-            stats["yolo_selected_track_id"] = int(selected.track_id)
+            self._last_selected_center = selected_center
+            self._last_selected_area = selected_area
+            stats["yolo_selected_track_id"] = frame_track_id
             stats["yolo_selected_class_id"] = int(selected.class_id)
             stats["yolo_selected_score"] = float(selected.score)
+            if selector_source == "single_target":
+                stats["yolo_selected_source"] = "single_target"
+                stats["yolo_single_target_selected"] = 1
+                if selector_distance_px is not None:
+                    stats["yolo_single_target_distance_px"] = float(selector_distance_px)
+            else:
+                stats["yolo_selected_source"] = "bytetrack" if selected.track_id is not None else "untracked_fallback"
+            stats["yolo_used_untracked_fallback"] = int(selected.track_id is None)
         else:
             stats["detector_reject_reason"] = _yolo_reject_reason(stats)
+        stats["yolo_runtime_device"] = self._runtime_device()
 
         return DetectorFrame(detections, selected, frame_detection, stats, image_bgr=image_bgr)
+
+    def _runtime_device(self) -> str:
+        try:
+            model = getattr(self.model, "model", None)
+            device = getattr(model, "device", None)
+            if device is not None:
+                return str(device)
+            parameters = getattr(model, "parameters", None)
+            if callable(parameters):
+                return str(next(parameters()).device)
+        except Exception:
+            pass
+        return str(self.device or "auto")
 
     def _read_scene_image(self, client: Any, config: AirSimDetectionConfig) -> Optional[np.ndarray]:
         if self.image_reader is not None:
@@ -309,15 +398,82 @@ class YoloByteTrackDetector:
         return detections, stats
 
 
-def _select_yolo_detection(detections: list[TrackedBoxDetection], active_track_id: Optional[int]) -> Optional[TrackedBoxDetection]:
+def _select_yolo_detection(
+    detections: list[TrackedBoxDetection],
+    active_track_id: Optional[int],
+    *,
+    allow_untracked_fallback: bool = False,
+    single_target_mode: bool = False,
+    last_center: Optional[tuple[float, float]] = None,
+    last_area: Optional[float] = None,
+    max_center_jump_px: float = 220.0,
+) -> tuple[Optional[TrackedBoxDetection], str, Optional[float]]:
     tracked = [detection for detection in detections if detection.track_id is not None]
-    if not tracked:
-        return None
     if active_track_id is not None:
         for detection in tracked:
             if int(detection.track_id) == int(active_track_id):
-                return detection
-    return max(tracked, key=lambda detection: float(detection.score))
+                return detection, "bytetrack", None
+    if single_target_mode and detections:
+        selected, distance_px = _select_single_target_continuity(
+            detections,
+            last_center=last_center,
+            last_area=last_area,
+            max_center_jump_px=max_center_jump_px,
+        )
+        if selected is not None:
+            return selected, "single_target", distance_px
+    if tracked:
+        return max(tracked, key=lambda detection: float(detection.score)), "bytetrack", None
+    if not allow_untracked_fallback:
+        return None, "", None
+    return max(detections, key=lambda detection: float(detection.score), default=None), "untracked_fallback", None
+
+
+def _select_single_target_continuity(
+    detections: list[TrackedBoxDetection],
+    *,
+    last_center: Optional[tuple[float, float]],
+    last_area: Optional[float],
+    max_center_jump_px: float,
+) -> tuple[Optional[TrackedBoxDetection], Optional[float]]:
+    if not detections:
+        return None, None
+    if last_center is None:
+        return max(detections, key=lambda detection: float(detection.score), default=None), None
+
+    best_detection: Optional[TrackedBoxDetection] = None
+    best_cost = float("inf")
+    best_distance_px: Optional[float] = None
+    max_jump = max(0.0, float(max_center_jump_px))
+    for detection in detections:
+        center = _bbox_center(detection)
+        center_dist = float(np.hypot(center[0] - last_center[0], center[1] - last_center[1]))
+        if max_jump > 0.0 and center_dist > max_jump:
+            continue
+        area_cost = 0.0
+        if last_area is not None and last_area > 1.0e-6:
+            area_ratio = max(1.0e-6, _bbox_area(detection)) / max(1.0e-6, last_area)
+            area_cost = abs(float(np.log(area_ratio)))
+        score_bonus = 30.0 * float(detection.score)
+        cost = center_dist + 40.0 * area_cost - score_bonus
+        if cost < best_cost:
+            best_cost = cost
+            best_detection = detection
+            best_distance_px = center_dist
+    return best_detection, best_distance_px
+
+
+def _bbox_center(detection: TrackedBoxDetection) -> tuple[float, float]:
+    return (
+        0.5 * (float(detection.box2D.min.x_val) + float(detection.box2D.max.x_val)),
+        0.5 * (float(detection.box2D.min.y_val) + float(detection.box2D.max.y_val)),
+    )
+
+
+def _bbox_area(detection: TrackedBoxDetection) -> float:
+    width = max(0.0, float(detection.box2D.max.x_val) - float(detection.box2D.min.x_val))
+    height = max(0.0, float(detection.box2D.max.y_val) - float(detection.box2D.min.y_val))
+    return width * height
 
 
 def _yolo_reject_reason(stats: dict[str, Any]) -> str:
@@ -422,6 +578,21 @@ def _require_ultralytics_yolo() -> Any:
     from ultralytics import YOLO  # type: ignore
 
     return YOLO
+
+
+def _torch_runtime_info() -> dict[str, Any]:
+    try:
+        torch = importlib.import_module("torch")
+        cuda_available = bool(torch.cuda.is_available())
+        gpu_name = str(torch.cuda.get_device_name(0)) if cuda_available and torch.cuda.device_count() > 0 else ""
+        return {
+            "version": str(getattr(torch, "__version__", "")),
+            "cuda_available": cuda_available,
+            "device_count": int(torch.cuda.device_count()) if hasattr(torch, "cuda") else 0,
+            "gpu_name": gpu_name,
+        }
+    except Exception:
+        return {"version": "", "cuda_available": False, "device_count": 0, "gpu_name": ""}
 
 
 def _require_tracker_dependency() -> None:

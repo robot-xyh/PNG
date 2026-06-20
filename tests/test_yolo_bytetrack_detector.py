@@ -28,7 +28,7 @@ class FakeModel:
 
 
 class YoloByteTrackDetectorTest(unittest.TestCase):
-    def make_detector(self, results, class_id=2):
+    def make_detector(self, results, class_id=2, allow_untracked_fallback=False, single_target_mode=False):
         tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(tempdir.cleanup)
         model_path = Path(tempdir.name) / "target.pt"
@@ -42,6 +42,9 @@ class YoloByteTrackDetectorTest(unittest.TestCase):
             imgsz=512,
             device="cpu",
             tracker="bytetrack.yaml",
+            allow_untracked_fallback=allow_untracked_fallback,
+            single_target_mode=single_target_mode,
+            single_target_max_center_jump_px=120.0,
             model_factory=lambda _: model,
             image_reader=lambda _client, _config: np.zeros((480, 640, 3), dtype=np.uint8),
         )
@@ -113,6 +116,59 @@ class YoloByteTrackDetectorTest(unittest.TestCase):
         self.assertIsNone(frame.frame_detection)
         self.assertEqual(frame.stats["detector_reject_reason"], "yolo_track_id_missing")
         self.assertEqual(frame.stats["yolo_track_missing_count"], 1)
+
+    def test_untracked_fallback_uses_highest_confidence_matching_class(self):
+        result = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(10, 20, 30, 40), (50, 60, 120, 160)],
+                conf=[0.80, 0.95],
+                cls=[2, 2],
+                track_ids=None,
+            )
+        )
+        detector, _model = self.make_detector([result], class_id=2, allow_untracked_fallback=True)
+
+        frame = self.detect_once(detector)
+
+        self.assertIsNotNone(frame.selected)
+        self.assertIsNotNone(frame.frame_detection)
+        self.assertEqual(frame.frame_detection.track_id, -1)
+        self.assertEqual(frame.frame_detection.bbox_xyxy, (50.0, 60.0, 120.0, 160.0))
+        self.assertEqual(frame.stats["yolo_selected_source"], "untracked_fallback")
+        self.assertEqual(frame.stats["yolo_used_untracked_fallback"], 1)
+
+    def test_single_target_mode_prefers_continuity_over_confidence(self):
+        first = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(100, 100, 140, 140)],
+                conf=[0.70],
+                cls=[2],
+                track_ids=None,
+            )
+        )
+        second = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(106, 104, 146, 144), (420, 300, 460, 340)],
+                conf=[0.60, 0.99],
+                cls=[2, 2],
+                track_ids=None,
+            )
+        )
+        detector, model = self.make_detector(
+            [first],
+            class_id=2,
+            allow_untracked_fallback=True,
+            single_target_mode=True,
+        )
+
+        frame1 = self.detect_once(detector)
+        model.results = [second]
+        frame2 = self.detect_once(detector)
+
+        self.assertEqual(frame1.frame_detection.bbox_xyxy, (100.0, 100.0, 140.0, 140.0))
+        self.assertEqual(frame2.frame_detection.bbox_xyxy, (106.0, 104.0, 146.0, 144.0))
+        self.assertEqual(frame2.stats["yolo_selected_source"], "single_target")
+        self.assertEqual(frame2.stats["yolo_single_target_selected"], 1)
 
     def test_rejects_when_target_class_missing(self):
         result = SimpleNamespace(
