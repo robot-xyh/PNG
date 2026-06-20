@@ -7,3 +7,4 @@ __pycache__/
 *.webm
 Blocks/
 logs/
+datasets/
