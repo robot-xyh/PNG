@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import json
 import math
 import random
@@ -61,8 +62,8 @@ def parse_args() -> argparse.Namespace:
         help="Spawn or move a scene Actor as the target before capturing images.",
     )
     parser.add_argument("--intruder-actor-name", default="IntruderActor")
-    parser.add_argument("--intruder-actor-asset", default="1M_Cube_Chamfer")
-    parser.add_argument("--intruder-actor-scale", type=float, default=2.0)
+    parser.add_argument("--intruder-actor-asset", default="Quadrotor1")
+    parser.add_argument("--intruder-actor-scale", type=float, default=1.0)
     parser.add_argument("--intruder-actor-x", type=float, default=0.0)
     parser.add_argument("--intruder-actor-y", type=float, default=0.0)
     parser.add_argument("--intruder-actor-z", type=float, default=-50.0)
@@ -82,6 +83,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-s", type=float, default=0.03)
     parser.add_argument("--max-attempts", type=int, default=5000)
     parser.add_argument("--save-empty", action=argparse.BooleanOptionalAction, default=False)
+    parser.add_argument(
+        "--label-target-only",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Only write labels for the resolved target object name. This avoids labeling background Blocks cubes.",
+    )
     parser.add_argument(
         "--strict-target-pose",
         action=argparse.BooleanOptionalAction,
@@ -157,50 +164,55 @@ def _actor_pose(airsim_module, position: np.ndarray, yaw_deg: float):
     )
 
 
+def _scene_object_names(client, pattern: str) -> list[str]:
+    try:
+        return sorted(str(name) for name in client.simListSceneObjects(pattern) if name)
+    except Exception:
+        return []
+
+
 def _spawn_or_move_intruder_actor(client, airsim_module, args: argparse.Namespace) -> tuple[str, np.ndarray]:
     object_name = _actor_name(args)
     position = _actor_position(args)
     pose = _actor_pose(airsim_module, position, float(args.intruder_actor_yaw_deg))
-    if args.intruder_actor_respawn:
+
+    scene_objects = _scene_object_names(client, f"{object_name}*")
+    if object_name in scene_objects:
         try:
-            client.simDestroyObject(object_name)
-        except Exception:
-            pass
-    else:
+            client.simSetObjectPose(object_name, pose, teleport=True)
+            return object_name, position
+        except Exception as exc:
+            print(f"intruder_actor_move_warning name={object_name!r}: {exc}")
+
+    if not args.intruder_actor_respawn:
         try:
             moved = client.simSetObjectPose(object_name, pose, teleport=True)
             if moved is None or bool(moved):
                 return object_name, position
         except Exception:
             pass
-        try:
-            scene_objects = client.simListSceneObjects(f"{object_name}*")
-        except Exception:
-            scene_objects = []
-        if object_name in scene_objects:
-            client.simSetObjectPose(object_name, pose, teleport=True)
-            return object_name, position
 
-    spawned = False
+    spawned_name = ""
     try:
         scale = airsim_module.Vector3r(
             float(args.intruder_actor_scale),
             float(args.intruder_actor_scale),
             float(args.intruder_actor_scale),
         )
-        spawned = bool(
+        spawned_name = str(
             client.simSpawnObject(
                 object_name,
-                args.intruder_actor_asset,
+                str(args.intruder_actor_asset),
                 pose,
                 scale,
                 bool(args.intruder_actor_physics),
                 bool(args.intruder_actor_blueprint),
             )
+            or ""
         )
     except Exception as exc:
         print(f"intruder_actor_spawn_warning={exc}; trying simSetObjectPose on existing object")
-    if not spawned:
+    if not spawned_name:
         try:
             client.simSetObjectPose(object_name, pose, teleport=True)
         except Exception as exc:
@@ -208,7 +220,8 @@ def _spawn_or_move_intruder_actor(client, airsim_module, args: argparse.Namespac
                 f"Failed to spawn or move intruder actor '{object_name}' with asset "
                 f"'{args.intruder_actor_asset}': {exc}"
             ) from exc
-    return object_name, position
+        spawned_name = object_name
+    return spawned_name, position
 
 
 def _target_patterns(args: argparse.Namespace) -> list[str]:
@@ -344,6 +357,18 @@ def _decode_size(cv2, png_bytes: bytes) -> tuple[int, int]:
 
 def _detections(client, airsim_module, args: argparse.Namespace):
     return list(client.simGetDetections(args.camera, _image_type(airsim_module, args.image_type)))
+
+
+def _label_detections(detections, target_name: str, args: argparse.Namespace):
+    if not args.label_target_only:
+        return list(detections)
+    names = [target_name, _actor_name(args), f"{_actor_name(args)}*"]
+    filtered = []
+    for detection in detections:
+        name = str(getattr(detection, "name", "") or "")
+        if any(pattern and fnmatch.fnmatchcase(name, pattern) for pattern in names):
+            filtered.append(detection)
+    return filtered
 
 
 def _clip(value: float, lo: float, hi: float) -> float:
@@ -519,7 +544,8 @@ def main() -> None:
             try:
                 png_bytes = _capture_png(client, airsim, args)
                 image_width, image_height = _decode_size(cv2, png_bytes)
-                detections = _detections(client, airsim, args)
+                raw_detections = _detections(client, airsim, args)
+                detections = _label_detections(raw_detections, target_name, args)
             except Exception as exc:
                 print(f"capture_warning attempt={attempts}: {exc}")
                 continue
@@ -545,6 +571,8 @@ def main() -> None:
                 detections_count=len(detections),
                 boxes=boxes,
             )
+            row["raw_detections_count"] = len(raw_detections)
+            row["label_target_only"] = bool(args.label_target_only)
             manifest.write(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n")
             saved += 1
             if saved % 25 == 0 or saved == args.count:
