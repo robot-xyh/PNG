@@ -1,0 +1,46 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/master/docs/settings.md",
+  "SettingsVersion": 1.2,
+  "LogMessagesVisible": true,
+  "SimMode": "Multirotor",
+  	
+  "Vehicles": {
+    
+	"PX402": {
+      "VehicleType": "SimpleFlight",
+		  "X": 0, "Y": 4, "Z": -2,
+			  "Sensors": {
+				"Distance": {
+					"SensorType": 5,
+					"Enabled" : true,
+					"Yaw": 0, "Pitch": -90, "Roll": 0,
+					"DrawDebugPoints": true
+							}
+						}
+					},
+	"PX4": {
+      "VehicleType": "PX4Multirotor",
+	  "X": 0, "Y": 0, "Z": -2,
+      "UseSerial": true,
+	  
+	  "SerialPort": "COM3",
+      "Parameters": {
+          "NAV_RCL_ACT": 1,
+          "NAV_DLL_ACT": 0,
+          
+          "COM_OBL_ACT": 1,
+		  "COM_OBL_RC_ACT": 5
+      },
+	  
+	  
+	  "Sensors": {
+				"Distance": {
+					"SensorType": 5,
+					"Enabled" : true,
+					"Yaw": 0, "Pitch": -90, "Roll": 0,
+					"DrawDebugPoints": true
+							}
+						}
+    }
+  }
+}
