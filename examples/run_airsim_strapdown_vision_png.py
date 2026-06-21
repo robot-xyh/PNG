@@ -158,13 +158,57 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--px4-command-mode",
-        choices=("velocity_simple", "velocity_yaw_rate"),
+        choices=("velocity_simple", "velocity_yaw_rate", "mavlink_offboard"),
         default="velocity_yaw_rate",
         help=(
             "PX4 SITL velocity command mapping. velocity_simple avoids AirSim "
             "drivetrain/yaw arguments because Blocks 1.8.1 PX4 ignores them in "
-            "some Offboard states."
+            "some Offboard states. mavlink_offboard sends PX4 SET_POSITION_TARGET_LOCAL_NED "
+            "through AirSim's QGC UDP forwarding port for hardware HIL."
         ),
+    )
+    parser.add_argument(
+        "--px4-mavlink-url",
+        default="udp:127.0.0.1:14550",
+        help="MAVLink endpoint used by --px4-command-mode mavlink_offboard.",
+    )
+    parser.add_argument(
+        "--px4-offboard-prime-s",
+        type=float,
+        default=2.5,
+        help="Seconds of velocity setpoint streaming before requesting PX4 Offboard mode.",
+    )
+    parser.add_argument(
+        "--px4-hil",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Hardware PX4 HIL mode. Unlike --hil-bench-safe this still permits arming and "
+            "motion commands, but start geometry is computed from the AirSim/Unreal vehicle "
+            "pose so the spawned target is placed in the rendered camera frame."
+        ),
+    )
+    parser.add_argument(
+        "--hil-bench-safe",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "Hardware-in-the-loop bench mode: do not reset, arm, take off, climb, align, "
+            "or send vehicle velocity commands. This is for camera/detector/RPC smoke tests "
+            "with a physical PX4 connected."
+        ),
+    )
+    parser.add_argument(
+        "--skip-list-vehicles",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip AirSim listVehicles() validation; useful when PX4 HIL exposes state RPC but listVehicles() blocks.",
+    )
+    parser.add_argument(
+        "--skip-collision-check",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Skip AirSim collision polling and leave collision log fields empty.",
     )
     parser.add_argument("--climb-to-altitude", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--intercept-altitude-m", type=float, default=50.0)
@@ -392,6 +436,19 @@ def _output_paths_strapdown(args) -> tuple[Path, Path]:
     return base / f"strapdown_vision_png_{timestamp}.csv", base / f"strapdown_vision_png_{timestamp}.png"
 
 
+def _empty_collision_snapshot():
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        collided=False,
+        reason="collision_check_disabled",
+        interceptor_time_stamp_ns=0,
+        intruder_time_stamp_ns=0,
+        interceptor_object_name="",
+        intruder_object_name="",
+    )
+
+
 def _fixed_camera_pose(airsim_module, args):
     return airsim_module.Pose(
         airsim_module.Vector3r(args.camera_x, args.camera_y, args.camera_z),
@@ -484,7 +541,60 @@ def _initial_truth_yaw_deg(client, args, origins: dict[str, np.ndarray]) -> floa
 def _align_body_yaw_to_target(client, airsim_module, args, origins: dict[str, np.ndarray]) -> float:
     yaw_deg = _initial_truth_yaw_deg(client, args, origins)
     if args.px4_interceptor:
-        print(f"PX4 initial yaw alignment target={yaw_deg:.2f}deg; using velocity-yaw commands during intercept.")
+        print(f"PX4 initial yaw alignment target={yaw_deg:.2f}deg; rotating with yaw-rate setpoints.")
+        deadline = time.monotonic() + max(1.0, float(args.initial_align_timeout_s))
+        command_dt = 0.20
+        last_print = 0.0
+        actual_yaw_deg = float("nan")
+        while time.monotonic() < deadline:
+            _ensure_px4_api_control(client, args, args.interceptor)
+            state = client.getMultirotorState(vehicle_name=args.interceptor)
+            actual_yaw_deg = _body_yaw_deg(airsim_module, state.kinematics_estimated.orientation)
+            yaw_error_deg = _wrap_angle_deg(yaw_deg - actual_yaw_deg)
+            if abs(yaw_error_deg) <= max(0.0, float(args.initial_align_margin_deg)):
+                break
+            yaw_rate_cmd = float(
+                np.clip(
+                    float(args.yaw_error_gain) * yaw_error_deg,
+                    -float(args.max_yaw_rate_deg),
+                    float(args.max_yaw_rate_deg),
+                )
+            )
+            client.moveByVelocityAsync(
+                0.0,
+                0.0,
+                0.0,
+                duration=command_dt,
+                drivetrain=airsim_module.DrivetrainType.MaxDegreeOfFreedom,
+                yaw_mode=airsim_module.YawMode(is_rate=True, yaw_or_rate=yaw_rate_cmd),
+                vehicle_name=args.interceptor,
+            )
+            now = time.monotonic()
+            if now - last_print >= 1.0:
+                print(
+                    f"px4_initial_yaw_status target={yaw_deg:.2f}deg actual={actual_yaw_deg:.2f}deg "
+                    f"error={yaw_error_deg:.2f}deg yaw_rate_cmd={yaw_rate_cmd:.2f}deg/s"
+                )
+                last_print = now
+            time.sleep(command_dt)
+        for _ in range(3):
+            client.moveByVelocityAsync(
+                0.0,
+                0.0,
+                0.0,
+                duration=command_dt,
+                drivetrain=airsim_module.DrivetrainType.MaxDegreeOfFreedom,
+                yaw_mode=airsim_module.YawMode(is_rate=True, yaw_or_rate=0.0),
+                vehicle_name=args.interceptor,
+            )
+            time.sleep(0.05)
+        state = client.getMultirotorState(vehicle_name=args.interceptor)
+        actual_yaw_deg = _body_yaw_deg(airsim_module, state.kinematics_estimated.orientation)
+        yaw_error_deg = _wrap_angle_deg(yaw_deg - actual_yaw_deg)
+        print(
+            f"Initial PX4 body yaw after alignment: commanded={yaw_deg:.2f}deg, "
+            f"actual={actual_yaw_deg:.2f}deg, error={yaw_error_deg:.2f}deg"
+        )
         return yaw_deg
     try:
         client.rotateToYawAsync(
@@ -788,8 +898,136 @@ def _px4_limited_velocity(v_cmd: np.ndarray, args) -> np.ndarray:
     return command
 
 
+class PX4MavlinkOffboard:
+    def __init__(self, url: str, *, source_system: int = 134, source_component: int = 1):
+        try:
+            from pymavlink import mavutil
+        except ImportError as exc:
+            raise SystemExit("Install pymavlink before using --px4-command-mode mavlink_offboard.") from exc
+        self.mavutil = mavutil
+        self.master = mavutil.mavlink_connection(url, source_system=source_system, source_component=source_component)
+        self.target_system = 1
+        self.target_component = 1
+        self.connected = False
+        self.armed = False
+        self.offboard_requested = False
+        self.last_mode_request_s = 0.0
+        self.start_monotonic = time.monotonic()
+
+    def connect(self, timeout_s: float = 12.0) -> bool:
+        if self.connected:
+            return True
+        heartbeat = self.master.wait_heartbeat(timeout=timeout_s)
+        if heartbeat is None:
+            print(f"px4_mavlink_warning=no_heartbeat url={self.master.address}")
+            return False
+        self.target_system = int(self.master.target_system or 1)
+        self.target_component = int(self.master.target_component or 1)
+        self.connected = True
+        print(
+            "px4_mavlink_connected "
+            f"target_system={self.target_system} target_component={self.target_component} heartbeat={heartbeat}"
+        )
+        return True
+
+    def _time_boot_ms(self) -> int:
+        return int(max(0.0, time.monotonic() - self.start_monotonic) * 1000.0) & 0xFFFFFFFF
+
+    def send_velocity(self, velocity_ned: np.ndarray, yaw_rate_deg_s: float = 0.0) -> None:
+        if not self.connected and not self.connect(timeout_s=0.2):
+            return
+        velocity = np.asarray(velocity_ned, dtype=float)
+        yaw_rate_rad_s = float(np.deg2rad(yaw_rate_deg_s))
+        mavlink = self.mavutil.mavlink
+        # Ignore position and acceleration; use vx/vy/vz plus yaw-rate. Also ignore yaw.
+        type_mask = 0x0007 | 0x01C0 | 0x0400
+        self.master.mav.set_position_target_local_ned_send(
+            self._time_boot_ms(),
+            self.target_system,
+            self.target_component,
+            mavlink.MAV_FRAME_LOCAL_NED,
+            type_mask,
+            0.0,
+            0.0,
+            0.0,
+            float(velocity[0]),
+            float(velocity[1]),
+            float(velocity[2]),
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            yaw_rate_rad_s,
+        )
+
+    def arm(self) -> None:
+        if not self.connected and not self.connect(timeout_s=1.0):
+            return
+        if self.armed:
+            return
+        self.master.mav.command_long_send(
+            self.target_system,
+            self.target_component,
+            self.mavutil.mavlink.MAV_CMD_COMPONENT_ARM_DISARM,
+            0,
+            1,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
+        self.armed = True
+
+    def request_offboard(self) -> None:
+        if not self.connected and not self.connect(timeout_s=1.0):
+            return
+        now = time.monotonic()
+        if self.offboard_requested and now - self.last_mode_request_s < 2.0:
+            return
+        self.master.set_mode("OFFBOARD")
+        self.offboard_requested = True
+        self.last_mode_request_s = now
+
+    def prime_and_request_offboard(self, duration_s: float) -> None:
+        if not self.connect(timeout_s=max(2.0, duration_s + 4.0)):
+            return
+        deadline = time.monotonic() + max(0.0, float(duration_s))
+        while time.monotonic() < deadline:
+            self.send_velocity(np.zeros(3, dtype=float), 0.0)
+            time.sleep(0.05)
+        self.arm()
+        for _ in range(10):
+            self.send_velocity(np.zeros(3, dtype=float), 0.0)
+            time.sleep(0.05)
+        self.request_offboard()
+
+    def stop(self) -> None:
+        if not self.connected:
+            return
+        for _ in range(10):
+            self.send_velocity(np.zeros(3, dtype=float), 0.0)
+            time.sleep(0.03)
+
+
+def _px4_mavlink_offboard(args) -> Optional[PX4MavlinkOffboard]:
+    if getattr(args, "px4_command_mode", "") != "mavlink_offboard":
+        return None
+    offboard = getattr(args, "_px4_mavlink_offboard", None)
+    if offboard is None:
+        offboard = PX4MavlinkOffboard(args.px4_mavlink_url)
+        setattr(args, "_px4_mavlink_offboard", offboard)
+    return offboard
+
+
 def _ensure_px4_api_control(client, args, vehicle_name: str) -> bool:
     if not _is_px4_vehicle(vehicle_name, args):
+        return True
+    if args.px4_command_mode == "mavlink_offboard":
+        offboard = _px4_mavlink_offboard(args)
+        if offboard is not None:
+            offboard.connect(timeout_s=0.2)
         return True
     try:
         if not client.isApiControlEnabled(vehicle_name=vehicle_name):
@@ -815,6 +1053,13 @@ def _command_vehicle_velocity(
 ):
     command = _px4_limited_velocity(velocity, args) if _is_px4_vehicle(vehicle_name, args) else np.asarray(velocity, dtype=float)
     if _is_px4_vehicle(vehicle_name, args):
+        if args.px4_command_mode == "mavlink_offboard":
+            offboard = _px4_mavlink_offboard(args)
+            if offboard is not None:
+                offboard.send_velocity(command, yaw_rate_deg_s)
+                offboard.arm()
+                offboard.request_offboard()
+            return None
         _ensure_px4_api_control(client, args, vehicle_name)
         if args.px4_command_mode == "velocity_simple":
             return client.moveByVelocityAsync(
@@ -836,6 +1081,8 @@ def _command_vehicle_velocity(
 
 
 def _px4_keepalive(client, airsim_module, vehicles: Sequence[str], args, duration_s: float = 1.0) -> None:
+    if getattr(args, "hil_bench_safe", False):
+        return
     px4_vehicles = [vehicle for vehicle in vehicles if _is_px4_vehicle(vehicle, args)]
     if not px4_vehicles:
         return
@@ -848,6 +1095,8 @@ def _px4_keepalive(client, airsim_module, vehicles: Sequence[str], args, duratio
 
 
 def _register_px4_shutdown_stop(client, args) -> None:
+    if getattr(args, "hil_bench_safe", False):
+        return
     if not (getattr(args, "px4_interceptor", False) or getattr(args, "px4_intruder", False)):
         return
 
@@ -856,6 +1105,9 @@ def _register_px4_shutdown_stop(client, args) -> None:
         vehicles.append(args.intruder)
 
     def stop_px4_vehicles() -> None:
+        offboard = _px4_mavlink_offboard(args)
+        if offboard is not None:
+            offboard.stop()
         for _ in range(10):
             for vehicle in vehicles:
                 try:
@@ -924,7 +1176,14 @@ def _move_px4_vehicle_to_local(
         )
 
 
-def _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z: dict[str, float], args, origins: dict[str, np.ndarray]) -> None:
+def _prepare_px4_mixed_intercept_altitude(
+    client,
+    airsim_module,
+    vehicles,
+    target_z: dict[str, float],
+    args,
+    origins: dict[str, np.ndarray],
+) -> None:
     px4_vehicles = [vehicle for vehicle in vehicles if _is_px4_vehicle(vehicle, args)]
     simple_vehicles = [vehicle for vehicle in vehicles if not _is_px4_vehicle(vehicle, args)]
     print(f"Using PX4-friendly altitude preparation for: {_format_names(px4_vehicles)}")
@@ -964,13 +1223,7 @@ def _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z: dict[str, 
                 reached.add(vehicle)
                 continue
             vz_cmd = float(np.clip(1.2 * z_error, -climb_speed, climb_speed))
-            client.moveByVelocityAsync(
-                0.0,
-                0.0,
-                vz_cmd,
-                duration=command_dt,
-                vehicle_name=vehicle,
-            )
+            _command_vehicle_velocity(client, airsim_module, vehicle, np.array([0.0, 0.0, vz_cmd], dtype=float), 0.0, command_dt, args)
             statuses.append(
                 f"{vehicle}: z={position[2]:.2f} target={local_target_z:.2f} "
                 f"err={z_error:.2f} vz={velocity[2]:.2f} cmd={vz_cmd:.2f}"
@@ -1001,7 +1254,7 @@ def _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z: dict[str, 
         time.sleep(0.1)
 
 
-def _prepare_intercept_altitude(client, vehicles, args, origins: dict[str, np.ndarray]) -> None:
+def _prepare_intercept_altitude(client, airsim_module, vehicles, args, origins: dict[str, np.ndarray]) -> None:
     if not args.climb_to_altitude:
         return
     target_z = {
@@ -1013,7 +1266,7 @@ def _prepare_intercept_altitude(client, vehicles, args, origins: dict[str, np.nd
     target_text = ", ".join(f"{vehicle}: NED_Z={target_z[vehicle]:.1f}" for vehicle in vehicles)
     print(f"Climbing vehicles to intercept start altitudes: {target_text}")
     if args.px4_interceptor or args.px4_intruder:
-        _prepare_px4_mixed_intercept_altitude(client, vehicles, target_z, args, origins)
+        _prepare_px4_mixed_intercept_altitude(client, airsim_module, vehicles, target_z, args, origins)
     else:
         for future in [client.takeoffAsync(timeout_sec=args.climb_timeout_s, vehicle_name=v) for v in vehicles]:
             future.join()
@@ -1050,7 +1303,20 @@ def _apply_start_geometry(client, airsim_module, args, origins: dict[str, np.nda
         return
 
     forward, lateral, horizontal_range = _start_geometry_offsets(args)
-    if args.px4_interceptor:
+    if args.hil_bench_safe or args.px4_hil:
+        interceptor_pose = client.simGetObjectPose(args.interceptor)
+        interceptor_world = _vector_xyz(interceptor_pose.position)
+        interceptor_local = interceptor_world - origins.get(args.interceptor, np.zeros(3, dtype=float))
+        R_IU = airsim_orientation_to_R_IB(interceptor_pose.orientation)
+        forward_axis = np.array([R_IU[0, 0], R_IU[1, 0], 0.0], dtype=float)
+        right_axis = np.array([R_IU[0, 1], R_IU[1, 1], 0.0], dtype=float)
+        forward_norm = float(np.linalg.norm(forward_axis))
+        right_norm = float(np.linalg.norm(right_axis))
+        forward_axis = forward_axis / forward_norm if forward_norm > 1.0e-6 else np.array([1.0, 0.0, 0.0])
+        right_axis = right_axis / right_norm if right_norm > 1.0e-6 else np.array([0.0, 1.0, 0.0])
+        intruder_world = interceptor_world + forward * forward_axis + lateral * right_axis
+        intruder_world[2] = interceptor_world[2] - float(args.intruder_altitude_offset_m)
+    elif args.px4_interceptor:
         interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
         interceptor_local = _vector_xyz(interceptor_kin.position)
         interceptor_world = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
@@ -1543,6 +1809,8 @@ def _collision_time_stamp_s(time_stamp_ns: int) -> str | float:
 
 
 def _collision_snapshot(client, args):
+    if getattr(args, "skip_collision_check", False):
+        return _empty_collision_snapshot()
     if args.intruder_actor:
         return get_vehicle_object_collision(
             client,
@@ -1588,7 +1856,15 @@ def main() -> None:
     except Exception as exc:
         raise SystemExit("Failed to connect to AirSim RPC. Start Blocks first.") from exc
     required_vehicles = [args.interceptor] if args.intruder_actor else [args.interceptor, args.intruder]
-    available = _require_vehicles(client, required_vehicles)
+    if args.hil_bench_safe:
+        args.enable_motion = False
+        args.reset = False
+        args.climb_to_altitude = False
+        args.initial_truth_align = False
+        args.skip_list_vehicles = True
+        args.skip_collision_check = True
+        print("HIL bench-safe mode: disabled reset, arming, climb, initial yaw alignment, collision polling, and motion commands.")
+    available = list(required_vehicles) if args.skip_list_vehicles else _require_vehicles(client, required_vehicles)
     print(f"AirSim vehicles: {_format_names(available)}")
     if args.list_vehicles:
         return
@@ -1604,13 +1880,22 @@ def main() -> None:
     elif args.reset:
         client.reset()
         time.sleep(1.0)
-    for vehicle in required_vehicles:
-        client.enableApiControl(True, vehicle_name=vehicle)
-        if _is_px4_vehicle(vehicle, args):
-            _ensure_px4_api_control(client, args, vehicle)
-        else:
-            client.armDisarm(True, vehicle_name=vehicle)
-    _prepare_intercept_altitude(client, required_vehicles, args, origins)
+    if args.hil_bench_safe:
+        print("Skipping API control and arming in HIL bench-safe mode.")
+    else:
+        for vehicle in required_vehicles:
+            if _is_px4_vehicle(vehicle, args):
+                if args.px4_command_mode != "mavlink_offboard":
+                    client.enableApiControl(True, vehicle_name=vehicle)
+                _ensure_px4_api_control(client, args, vehicle)
+            else:
+                client.enableApiControl(True, vehicle_name=vehicle)
+                client.armDisarm(True, vehicle_name=vehicle)
+    if args.px4_command_mode == "mavlink_offboard":
+        offboard = _px4_mavlink_offboard(args)
+        if offboard is not None:
+            offboard.prime_and_request_offboard(args.px4_offboard_prime_s)
+    _prepare_intercept_altitude(client, airsim, required_vehicles, args, origins)
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     _apply_start_geometry(client, airsim, args, origins)
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
