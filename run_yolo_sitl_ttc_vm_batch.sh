@@ -23,6 +23,14 @@ YOLO_IMGSZ="${YOLO_IMGSZ:-640}"
 YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX="${YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX:-260}"
 SHADOW_AIRSIM_DETECT="${SHADOW_AIRSIM_DETECT:-1}"
 REJECT_TOP_CLIPPED_PITCH="${REJECT_TOP_CLIPPED_PITCH:-0}"
+FRAME_CENTERING="${FRAME_CENTERING:-1}"
+FRAME_CENTERING_SPEED_RATIO="${FRAME_CENTERING_SPEED_RATIO:-1.45}"
+TERMINAL_CAPTURE_SPEED_RATIO="${TERMINAL_CAPTURE_SPEED_RATIO:-1.20}"
+FRAME_CENTERING_MAX_LATERAL_SPEED="${FRAME_CENTERING_MAX_LATERAL_SPEED:-1.20}"
+TERMINAL_CAPTURE_MAX_LATERAL_SPEED="${TERMINAL_CAPTURE_MAX_LATERAL_SPEED:-0.55}"
+FRAME_CENTERING_LATERAL_SCALE="${FRAME_CENTERING_LATERAL_SCALE:-0.20}"
+TERMINAL_CAPTURE_LATERAL_SCALE="${TERMINAL_CAPTURE_LATERAL_SCALE:-0.08}"
+FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY="${FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY:-0}"
 CAMERA_X="${CAMERA_X:-0.5}"
 CAMERA_Y="${CAMERA_Y:-0}"
 CAMERA_Z="${CAMERA_Z:-0}"
@@ -139,6 +147,23 @@ run_case() {
   if [[ "$REJECT_TOP_CLIPPED_PITCH" == "1" || "$REJECT_TOP_CLIPPED_PITCH" == "true" || "$REJECT_TOP_CLIPPED_PITCH" == "TRUE" ]]; then
     top_clip_args=(--reject-top-clipped-pitch)
   fi
+  local frame_centering_args=(--no-frame-centering)
+  if [[ "$FRAME_CENTERING" == "1" || "$FRAME_CENTERING" == "true" || "$FRAME_CENTERING" == "TRUE" ]]; then
+    frame_centering_args=(
+      --frame-centering
+      --frame-centering-speed-ratio "$FRAME_CENTERING_SPEED_RATIO"
+      --terminal-capture-speed-ratio "$TERMINAL_CAPTURE_SPEED_RATIO"
+      --frame-centering-max-lateral-speed "$FRAME_CENTERING_MAX_LATERAL_SPEED"
+      --terminal-capture-max-lateral-speed "$TERMINAL_CAPTURE_MAX_LATERAL_SPEED"
+      --frame-centering-lateral-scale "$FRAME_CENTERING_LATERAL_SCALE"
+      --terminal-capture-lateral-scale "$TERMINAL_CAPTURE_LATERAL_SCALE"
+    )
+    if [[ "$FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY" == "1" || "$FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY" == "true" || "$FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY" == "TRUE" ]]; then
+      frame_centering_args+=(--frame-centering-loss-hold-last-velocity)
+    else
+      frame_centering_args+=(--no-frame-centering-loss-hold-last-velocity)
+    fi
+  fi
 
   python3 examples/run_airsim_strapdown_vision_png.py \
     --enable-motion \
@@ -182,6 +207,7 @@ run_case() {
     "${shadow_args[@]}" \
     --los-filter \
     --frame-guard \
+    "${frame_centering_args[@]}" \
     --yaw-control \
     --yaw-error-gain "$YAW_ERROR_GAIN" \
     --max-yaw-rate-deg "$MAX_YAW_RATE_DEG" \
@@ -223,6 +249,8 @@ echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"
 echo "Camera: x=${CAMERA_X}, y=${CAMERA_Y}, z=${CAMERA_Z}, pitch=${CAMERA_PITCH_DEG}, roll=${CAMERA_ROLL_DEG}, yaw=${CAMERA_YAW_DEG}"
 echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
+echo "Frame centering: ${FRAME_CENTERING}; speed_ratio=${FRAME_CENTERING_SPEED_RATIO}; terminal_speed_ratio=${TERMINAL_CAPTURE_SPEED_RATIO}; lateral=${FRAME_CENTERING_MAX_LATERAL_SPEED}/${TERMINAL_CAPTURE_MAX_LATERAL_SPEED}"
+echo "Frame centering loss hold last velocity: ${FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY}"
 echo "Every case restarts PX4 SITL and Blocks."
 
 for range_m in "${RANGES[@]}"; do

@@ -395,6 +395,38 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--frame-guard-yaw-gain-scale", type=float, default=1.45)
     parser.add_argument("--frame-guard-max-yaw-rate-deg", type=float, default=60.0)
     parser.add_argument("--frame-guard-vertical-error-gain", type=float, default=0.012)
+    parser.add_argument(
+        "--frame-centering",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Hard strapdown camera frame-keeping state. When the target approaches the image edge "
+            "or is briefly lost, reduce speed, suppress lateral PNG velocity, and keep/predict yaw-rate."
+        ),
+    )
+    parser.add_argument("--frame-centering-enter-error-ratio", type=float, default=0.52)
+    parser.add_argument("--frame-centering-terminal-error-ratio", type=float, default=0.68)
+    parser.add_argument("--frame-centering-area-ratio", type=float, default=0.006)
+    parser.add_argument("--frame-centering-loss-hold-s", type=float, default=0.80)
+    parser.add_argument("--frame-centering-speed-ratio", type=float, default=1.45)
+    parser.add_argument("--terminal-capture-speed-ratio", type=float, default=1.20)
+    parser.add_argument("--frame-centering-min-forward-ratio", type=float, default=0.55)
+    parser.add_argument("--frame-centering-lateral-scale", type=float, default=0.20)
+    parser.add_argument("--terminal-capture-lateral-scale", type=float, default=0.08)
+    parser.add_argument("--frame-centering-max-lateral-speed", type=float, default=1.20)
+    parser.add_argument("--terminal-capture-max-lateral-speed", type=float, default=0.55)
+    parser.add_argument("--frame-centering-yaw-gain-scale", type=float, default=1.20)
+    parser.add_argument("--terminal-capture-yaw-gain-scale", type=float, default=1.45)
+    parser.add_argument("--frame-centering-max-yaw-rate-deg", type=float, default=70.0)
+    parser.add_argument("--terminal-capture-max-yaw-rate-deg", type=float, default=60.0)
+    parser.add_argument("--frame-centering-yaw-hold-window-s", type=float, default=0.20)
+    parser.add_argument("--frame-centering-yaw-hold-decay-tau-s", type=float, default=0.30)
+    parser.add_argument(
+        "--frame-centering-loss-hold-last-velocity",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="During short target loss, start from the previous final velocity command before applying frame-centering limits.",
+    )
     add_detector_args(parser)
     parser.add_argument(
         "--shadow-airsim-detect",
@@ -1596,6 +1628,175 @@ def _frame_guard_vertical_bias(px_err_y: float, intrinsics, args) -> float:
     return float(np.clip(float(px_err_y) * float(args.frame_guard_vertical_error_gain), -args.max_vision_vertical_speed, args.max_vision_vertical_speed))
 
 
+def _yaw_rate_window_average(samples: list[tuple[float, float]], timestamp: float, window_s: float) -> tuple[float, int]:
+    window = max(0.01, float(window_s))
+    recent = [rate for ts, rate in samples if timestamp - ts <= window and np.isfinite(rate)]
+    if not recent:
+        return 0.0, 0
+    return float(np.mean(recent)), len(recent)
+
+
+def _frame_centering_state(
+    *,
+    detected: bool,
+    detection_clipped: bool,
+    image_error_ratio: float,
+    area_ratio: float,
+    ttc_s: Optional[float],
+    image_kf_valid: bool,
+    guard_hold_active: bool,
+    guard_hold_error_ratio: float,
+    guard_hold_area_ratio: float,
+    last_detected_ts: Optional[float],
+    timestamp: float,
+    args,
+) -> tuple[str, int, str]:
+    if not bool(args.frame_centering):
+        return "disabled", 0, ""
+
+    enter_error = max(0.0, float(args.frame_centering_enter_error_ratio))
+    terminal_error = max(enter_error, float(args.frame_centering_terminal_error_ratio))
+    terminal_area = max(0.0, float(args.frame_centering_area_ratio))
+    loss_hold_s = max(0.0, float(args.frame_centering_loss_hold_s))
+    ttc_terminal = max(0.0, float(args.frame_guard_ttc_terminal_s))
+    ttc_close = ttc_s is not None and np.isfinite(float(ttc_s)) and float(ttc_s) > 0.0 and float(ttc_s) <= ttc_terminal
+
+    effective_error = max(float(image_error_ratio), float(guard_hold_error_ratio if guard_hold_active else 0.0))
+    effective_area = max(float(area_ratio), float(guard_hold_area_ratio if guard_hold_active else 0.0))
+
+    if detected:
+        if detection_clipped:
+            return "terminal_capture", 1, "bbox_clipped"
+        if effective_error >= terminal_error:
+            return "terminal_capture", 1, "edge_error_terminal"
+        if effective_area >= terminal_area:
+            return "terminal_capture", 1, "area_terminal"
+        if ttc_close:
+            return "terminal_capture", 1, "ttc_terminal"
+        if effective_error >= enter_error:
+            return "frame_centering", 1, "edge_error"
+        if guard_hold_active and effective_error >= max(0.0, float(args.frame_guard_exit_error_ratio)):
+            return "frame_centering", 1, "guard_hold"
+        return "tracking", 0, ""
+
+    if last_detected_ts is not None and timestamp - last_detected_ts <= loss_hold_s:
+        if image_kf_valid:
+            return "loss_hold", 1, "kf_loss_hold"
+        return "loss_hold", 1, "recent_loss_hold"
+    return "tracking", 0, ""
+
+
+def _apply_frame_centering_velocity(
+    v_cmd: np.ndarray,
+    *,
+    lambda_I: Optional[np.ndarray],
+    scheduled_speed_cap: float,
+    intruder_speed: float,
+    state: str,
+    args,
+) -> tuple[np.ndarray, float, float, float]:
+    command = np.array(v_cmd, dtype=float)
+    if not bool(args.frame_centering) or state not in {"frame_centering", "terminal_capture", "loss_hold"}:
+        return command, float(np.linalg.norm(command)), 1.0, 0.0
+
+    if lambda_I is None or float(np.linalg.norm(lambda_I)) <= 1.0e-6:
+        forward = normalize(np.array([1.0, 0.0, 0.0], dtype=float))
+    else:
+        forward = normalize(np.asarray(lambda_I, dtype=float))
+
+    if state == "terminal_capture":
+        speed_cap = min(
+            float(scheduled_speed_cap),
+            max(0.1, float(args.terminal_capture_speed_ratio) * float(intruder_speed)),
+        )
+        lateral_scale = max(0.0, float(args.terminal_capture_lateral_scale))
+        lateral_limit = max(0.0, float(args.terminal_capture_max_lateral_speed))
+    elif state == "loss_hold":
+        speed_cap = min(
+            float(scheduled_speed_cap),
+            max(0.1, float(args.frame_centering_speed_ratio) * float(intruder_speed)),
+        )
+        lateral_scale = max(0.0, min(float(args.frame_centering_lateral_scale), float(args.terminal_capture_lateral_scale)))
+        lateral_limit = max(0.0, min(float(args.frame_centering_max_lateral_speed), float(args.terminal_capture_max_lateral_speed)))
+    else:
+        speed_cap = min(
+            float(scheduled_speed_cap),
+            max(0.1, float(args.frame_centering_speed_ratio) * float(intruder_speed)),
+        )
+        lateral_scale = max(0.0, float(args.frame_centering_lateral_scale))
+        lateral_limit = max(0.0, float(args.frame_centering_max_lateral_speed))
+
+    forward_component = float(np.dot(command, forward))
+    min_forward = max(0.0, float(args.frame_centering_min_forward_ratio)) * speed_cap
+    forward_component = float(np.clip(forward_component, min_forward, speed_cap))
+
+    lateral = command - forward_component * forward
+    lateral_norm = float(np.linalg.norm(lateral))
+    if lateral_norm > 1.0e-6:
+        lateral *= lateral_scale
+        scaled_lateral_norm = float(np.linalg.norm(lateral))
+        if lateral_limit > 0.0 and scaled_lateral_norm > lateral_limit:
+            lateral *= lateral_limit / scaled_lateral_norm
+
+    command = forward_component * forward + lateral
+    command[2] = float(np.clip(command[2], -args.max_vision_vertical_speed, args.max_vision_vertical_speed))
+    norm = float(np.linalg.norm(command))
+    if norm > speed_cap > 1.0e-6:
+        command *= speed_cap / norm
+        norm = float(np.linalg.norm(command))
+    return command, norm, lateral_scale, lateral_limit
+
+
+def _frame_centering_yaw_rate(
+    *,
+    yaw_rate_deg_s: float,
+    px_err_x: float,
+    intrinsics,
+    state: str,
+    timestamp: float,
+    yaw_rate_samples: list[tuple[float, float]],
+    image_kf,
+    yaw_rate_source: str,
+    args,
+) -> tuple[float, str, float, int]:
+    if not bool(args.frame_centering) or state not in {"frame_centering", "terminal_capture", "loss_hold"}:
+        return yaw_rate_deg_s, yaw_rate_source, 0.0, 0
+
+    if state == "terminal_capture":
+        gain_scale = max(0.0, float(args.terminal_capture_yaw_gain_scale))
+        limit = max(0.0, min(float(args.max_yaw_rate_deg), float(args.terminal_capture_max_yaw_rate_deg)))
+    else:
+        gain_scale = max(0.0, float(args.frame_centering_yaw_gain_scale))
+        limit = max(0.0, min(float(args.max_yaw_rate_deg), float(args.frame_centering_max_yaw_rate_deg)))
+
+    base = float(yaw_rate_deg_s)
+    sample_count = 0
+    if state == "loss_hold":
+        if image_kf.valid:
+            base = _kf_yaw_rate_command(image_kf, args)
+            yaw_rate_source = "frame_centering_kf"
+        else:
+            base, sample_count = _yaw_rate_window_average(
+                yaw_rate_samples,
+                timestamp,
+                float(args.frame_centering_yaw_hold_window_s),
+            )
+            yaw_rate_source = "frame_centering_hold"
+    else:
+        # Recompute from the current horizontal image error so this state is explicitly
+        # frame-centering driven even if the upstream PNG yaw source is stale.
+        base = _yaw_rate_from_pixel_error(px_err_x, intrinsics, args)
+        yaw_rate_source = f"{state}_centering"
+
+    decay = 1.0
+    if state == "loss_hold" and sample_count > 0:
+        newest_ts = max((ts for ts, _ in yaw_rate_samples), default=timestamp)
+        tau = max(1.0e-6, float(args.frame_centering_yaw_hold_decay_tau_s))
+        decay = float(np.exp(-max(0.0, timestamp - newest_ts) / tau))
+    command = float(np.clip(base * gain_scale * decay, -limit, limit))
+    return command, yaw_rate_source, decay, sample_count
+
+
 def _terminal_trigger_strapdown(reason: str, detected: bool, bbox_area: float, intrinsics, args) -> str:
     if reason.startswith("bbox_") and reason.endswith("_clipped"):
         return reason
@@ -1994,6 +2195,7 @@ def main() -> None:
     last_frame_guard_error_ratio = 0.0
     last_frame_guard_area_ratio = 0.0
     last_frame_guard_ttc: Optional[float] = None
+    last_detected_ts: Optional[float] = None
 
     print(
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
@@ -2167,6 +2369,8 @@ def main() -> None:
                     last_raw_lambda_I = None
                     last_raw_lambda_ts = None
                     last_valid_ts = None
+                    last_detected_ts = None
+                    last_frame_guard_ts = None
                     lambda_I = None
                     omega_los = None
                 active_track_id = current_track_id
@@ -2388,6 +2592,8 @@ def main() -> None:
                 effective_ttc = last_frame_guard_ttc
         if image_kf.valid and not detected:
             effective_image_error_ratio = max(effective_image_error_ratio, image_error_ratio_kf)
+        if detected and frame_detection is not None:
+            last_detected_ts = sim_t
         frame_guard_yaw_px_err_x = px_err_x
         frame_guard_px_err_y = px_err_y
         if not detected and image_kf.valid:
@@ -2405,6 +2611,20 @@ def main() -> None:
             ttc_s=effective_ttc,
             args=args,
         )
+        frame_centering_state, frame_centering_active, frame_centering_reason = _frame_centering_state(
+            detected=detected,
+            detection_clipped=detection_clipped or pitch_measurement_rejected,
+            image_error_ratio=effective_image_error_ratio,
+            area_ratio=effective_area_ratio,
+            ttc_s=effective_ttc,
+            image_kf_valid=bool(image_kf.valid),
+            guard_hold_active=guard_hold_active,
+            guard_hold_error_ratio=last_frame_guard_error_ratio,
+            guard_hold_area_ratio=last_frame_guard_area_ratio,
+            last_detected_ts=last_detected_ts,
+            timestamp=sim_t,
+            args=args,
+        )
         raw_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
         _append_yaw_rate_sample(yaw_rate_samples, sim_t, raw_yaw_rate_cmd_deg_s, valid, args)
         candidate_v_cmd = _guidance_velocity(
@@ -2415,6 +2635,16 @@ def main() -> None:
             scheduled_speed_cap,
             args,
         )
+        frame_centering_used_last_v_cmd = 0
+        frame_centering_loss_hold_velocity_source = "guidance"
+        if (
+            frame_centering_state == "loss_hold"
+            and bool(args.frame_centering_loss_hold_last_velocity)
+            and last_v_cmd is not None
+        ):
+            candidate_v_cmd = np.array(last_v_cmd, dtype=float)
+            frame_centering_used_last_v_cmd = 1
+            frame_centering_loss_hold_velocity_source = "last_v_cmd"
         frame_guard_vertical_bias = (
             _frame_guard_vertical_bias(frame_guard_px_err_y, intrinsics, args)
             if (detected or (image_kf.valid and not detected))
@@ -2437,6 +2667,14 @@ def main() -> None:
             speed_schedule_mode=speed_schedule_mode,
             args=args,
         )
+        candidate_v_cmd, frame_centering_candidate_speed, frame_centering_lateral_scale, frame_centering_lateral_limit = _apply_frame_centering_velocity(
+            candidate_v_cmd,
+            lambda_I=lambda_I,
+            scheduled_speed_cap=scheduled_speed_cap,
+            intruder_speed=intruder_speed,
+            state=frame_centering_state,
+            args=args,
+        )
         terminal_result = terminal_extrapolator.update(
             timestamp=sim_t,
             detected=detected,
@@ -2456,6 +2694,9 @@ def main() -> None:
             soft_measurement_valid=image_kf.valid,
         )
         v_cmd = terminal_result.v_cmd
+        if frame_centering_state == "loss_hold" and frame_centering_used_last_v_cmd:
+            v_cmd = np.array(last_v_cmd, dtype=float)
+            frame_centering_loss_hold_velocity_source = "last_v_cmd_final"
         v_cmd, frame_guard_active_post, frame_guard_mode_post = _apply_frame_guard_velocity(
             v_cmd,
             lambda_I=lambda_I,
@@ -2468,6 +2709,14 @@ def main() -> None:
         if frame_guard_active_post:
             frame_guard_active = frame_guard_active_post
             frame_guard_mode = frame_guard_mode_post
+        v_cmd, frame_centering_final_speed, frame_centering_lateral_scale, frame_centering_lateral_limit = _apply_frame_centering_velocity(
+            v_cmd,
+            lambda_I=lambda_I,
+            scheduled_speed_cap=scheduled_speed_cap,
+            intruder_speed=intruder_speed,
+            state=frame_centering_state,
+            args=args,
+        )
         if args.px4_interceptor:
             v_cmd = _px4_limited_velocity(v_cmd, args)
         if terminal_result.using_blind_push:
@@ -2520,6 +2769,22 @@ def main() -> None:
         )
         if frame_guard_yaw_active and yaw_rate_source in {"measurement", "none"}:
             yaw_rate_source = "frame_guard"
+        (
+            yaw_rate_cmd_deg_s,
+            yaw_rate_source,
+            frame_centering_yaw_decay,
+            frame_centering_yaw_sample_count,
+        ) = _frame_centering_yaw_rate(
+            yaw_rate_deg_s=yaw_rate_cmd_deg_s,
+            px_err_x=frame_guard_yaw_px_err_x,
+            intrinsics=intrinsics,
+            state=frame_centering_state,
+            timestamp=sim_t,
+            yaw_rate_samples=yaw_rate_samples,
+            image_kf=image_kf,
+            yaw_rate_source=yaw_rate_source,
+            args=args,
+        )
 
         stop_requested = _draw_detection_window_strapdown(
             display,
@@ -2641,6 +2906,26 @@ def main() -> None:
                 "frame_guard_px_err_y": frame_guard_px_err_y,
                 "frame_guard_min_speed_ratio": float(args.frame_guard_min_speed_ratio),
                 "frame_guard_mid_speed_ratio": float(args.frame_guard_mid_speed_ratio),
+                "frame_centering_enabled": int(args.frame_centering),
+                "frame_centering_active": int(frame_centering_active),
+                "frame_centering_state": frame_centering_state,
+                "frame_centering_reason": frame_centering_reason,
+                "frame_centering_enter_error_ratio": float(args.frame_centering_enter_error_ratio),
+                "frame_centering_terminal_error_ratio": float(args.frame_centering_terminal_error_ratio),
+                "frame_centering_area_ratio": float(args.frame_centering_area_ratio),
+                "frame_centering_loss_hold_s": float(args.frame_centering_loss_hold_s),
+                "frame_centering_speed_ratio": float(args.frame_centering_speed_ratio),
+                "terminal_capture_speed_ratio": float(args.terminal_capture_speed_ratio),
+                "frame_centering_candidate_speed": frame_centering_candidate_speed,
+                "frame_centering_final_speed": frame_centering_final_speed,
+                "frame_centering_lateral_scale": frame_centering_lateral_scale,
+                "frame_centering_lateral_limit": frame_centering_lateral_limit,
+                "frame_centering_yaw_decay": frame_centering_yaw_decay,
+                "frame_centering_yaw_sample_count": frame_centering_yaw_sample_count,
+                "frame_centering_loss_hold_last_velocity": int(args.frame_centering_loss_hold_last_velocity),
+                "frame_centering_used_last_v_cmd": frame_centering_used_last_v_cmd,
+                "frame_centering_loss_hold_velocity_source": frame_centering_loss_hold_velocity_source,
+                "last_detected_age_s": "" if last_detected_ts is None else float(sim_t - last_detected_ts),
                 "detection_count": detection_count,
                 "detection_names": detection_names,
                 "detected": int(detected),
