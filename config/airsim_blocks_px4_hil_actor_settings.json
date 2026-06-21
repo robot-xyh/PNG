@@ -1,0 +1,81 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/master/docs/settings.md",
+  "SettingsVersion": 1.2,
+  "LogMessagesVisible": true,
+  "SimMode": "Multirotor",
+  "ClockType": "SteppableClock",
+  "ClockSpeed": 1.0,
+  "ViewMode": "NoDisplay",
+  "OriginGeopoint": {
+    "Latitude": 47.641468,
+    "Longitude": -122.140165,
+    "Altitude": 122.0
+  },
+  "CameraDefaults": {
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 640,
+        "Height": 480,
+        "FOV_Degrees": 120,
+        "MotionBlurAmount": 0
+      }
+    ]
+  },
+  "Vehicles": {
+    "Interceptor": {
+      "VehicleType": "PX4Multirotor",
+      "X": 0,
+      "Y": 0,
+      "Z": -2,
+      "UseSerial": true,
+      "UseTcp": true,
+      "LockStep": false,
+      "SerialPort": "/dev/serial/by-id/usb-3D_Robotics_PX4_FMU_v2.x_0-if00",
+      "SerialBaudRate": 115200,
+      "AllowAPIAlways": true,
+      "EnableTrace": true,
+      "IsFpvVehicle": true,
+      "Sensors": {
+        "Barometer": {
+          "SensorType": 1,
+          "Enabled": true,
+          "PressureFactorSigma": 0.0001825
+        }
+      },
+      "Parameters": {
+        "COM_RC_IN_MODE": 1,
+        "COM_RC_LOSS_T": 60,
+        "NAV_RCL_ACT": 0,
+        "NAV_DLL_ACT": 0,
+        "COM_OBL_ACT": 1,
+        "COM_OBL_RC_ACT": 5,
+        "COM_OF_LOSS_T": 5,
+        "COM_DISARM_PRFLT": 0,
+        "COM_ARM_IMU_ACC": 5,
+        "COM_ARM_IMU_GYR": 2,
+        "SYS_AUTOSTART": 1001,
+        "SYS_HITL": 1,
+        "SYS_MC_EST_GROUP": 2,
+        "SYS_HAS_BARO": 0,
+        "SYS_HAS_MAG": 0,
+        "MAV_USEHILGPS": 1,
+        "EKF2_AID_MASK": 1,
+        "EKF2_HGT_MODE": 1,
+        "EKF2_MAG_TYPE": 5,
+        "EKF2_GPS_CHECK": 0,
+        "CBRK_VELPOSERR": 201607
+      },
+      "Cameras": {
+        "0": {
+          "X": 0.5,
+          "Y": 0,
+          "Z": 0,
+          "Pitch": 0,
+          "Roll": 0,
+          "Yaw": 0
+        }
+      }
+    }
+  }
+}
