@@ -73,6 +73,7 @@ from vision_guidance.terminal_image_kf import center_from_angle_error
 from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
+from vision_guidance.truth_png import integrate_velocity_command
 from vision_guidance.yolo_bytetrack_detector import add_detector_args, create_detection_provider
 
 
@@ -158,13 +159,14 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--px4-command-mode",
-        choices=("velocity_simple", "velocity_yaw_rate", "mavlink_offboard"),
+        choices=("velocity_simple", "velocity_yaw_rate", "mavlink_offboard", "mavlink_body_rate"),
         default="velocity_yaw_rate",
         help=(
             "PX4 SITL velocity command mapping. velocity_simple avoids AirSim "
             "drivetrain/yaw arguments because Blocks 1.8.1 PX4 ignores them in "
             "some Offboard states. mavlink_offboard sends PX4 SET_POSITION_TARGET_LOCAL_NED "
-            "through AirSim's QGC UDP forwarding port for hardware HIL."
+            "through AirSim's QGC UDP forwarding port for hardware HIL. "
+            "mavlink_body_rate sends PX4 SET_ATTITUDE_TARGET body rates plus thrust."
         ),
     )
     parser.add_argument(
@@ -359,6 +361,47 @@ def parse_args() -> argparse.Namespace:
         help="Navigation constant N used by --guidance-law fixed_vm_png.",
     )
     parser.add_argument(
+        "--guidance-output-mode",
+        choices=("velocity_bias", "accel_integral", "accel_body_rate"),
+        default="velocity_bias",
+        help=(
+            "velocity_bias preserves the legacy behavior that adds PNG correction directly to velocity. "
+            "accel_integral treats PNG as acceleration/overload and explicitly integrates it to a velocity setpoint. "
+            "accel_body_rate maps PNG acceleration to PX4 body-rate/thrust setpoints."
+        ),
+    )
+    parser.add_argument(
+        "--max-guidance-accel-mps2",
+        type=float,
+        default=15.0,
+        help="Norm limit for acceleration-form PNG in --guidance-output-mode accel_integral or accel_body_rate.",
+    )
+    parser.add_argument(
+        "--min-speed-ratio",
+        type=float,
+        default=0.60,
+        help="Minimum speed ratio relative to scheduled speed cap for accel_integral velocity integration.",
+    )
+    parser.add_argument(
+        "--accel-integral-reset-on-invalid",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Reset accel_integral base velocity to measured vehicle velocity when guidance is invalid.",
+    )
+    parser.add_argument("--body-rate-max-tilt-deg", type=float, default=20.0)
+    parser.add_argument("--body-rate-roll-gain", type=float, default=1.0)
+    parser.add_argument("--body-rate-pitch-gain", type=float, default=1.0)
+    parser.add_argument("--body-rate-attitude-p", type=float, default=4.0)
+    parser.add_argument("--body-rate-max-roll-rate-deg", type=float, default=60.0)
+    parser.add_argument("--body-rate-max-pitch-rate-deg", type=float, default=60.0)
+    parser.add_argument("--body-rate-hover-thrust", type=float, default=0.50)
+    parser.add_argument("--body-rate-thrust-gain", type=float, default=0.50)
+    parser.add_argument("--body-rate-min-thrust", type=float, default=0.25)
+    parser.add_argument("--body-rate-max-thrust", type=float, default=0.75)
+    parser.add_argument("--body-rate-speed-hold-gain", type=float, default=1.2)
+    parser.add_argument("--body-rate-speed-hold-max-accel-mps2", type=float, default=6.0)
+    parser.add_argument("--body-rate-total-accel-limit-mps2", type=float, default=18.0)
+    parser.add_argument(
         "--bbox-noise",
         action=argparse.BooleanOptionalAction,
         default=False,
@@ -458,6 +501,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--trajectory-prefix", default="")
     parser.add_argument("--no-plot", action="store_true")
     return parser.parse_args()
+
+
+def _validate_runtime_args(args) -> None:
+    if args.rate_hz <= 0.0:
+        raise SystemExit("--rate-hz must be positive")
+    if args.speed_ratio <= 0.0:
+        raise SystemExit("--speed-ratio must be positive")
+    if args.navigation_constant <= 0.0:
+        raise SystemExit("--navigation-constant must be positive")
+    if args.guidance_output_mode == "accel_body_rate":
+        if not args.px4_interceptor:
+            raise SystemExit("--guidance-output-mode accel_body_rate requires --px4-interceptor")
+        if args.px4_command_mode != "mavlink_body_rate":
+            raise SystemExit("--guidance-output-mode accel_body_rate requires --px4-command-mode mavlink_body_rate")
+    if args.px4_command_mode == "mavlink_body_rate" and args.guidance_output_mode != "accel_body_rate":
+        raise SystemExit("--px4-command-mode mavlink_body_rate requires --guidance-output-mode accel_body_rate")
+    if args.body_rate_min_thrust > args.body_rate_max_thrust:
+        raise SystemExit("--body-rate-min-thrust cannot exceed --body-rate-max-thrust")
 
 
 def _output_paths_strapdown(args) -> tuple[Path, Path]:
@@ -930,6 +991,70 @@ def _px4_limited_velocity(v_cmd: np.ndarray, args) -> np.ndarray:
     return command
 
 
+def _vehicle_euler_rad(airsim_module, orientation) -> tuple[float, float, float]:
+    pitch, roll, yaw = airsim_module.to_eularian_angles(orientation)
+    return float(roll), float(pitch), float(yaw)
+
+
+def _body_rate_neutral_thrust(args) -> float:
+    return float(np.clip(float(args.body_rate_hover_thrust), 0.0, 1.0))
+
+
+def _body_rate_command_from_accel(
+    acceleration_I: np.ndarray,
+    R_IB: np.ndarray,
+    roll_rad: float,
+    pitch_rad: float,
+    yaw_rate_deg_s: float,
+    args,
+) -> dict[str, float | np.ndarray]:
+    accel_I = np.asarray(acceleration_I, dtype=float)
+    if not np.all(np.isfinite(accel_I)):
+        accel_I = np.zeros(3, dtype=float)
+    R_BI = np.asarray(R_IB, dtype=float).T
+    accel_B = R_BI @ accel_I
+
+    max_tilt = np.deg2rad(max(0.0, float(args.body_rate_max_tilt_deg)))
+    roll_sp = float(
+        np.clip(
+            float(args.body_rate_roll_gain) * float(accel_B[1]) / GRAVITY_MPS2,
+            -max_tilt,
+            max_tilt,
+        )
+    )
+    pitch_sp = float(
+        np.clip(
+            -float(args.body_rate_pitch_gain) * float(accel_B[0]) / GRAVITY_MPS2,
+            -max_tilt,
+            max_tilt,
+        )
+    )
+
+    attitude_p = max(0.0, float(args.body_rate_attitude_p))
+    max_roll_rate = np.deg2rad(max(0.0, float(args.body_rate_max_roll_rate_deg)))
+    max_pitch_rate = np.deg2rad(max(0.0, float(args.body_rate_max_pitch_rate_deg)))
+    max_yaw_rate = np.deg2rad(max(0.0, float(args.max_yaw_rate_deg)))
+    p_cmd = float(np.clip(attitude_p * (roll_sp - float(roll_rad)), -max_roll_rate, max_roll_rate))
+    q_cmd = float(np.clip(attitude_p * (pitch_sp - float(pitch_rad)), -max_pitch_rate, max_pitch_rate))
+    r_cmd = float(np.clip(np.deg2rad(float(yaw_rate_deg_s)), -max_yaw_rate, max_yaw_rate))
+
+    thrust = float(args.body_rate_hover_thrust) + float(args.body_rate_thrust_gain) * (-float(accel_I[2]) / GRAVITY_MPS2)
+    thrust = float(
+        np.clip(
+            thrust,
+            max(0.0, float(args.body_rate_min_thrust)),
+            min(1.0, float(args.body_rate_max_thrust)),
+        )
+    )
+    return {
+        "accel_B": accel_B,
+        "roll_sp_rad": roll_sp,
+        "pitch_sp_rad": pitch_sp,
+        "body_rates_rad_s": np.array([p_cmd, q_cmd, r_cmd], dtype=float),
+        "thrust": thrust,
+    }
+
+
 class PX4MavlinkOffboard:
     def __init__(self, url: str, *, source_system: int = 134, source_component: int = 1):
         try:
@@ -992,6 +1117,24 @@ class PX4MavlinkOffboard:
             yaw_rate_rad_s,
         )
 
+    def send_body_rate(self, body_rates_rad_s: np.ndarray, thrust: float) -> None:
+        if not self.connected and not self.connect(timeout_s=0.2):
+            return
+        rates = np.asarray(body_rates_rad_s, dtype=float)
+        mavlink = self.mavutil.mavlink
+        type_mask = int(getattr(mavlink, "ATTITUDE_TARGET_TYPEMASK_ATTITUDE_IGNORE", 128))
+        self.master.mav.set_attitude_target_send(
+            self._time_boot_ms(),
+            self.target_system,
+            self.target_component,
+            type_mask,
+            [1.0, 0.0, 0.0, 0.0],
+            float(rates[0]),
+            float(rates[1]),
+            float(rates[2]),
+            float(np.clip(float(thrust), 0.0, 1.0)),
+        )
+
     def arm(self) -> None:
         if not self.connected and not self.connect(timeout_s=1.0):
             return
@@ -1035,6 +1178,19 @@ class PX4MavlinkOffboard:
             time.sleep(0.05)
         self.request_offboard()
 
+    def prime_body_rate_and_request_offboard(self, duration_s: float, hover_thrust: float) -> None:
+        if not self.connect(timeout_s=max(2.0, duration_s + 4.0)):
+            return
+        deadline = time.monotonic() + max(0.0, float(duration_s))
+        while time.monotonic() < deadline:
+            self.send_body_rate(np.zeros(3, dtype=float), hover_thrust)
+            time.sleep(0.05)
+        self.arm()
+        for _ in range(10):
+            self.send_body_rate(np.zeros(3, dtype=float), hover_thrust)
+            time.sleep(0.05)
+        self.request_offboard()
+
     def stop(self) -> None:
         if not self.connected:
             return
@@ -1042,9 +1198,16 @@ class PX4MavlinkOffboard:
             self.send_velocity(np.zeros(3, dtype=float), 0.0)
             time.sleep(0.03)
 
+    def stop_body_rate(self, hover_thrust: float) -> None:
+        if not self.connected:
+            return
+        for _ in range(10):
+            self.send_body_rate(np.zeros(3, dtype=float), hover_thrust)
+            time.sleep(0.03)
+
 
 def _px4_mavlink_offboard(args) -> Optional[PX4MavlinkOffboard]:
-    if getattr(args, "px4_command_mode", "") != "mavlink_offboard":
+    if getattr(args, "px4_command_mode", "") not in {"mavlink_offboard", "mavlink_body_rate"}:
         return None
     offboard = getattr(args, "_px4_mavlink_offboard", None)
     if offboard is None:
@@ -1056,7 +1219,7 @@ def _px4_mavlink_offboard(args) -> Optional[PX4MavlinkOffboard]:
 def _ensure_px4_api_control(client, args, vehicle_name: str) -> bool:
     if not _is_px4_vehicle(vehicle_name, args):
         return True
-    if args.px4_command_mode == "mavlink_offboard":
+    if args.px4_command_mode in {"mavlink_offboard", "mavlink_body_rate"}:
         offboard = _px4_mavlink_offboard(args)
         if offboard is not None:
             offboard.connect(timeout_s=0.2)
@@ -1092,6 +1255,17 @@ def _command_vehicle_velocity(
                 offboard.arm()
                 offboard.request_offboard()
             return None
+        if args.px4_command_mode == "mavlink_body_rate":
+            _ensure_px4_api_control(client, args, vehicle_name)
+            return client.moveByVelocityAsync(
+                float(command[0]),
+                float(command[1]),
+                float(command[2]),
+                duration=command_duration,
+                drivetrain=airsim_module.DrivetrainType.MaxDegreeOfFreedom,
+                yaw_mode=airsim_module.YawMode(is_rate=True, yaw_or_rate=yaw_rate_deg_s),
+                vehicle_name=vehicle_name,
+            )
         _ensure_px4_api_control(client, args, vehicle_name)
         if args.px4_command_mode == "velocity_simple":
             return client.moveByVelocityAsync(
@@ -1139,7 +1313,10 @@ def _register_px4_shutdown_stop(client, args) -> None:
     def stop_px4_vehicles() -> None:
         offboard = _px4_mavlink_offboard(args)
         if offboard is not None:
-            offboard.stop()
+            if getattr(args, "px4_command_mode", "") == "mavlink_body_rate":
+                offboard.stop_body_rate(_body_rate_neutral_thrust(args))
+            else:
+                offboard.stop()
         for _ in range(10):
             for vehicle in vehicles:
                 try:
@@ -1425,6 +1602,14 @@ def _command_interceptor_velocity(client, airsim_module, v_cmd: np.ndarray, yaw_
     return future
 
 
+def _command_interceptor_body_rate(body_rates_rad_s: np.ndarray, thrust: float, args) -> None:
+    offboard = _px4_mavlink_offboard(args)
+    if offboard is not None:
+        offboard.send_body_rate(body_rates_rad_s, thrust)
+        offboard.arm()
+        offboard.request_offboard()
+
+
 def _yaw_rate_from_pixel_error(pixel_error_x: float, intrinsics, args) -> float:
     if not args.yaw_control:
         return 0.0
@@ -1512,6 +1697,121 @@ def _image_kf_los_guidance_estimate(image_kf, intrinsics, R_BC: np.ndarray, R_IB
     if not np.all(np.isfinite(lambda_I)) or not np.all(np.isfinite(omega_los)):
         return None, None
     return lambda_I, omega_los
+
+
+def _clip_vector_norm(vector: np.ndarray, max_norm: float) -> np.ndarray:
+    value = np.asarray(vector, dtype=float)
+    limit = max(0.0, float(max_norm))
+    norm = float(np.linalg.norm(value))
+    if norm <= limit or norm <= 1.0e-9:
+        return np.array(value, dtype=float)
+    return value * (limit / norm)
+
+
+def _png_acceleration_command(
+    lambda_I: Optional[np.ndarray],
+    omega_los: Optional[np.ndarray],
+    guidance_gain: float,
+    args,
+) -> np.ndarray:
+    if lambda_I is None or omega_los is None:
+        return np.zeros(3, dtype=float)
+    accel = float(guidance_gain) * np.cross(np.asarray(omega_los, dtype=float), np.asarray(lambda_I, dtype=float))
+    if not np.all(np.isfinite(accel)):
+        return np.zeros(3, dtype=float)
+    return _clip_vector_norm(accel, float(args.max_guidance_accel_mps2))
+
+
+def _fallback_direction(lambda_I: Optional[np.ndarray]) -> Optional[np.ndarray]:
+    if lambda_I is None:
+        return None
+    direction = np.asarray(lambda_I, dtype=float)
+    norm = float(np.linalg.norm(direction))
+    if norm <= 1.0e-9 or not np.all(np.isfinite(direction)):
+        return None
+    return direction / norm
+
+
+def _accel_integrated_velocity(
+    current_velocity: np.ndarray,
+    acceleration: np.ndarray,
+    dt: float,
+    speed_cap: float,
+    lambda_I: Optional[np.ndarray],
+    args,
+) -> np.ndarray:
+    min_speed = max(0.0, min(float(speed_cap), float(args.min_speed_ratio) * float(speed_cap)))
+    return integrate_velocity_command(
+        current_velocity,
+        acceleration,
+        max(1.0e-6, float(dt)),
+        speed_cap=max(0.0, float(speed_cap)),
+        min_speed=min_speed,
+        fallback_direction=_fallback_direction(lambda_I),
+    )
+
+
+def _los_base_velocity(lambda_I: Optional[np.ndarray], speed_cap: float) -> np.ndarray:
+    direction = _fallback_direction(lambda_I)
+    if direction is None:
+        direction = np.array([1.0, 0.0, 0.0], dtype=float)
+    return float(max(0.0, speed_cap)) * direction
+
+
+def _body_rate_control_acceleration(
+    *,
+    png_acceleration_I: np.ndarray,
+    current_velocity_I: np.ndarray,
+    velocity_reference_I: np.ndarray,
+    args,
+) -> tuple[np.ndarray, np.ndarray]:
+    speed_hold = float(args.body_rate_speed_hold_gain) * (
+        np.asarray(velocity_reference_I, dtype=float) - np.asarray(current_velocity_I, dtype=float)
+    )
+    speed_hold = _clip_vector_norm(speed_hold, float(args.body_rate_speed_hold_max_accel_mps2))
+    total = np.asarray(png_acceleration_I, dtype=float) + speed_hold
+    total = _clip_vector_norm(total, float(args.body_rate_total_accel_limit_mps2))
+    return total, speed_hold
+
+
+def _candidate_guidance_velocity(
+    current_velocity: np.ndarray,
+    lambda_I: Optional[np.ndarray],
+    omega_los: Optional[np.ndarray],
+    guidance_gain: float,
+    scheduled_speed_cap: float,
+    dt: float,
+    valid: bool,
+    args,
+) -> tuple[np.ndarray, np.ndarray, float]:
+    mode = str(getattr(args, "guidance_output_mode", "velocity_bias"))
+    if mode not in {"accel_integral", "accel_body_rate"}:
+        command = _guidance_velocity(
+            current_velocity,
+            lambda_I,
+            omega_los if valid else None,
+            guidance_gain,
+            scheduled_speed_cap,
+            args,
+        )
+        accel = _png_acceleration_command(lambda_I, omega_los if valid else None, guidance_gain, args)
+        return command, accel, 0.0
+
+    accel = _png_acceleration_command(lambda_I, omega_los if valid else None, guidance_gain, args)
+    if not valid and bool(getattr(args, "accel_integral_reset_on_invalid", False)):
+        accel = np.zeros(3, dtype=float)
+    if mode == "accel_body_rate":
+        command = _los_base_velocity(lambda_I, scheduled_speed_cap)
+        return command, accel, 0.0
+    command = _accel_integrated_velocity(
+        current_velocity,
+        accel,
+        dt,
+        scheduled_speed_cap,
+        lambda_I,
+        args,
+    )
+    return command, accel, max(1.0e-6, float(dt))
 
 
 def _image_error_ratio(px_err_x: float, px_err_y: float, intrinsics) -> float:
@@ -2039,16 +2339,11 @@ def _collision_is_new(pair_collision, baseline_collision) -> bool:
 
 def main() -> None:
     args = parse_args()
+    _validate_runtime_args(args)
     try:
         import airsim
     except ImportError as exc:
         raise SystemExit("Install the AirSim Python package before running this example.") from exc
-    if args.rate_hz <= 0.0:
-        raise SystemExit("--rate-hz must be positive")
-    if args.speed_ratio <= 0.0:
-        raise SystemExit("--speed-ratio must be positive")
-    if args.navigation_constant <= 0.0:
-        raise SystemExit("--navigation-constant must be positive")
 
     client = airsim.MultirotorClient()
     _register_px4_shutdown_stop(client, args)
@@ -2096,6 +2391,10 @@ def main() -> None:
         offboard = _px4_mavlink_offboard(args)
         if offboard is not None:
             offboard.prime_and_request_offboard(args.px4_offboard_prime_s)
+    elif args.px4_command_mode == "mavlink_body_rate":
+        offboard = _px4_mavlink_offboard(args)
+        if offboard is not None:
+            offboard.prime_body_rate_and_request_offboard(args.px4_offboard_prime_s, _body_rate_neutral_thrust(args))
     _prepare_intercept_altitude(client, airsim, required_vehicles, args, origins)
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     _apply_start_geometry(client, airsim, args, origins)
@@ -2236,8 +2535,10 @@ def main() -> None:
         sim_clock_ratio = ""
         accel_fd_norm = 0.0
         load_factor_fd_g = 0.0
+        guidance_dt = target_dt
         if kin_t is not None and last_kin_t is not None:
             kin_dt = max(1.0e-6, kin_t - last_kin_t)
+            guidance_dt = kin_dt
             sim_sample_fps = 1.0 / kin_dt
             sim_clock_ratio = kin_dt / max(1.0e-6, loop_start - float(last_wall_t or loop_start))
             if last_interceptor_vel is not None:
@@ -2273,6 +2574,7 @@ def main() -> None:
             pair_collision_reason = pair_collision.reason
 
         R_IB = airsim_orientation_to_R_IB(state.kinematics_estimated.orientation)
+        roll_rad, pitch_rad, yaw_rad = _vehicle_euler_rad(airsim, state.kinematics_estimated.orientation)
         attitude_buffer.push(AttitudeSample(timestamp=sim_t, R_IB=R_IB))
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
         camera_world_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
@@ -2307,6 +2609,18 @@ def main() -> None:
         reason = ""
         valid = False
         g_eval = np.zeros(3)
+        a_cmd = np.zeros(3)
+        accel_integral_dt = 0.0
+        v_cmd_pre_guard = np.zeros(3)
+        v_cmd_integrated = np.zeros(3)
+        body_rate_command_active = 0
+        body_rate_accel_B = np.zeros(3)
+        body_rate_roll_sp_rad = 0.0
+        body_rate_pitch_sp_rad = 0.0
+        body_rate_cmd_rad_s = np.zeros(3)
+        body_rate_thrust = _body_rate_neutral_thrust(args)
+        body_rate_speed_hold_accel = np.zeros(3)
+        body_rate_control_accel = np.zeros(3)
         los_quality = 0.0
         ttc_quality = 0.0
         ttc_area = 0.0
@@ -2627,14 +2941,18 @@ def main() -> None:
         )
         raw_yaw_rate_cmd_deg_s = yaw_rate_cmd_deg_s
         _append_yaw_rate_sample(yaw_rate_samples, sim_t, raw_yaw_rate_cmd_deg_s, valid, args)
-        candidate_v_cmd = _guidance_velocity(
+        candidate_v_cmd, a_cmd, accel_integral_dt = _candidate_guidance_velocity(
             interceptor_vel,
             lambda_I,
-            omega_los if valid else None,
+            omega_los,
             guidance_gain,
             scheduled_speed_cap,
+            guidance_dt,
+            valid,
             args,
         )
+        v_cmd_integrated = np.array(candidate_v_cmd, dtype=float)
+        v_cmd_pre_guard = np.array(candidate_v_cmd, dtype=float)
         frame_centering_used_last_v_cmd = 0
         frame_centering_loss_hold_velocity_source = "guidance"
         if (
@@ -2658,6 +2976,7 @@ def main() -> None:
                     args.max_vision_vertical_speed,
                 )
             )
+            v_cmd_pre_guard = np.array(candidate_v_cmd, dtype=float)
         candidate_v_cmd, frame_guard_active, frame_guard_mode = _apply_frame_guard_velocity(
             candidate_v_cmd,
             lambda_I=lambda_I,
@@ -2840,7 +3159,30 @@ def main() -> None:
             target_bearing_deg = target_bearing
             target_body_bearing_deg = _wrap_angle_deg(target_bearing - body_yaw_deg)
         if args.enable_motion:
-            _command_interceptor_velocity(client, airsim, v_cmd, yaw_rate_cmd_deg_s, command_duration, args)
+            if args.guidance_output_mode == "accel_body_rate":
+                body_rate_control_accel, body_rate_speed_hold_accel = _body_rate_control_acceleration(
+                    png_acceleration_I=a_cmd,
+                    current_velocity_I=interceptor_vel,
+                    velocity_reference_I=v_cmd,
+                    args=args,
+                )
+                body_rate_result = _body_rate_command_from_accel(
+                    body_rate_control_accel,
+                    R_IB,
+                    roll_rad,
+                    pitch_rad,
+                    yaw_rate_cmd_deg_s,
+                    args,
+                )
+                body_rate_accel_B = np.asarray(body_rate_result["accel_B"], dtype=float)
+                body_rate_roll_sp_rad = float(body_rate_result["roll_sp_rad"])
+                body_rate_pitch_sp_rad = float(body_rate_result["pitch_sp_rad"])
+                body_rate_cmd_rad_s = np.asarray(body_rate_result["body_rates_rad_s"], dtype=float)
+                body_rate_thrust = float(body_rate_result["thrust"])
+                body_rate_command_active = 1
+                _command_interceptor_body_rate(body_rate_cmd_rad_s, body_rate_thrust, args)
+            else:
+                _command_interceptor_velocity(client, airsim, v_cmd, yaw_rate_cmd_deg_s, command_duration, args)
         post_command_vel = np.full(3, np.nan)
         post_command_pos = np.full(3, np.nan)
         if args.enable_motion and args.px4_interceptor:
@@ -2877,8 +3219,12 @@ def main() -> None:
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
                 "guidance_law": args.guidance_law,
+                "guidance_output_mode": args.guidance_output_mode,
                 "navigation_constant": float(args.navigation_constant),
                 "vm_png_gain": fixed_vm_gain,
+                "max_guidance_accel_mps2": float(args.max_guidance_accel_mps2),
+                "min_speed_ratio": float(args.min_speed_ratio),
+                "accel_integral_reset_on_invalid": int(args.accel_integral_reset_on_invalid),
                 "ttc_used_for_guidance": int(args.guidance_law == "ttc_png" and not args.ttc_soft_guidance),
                 "ttc_soft_guidance": int(args.ttc_soft_guidance),
                 "ttc_soft_min_gain_scale": float(args.ttc_soft_min_gain_scale),
@@ -3071,6 +3417,50 @@ def main() -> None:
                 "g_eval_x": float(g_eval[0]),
                 "g_eval_y": float(g_eval[1]),
                 "g_eval_z": float(g_eval[2]),
+                "a_cmd_x": float(a_cmd[0]),
+                "a_cmd_y": float(a_cmd[1]),
+                "a_cmd_z": float(a_cmd[2]),
+                "a_cmd_norm_mps2": float(np.linalg.norm(a_cmd)),
+                "n_cmd_g": float(np.linalg.norm(a_cmd) / GRAVITY_MPS2),
+                "guidance_dt": guidance_dt,
+                "accel_integral_dt": accel_integral_dt,
+                "body_rate_control_active": int(body_rate_command_active),
+                "body_rate_max_tilt_deg": float(args.body_rate_max_tilt_deg),
+                "body_rate_roll_gain": float(args.body_rate_roll_gain),
+                "body_rate_pitch_gain": float(args.body_rate_pitch_gain),
+                "body_rate_attitude_p": float(args.body_rate_attitude_p),
+                "body_rate_hover_thrust": float(args.body_rate_hover_thrust),
+                "body_rate_thrust_gain": float(args.body_rate_thrust_gain),
+                "body_rate_speed_hold_gain": float(args.body_rate_speed_hold_gain),
+                "body_rate_speed_hold_max_accel_mps2": float(args.body_rate_speed_hold_max_accel_mps2),
+                "body_rate_total_accel_limit_mps2": float(args.body_rate_total_accel_limit_mps2),
+                "roll_deg": float(np.rad2deg(roll_rad)),
+                "pitch_deg": float(np.rad2deg(pitch_rad)),
+                "a_cmd_body_x": float(body_rate_accel_B[0]),
+                "a_cmd_body_y": float(body_rate_accel_B[1]),
+                "a_cmd_body_z": float(body_rate_accel_B[2]),
+                "body_rate_speed_hold_accel_x": float(body_rate_speed_hold_accel[0]),
+                "body_rate_speed_hold_accel_y": float(body_rate_speed_hold_accel[1]),
+                "body_rate_speed_hold_accel_z": float(body_rate_speed_hold_accel[2]),
+                "body_rate_control_accel_x": float(body_rate_control_accel[0]),
+                "body_rate_control_accel_y": float(body_rate_control_accel[1]),
+                "body_rate_control_accel_z": float(body_rate_control_accel[2]),
+                "body_rate_control_accel_norm_mps2": float(np.linalg.norm(body_rate_control_accel)),
+                "roll_sp_deg": float(np.rad2deg(body_rate_roll_sp_rad)),
+                "pitch_sp_deg": float(np.rad2deg(body_rate_pitch_sp_rad)),
+                "body_rate_p_rad_s": float(body_rate_cmd_rad_s[0]),
+                "body_rate_q_rad_s": float(body_rate_cmd_rad_s[1]),
+                "body_rate_r_rad_s": float(body_rate_cmd_rad_s[2]),
+                "body_rate_p_deg_s": float(np.rad2deg(body_rate_cmd_rad_s[0])),
+                "body_rate_q_deg_s": float(np.rad2deg(body_rate_cmd_rad_s[1])),
+                "body_rate_r_deg_s": float(np.rad2deg(body_rate_cmd_rad_s[2])),
+                "body_rate_thrust": float(body_rate_thrust),
+                "v_cmd_pre_guard_x": float(v_cmd_pre_guard[0]),
+                "v_cmd_pre_guard_y": float(v_cmd_pre_guard[1]),
+                "v_cmd_pre_guard_z": float(v_cmd_pre_guard[2]),
+                "v_cmd_integrated_x": float(v_cmd_integrated[0]),
+                "v_cmd_integrated_y": float(v_cmd_integrated[1]),
+                "v_cmd_integrated_z": float(v_cmd_integrated[2]),
                 "px4_command_mode": args.px4_command_mode if args.px4_interceptor else "",
                 "v_cmd_base_x": float(terminal_result.v_cmd_base[0]),
                 "v_cmd_base_y": float(terminal_result.v_cmd_base[1]),

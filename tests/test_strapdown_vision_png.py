@@ -6,17 +6,23 @@ from types import SimpleNamespace
 import numpy as np
 
 from examples.run_airsim_strapdown_vision_png import (
+    _accel_integrated_velocity,
     _append_yaw_rate_sample,
     _apply_bbox_noise,
+    _body_rate_control_acceleration,
+    _body_rate_command_from_accel,
+    _candidate_guidance_velocity,
     _fixed_camera_pose,
     _image_kf_takeover_allowed,
     _kf_yaw_rate_command,
     _output_paths_strapdown,
+    _png_acceleration_command,
     _plot_strapdown,
     _rows_until_first_hit,
     _start_geometry_offsets,
     _terminal_trigger_strapdown,
     _terminal_yaw_rate_command,
+    _validate_runtime_args,
     _yaw_rate_from_angle_error,
     _yaw_rate_from_pixel_error,
 )
@@ -26,6 +32,205 @@ from vision_guidance.types import CameraIntrinsics, FrameDetection
 
 
 class StrapdownVisionPNGTest(unittest.TestCase):
+    def test_png_acceleration_command_has_acceleration_units_and_limit(self):
+        args = SimpleNamespace(max_guidance_accel_mps2=2.0)
+        lambda_i = np.array([1.0, 0.0, 0.0])
+        omega_los = np.array([0.0, 0.0, 1.0])
+
+        accel = _png_acceleration_command(lambda_i, omega_los, 5.0, args)
+
+        self.assertAlmostEqual(np.linalg.norm(accel), 2.0)
+        self.assertAlmostEqual(accel[1], 2.0)
+
+    def test_accel_integrated_velocity_uses_dt_and_speed_cap(self):
+        args = SimpleNamespace(min_speed_ratio=0.0)
+        current = np.array([5.0, 0.0, 0.0])
+        accel = np.array([0.0, 4.0, 0.0])
+
+        command = _accel_integrated_velocity(current, accel, 0.25, 10.0, np.array([1.0, 0.0, 0.0]), args)
+
+        self.assertAlmostEqual(command[0], 5.0)
+        self.assertAlmostEqual(command[1], 1.0)
+        self.assertLessEqual(np.linalg.norm(command), 10.0)
+
+    def test_candidate_guidance_velocity_accel_integral_and_legacy_modes(self):
+        current = np.array([4.0, 0.0, 0.0])
+        lambda_i = np.array([1.0, 0.0, 0.0])
+        omega_los = np.array([0.0, 0.0, 1.0])
+        args = SimpleNamespace(
+            guidance_output_mode="accel_integral",
+            max_guidance_accel_mps2=100.0,
+            min_speed_ratio=0.0,
+            accel_integral_reset_on_invalid=False,
+            max_vision_lateral_speed=100.0,
+            max_vision_vertical_speed=100.0,
+        )
+
+        command, accel, dt = _candidate_guidance_velocity(current, lambda_i, omega_los, 3.0, 10.0, 0.2, True, args)
+
+        self.assertAlmostEqual(accel[1], 3.0)
+        self.assertAlmostEqual(command[1], 0.6)
+        self.assertAlmostEqual(dt, 0.2)
+
+        args.guidance_output_mode = "velocity_bias"
+        command, accel, dt = _candidate_guidance_velocity(current, lambda_i, omega_los, 3.0, 10.0, 0.2, True, args)
+
+        self.assertGreater(command[1], 0.0)
+        self.assertLessEqual(np.linalg.norm(command), 10.0)
+        self.assertAlmostEqual(accel[1], 3.0)
+        self.assertAlmostEqual(dt, 0.0)
+
+    def test_candidate_guidance_velocity_accel_body_rate_computes_accel_without_integrating_velocity(self):
+        current = np.array([4.0, 0.0, 0.0])
+        lambda_i = np.array([1.0, 0.0, 0.0])
+        omega_los = np.array([0.0, 0.0, 1.0])
+        args = SimpleNamespace(
+            guidance_output_mode="accel_body_rate",
+            max_guidance_accel_mps2=100.0,
+            min_speed_ratio=0.0,
+            accel_integral_reset_on_invalid=False,
+            max_vision_lateral_speed=100.0,
+            max_vision_vertical_speed=100.0,
+        )
+
+        command, accel, dt = _candidate_guidance_velocity(current, lambda_i, omega_los, 3.0, 10.0, 0.2, True, args)
+
+        self.assertAlmostEqual(accel[1], 3.0)
+        self.assertAlmostEqual(command[0], 10.0)
+        self.assertAlmostEqual(command[1], 0.0)
+        self.assertAlmostEqual(dt, 0.0)
+
+    def test_body_rate_command_from_accel_maps_body_lateral_and_vertical(self):
+        args = SimpleNamespace(
+            body_rate_max_tilt_deg=20.0,
+            body_rate_roll_gain=1.0,
+            body_rate_pitch_gain=1.0,
+            body_rate_attitude_p=4.0,
+            body_rate_max_roll_rate_deg=60.0,
+            body_rate_max_pitch_rate_deg=60.0,
+            max_yaw_rate_deg=90.0,
+            body_rate_hover_thrust=0.5,
+            body_rate_thrust_gain=0.5,
+            body_rate_min_thrust=0.25,
+            body_rate_max_thrust=0.75,
+        )
+
+        result = _body_rate_command_from_accel(
+            np.array([0.0, 4.903325, -4.903325]),
+            np.eye(3),
+            0.0,
+            0.0,
+            30.0,
+            args,
+        )
+
+        self.assertGreater(result["roll_sp_rad"], 0.0)
+        self.assertAlmostEqual(result["pitch_sp_rad"], 0.0)
+        self.assertGreater(result["body_rates_rad_s"][0], 0.0)
+        self.assertAlmostEqual(result["body_rates_rad_s"][2], np.deg2rad(30.0))
+        self.assertAlmostEqual(result["thrust"], 0.75)
+
+    def test_body_rate_command_from_accel_limits_tilt_rates_and_thrust(self):
+        args = SimpleNamespace(
+            body_rate_max_tilt_deg=10.0,
+            body_rate_roll_gain=10.0,
+            body_rate_pitch_gain=10.0,
+            body_rate_attitude_p=20.0,
+            body_rate_max_roll_rate_deg=45.0,
+            body_rate_max_pitch_rate_deg=40.0,
+            max_yaw_rate_deg=30.0,
+            body_rate_hover_thrust=0.5,
+            body_rate_thrust_gain=2.0,
+            body_rate_min_thrust=0.2,
+            body_rate_max_thrust=0.8,
+        )
+
+        result = _body_rate_command_from_accel(
+            np.array([100.0, -100.0, -100.0]),
+            np.eye(3),
+            0.0,
+            0.0,
+            90.0,
+            args,
+        )
+
+        self.assertAlmostEqual(result["roll_sp_rad"], -np.deg2rad(10.0))
+        self.assertAlmostEqual(result["pitch_sp_rad"], -np.deg2rad(10.0))
+        self.assertAlmostEqual(result["body_rates_rad_s"][0], -np.deg2rad(45.0))
+        self.assertAlmostEqual(result["body_rates_rad_s"][1], -np.deg2rad(40.0))
+        self.assertAlmostEqual(result["body_rates_rad_s"][2], np.deg2rad(30.0))
+        self.assertAlmostEqual(result["thrust"], 0.8)
+
+    def test_body_rate_control_acceleration_adds_limited_speed_hold(self):
+        args = SimpleNamespace(
+            body_rate_speed_hold_gain=2.0,
+            body_rate_speed_hold_max_accel_mps2=3.0,
+            body_rate_total_accel_limit_mps2=10.0,
+        )
+
+        total, speed_hold = _body_rate_control_acceleration(
+            png_acceleration_I=np.array([0.0, 1.0, 0.0]),
+            current_velocity_I=np.zeros(3),
+            velocity_reference_I=np.array([10.0, 0.0, 0.0]),
+            args=args,
+        )
+
+        self.assertAlmostEqual(np.linalg.norm(speed_hold), 3.0)
+        self.assertAlmostEqual(total[0], 3.0)
+        self.assertAlmostEqual(total[1], 1.0)
+
+    def test_accel_body_rate_runtime_validation_requires_px4_body_rate_mode(self):
+        args = SimpleNamespace(
+            rate_hz=8.0,
+            speed_ratio=2.0,
+            navigation_constant=3.0,
+            guidance_output_mode="accel_body_rate",
+            px4_interceptor=False,
+            px4_command_mode="velocity_yaw_rate",
+            body_rate_min_thrust=0.25,
+            body_rate_max_thrust=0.75,
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --px4-interceptor"):
+            _validate_runtime_args(args)
+
+        args.px4_interceptor = True
+        with self.assertRaisesRegex(SystemExit, "requires --px4-command-mode mavlink_body_rate"):
+            _validate_runtime_args(args)
+
+        args.px4_command_mode = "mavlink_body_rate"
+        _validate_runtime_args(args)
+
+    def test_mavlink_body_rate_runtime_validation_rejects_other_output_modes(self):
+        args = SimpleNamespace(
+            rate_hz=8.0,
+            speed_ratio=2.0,
+            navigation_constant=3.0,
+            guidance_output_mode="accel_integral",
+            px4_interceptor=True,
+            px4_command_mode="mavlink_body_rate",
+            body_rate_min_thrust=0.25,
+            body_rate_max_thrust=0.75,
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --guidance-output-mode accel_body_rate"):
+            _validate_runtime_args(args)
+
+    def test_body_rate_runtime_validation_rejects_invalid_thrust_range(self):
+        args = SimpleNamespace(
+            rate_hz=8.0,
+            speed_ratio=2.0,
+            navigation_constant=3.0,
+            guidance_output_mode="accel_body_rate",
+            px4_interceptor=True,
+            px4_command_mode="mavlink_body_rate",
+            body_rate_min_thrust=0.8,
+            body_rate_max_thrust=0.2,
+        )
+
+        with self.assertRaisesRegex(SystemExit, "min-thrust cannot exceed"):
+            _validate_runtime_args(args)
+
     def test_yaw_rate_from_pixel_error_turns_toward_right_side_target(self):
         intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
         args = SimpleNamespace(yaw_control=True, yaw_error_gain=2.0, max_yaw_rate_deg=90.0)
@@ -79,7 +284,7 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             quality=0.8,
         )
         terminal_result = SimpleNamespace(
-            state="Tracking",
+            state=TERMINAL_VISUAL,
             reason="",
             using_blind_push=False,
         )
@@ -96,7 +301,7 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         )
 
         self.assertTrue(allowed)
-        self.assertEqual(reason, "strapdown_los_reject")
+        self.assertEqual(reason, "terminal_state")
 
     def test_terminal_yaw_rate_scales_terminal_visual_and_extrapolates_blind_push(self):
         args = SimpleNamespace(
