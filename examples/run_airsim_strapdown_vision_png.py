@@ -66,7 +66,7 @@ from vision_guidance.geometry import (
     normalize,
     project_perpendicular,
 )
-from vision_guidance.los_filter import LOSKalmanFilter6D
+from vision_guidance.los_filter import LOSFilterConfig, LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
 from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
 from vision_guidance.terminal_image_kf import center_from_angle_error
@@ -416,6 +416,15 @@ def parse_args() -> argparse.Namespace:
         default=True,
         help="Use the 6D LOS Kalman filter. Disable it for noiseless AirSim detection/pose analysis.",
     )
+    parser.add_argument("--los-filter-process-lambda", type=float, default=1e-4)
+    parser.add_argument("--los-filter-process-lambda-dot", type=float, default=5e-3)
+    parser.add_argument("--los-filter-measurement-noise", type=float, default=5e-3)
+    parser.add_argument(
+        "--los-filter-innovation-reject",
+        type=float,
+        default=0.25,
+        help="6D LOS Kalman innovation norm gate. Increase for high terminal LOS-rate or noisy YOLO boxes.",
+    )
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
     parser.add_argument(
@@ -519,6 +528,14 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--px4-command-mode mavlink_body_rate requires --guidance-output-mode accel_body_rate")
     if args.body_rate_min_thrust > args.body_rate_max_thrust:
         raise SystemExit("--body-rate-min-thrust cannot exceed --body-rate-max-thrust")
+    if args.los_filter_process_lambda < 0.0:
+        raise SystemExit("--los-filter-process-lambda must be non-negative")
+    if args.los_filter_process_lambda_dot < 0.0:
+        raise SystemExit("--los-filter-process-lambda-dot must be non-negative")
+    if args.los_filter_measurement_noise <= 0.0:
+        raise SystemExit("--los-filter-measurement-noise must be positive")
+    if args.los_filter_innovation_reject <= 0.0:
+        raise SystemExit("--los-filter-innovation-reject must be positive")
 
 
 def _output_paths_strapdown(args) -> tuple[Path, Path]:
@@ -2428,7 +2445,13 @@ def main() -> None:
         _configure_actor_detection_aliases(client, airsim, config, args)
 
     attitude_buffer = AttitudeHistoryBuffer(duration_s=2.0)
-    los_filter = LOSKalmanFilter6D()
+    los_filter_config = LOSFilterConfig(
+        process_lambda=float(args.los_filter_process_lambda),
+        process_lambda_dot=float(args.los_filter_process_lambda_dot),
+        measurement_noise=float(args.los_filter_measurement_noise),
+        innovation_reject=float(args.los_filter_innovation_reject),
+    )
+    los_filter = LOSKalmanFilter6D(los_filter_config)
     ttc_filter = ScaleExpansionTTC(
         TTCConfig(min_area=max(0.0, args.ttc_min_area), max_ttc_s=max(0.1, args.ttc_max_s))
     )
@@ -3394,6 +3417,10 @@ def main() -> None:
                 "blind_decay": terminal_result.blind_decay,
                 "blind_sample_count": terminal_result.blind_sample_count,
                 "los_filter_enabled": int(args.los_filter),
+                "los_filter_process_lambda": float(args.los_filter_process_lambda),
+                "los_filter_process_lambda_dot": float(args.los_filter_process_lambda_dot),
+                "los_filter_measurement_noise": float(args.los_filter_measurement_noise),
+                "los_filter_innovation_reject": float(args.los_filter_innovation_reject),
                 "los_source": los_source,
                 "lambda_measured_x": 0.0 if lambda_I_measured is None else float(lambda_I_measured[0]),
                 "lambda_measured_y": 0.0 if lambda_I_measured is None else float(lambda_I_measured[1]),

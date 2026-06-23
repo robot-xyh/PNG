@@ -296,6 +296,8 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|body-rate thrust|min/hover/max `{sample.get('body_rate_min_thrust', '')}` / `{sample.get('body_rate_hover_thrust', '')}` / `{sample.get('body_rate_max_thrust', '')}`|",
             f"|body-rate speed hold|gain `{sample.get('body_rate_speed_hold_gain', '')}`, max accel `{sample.get('body_rate_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('body_rate_total_accel_limit_mps2', '')} m/s^2`|",
             f"|LOS filter|`{sample.get('los_filter_enabled', '')}`|",
+            f"|LOS KF q lambda / lambda_dot|`{sample.get('los_filter_process_lambda', '')}` / `{sample.get('los_filter_process_lambda_dot', '')}`|",
+            f"|LOS KF r / innovation gate|`{sample.get('los_filter_measurement_noise', '')}` / `{sample.get('los_filter_innovation_reject', '')}`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
             f"|bbox noise|`{sample.get('bbox_noise_enabled', '')}`|",
         ]
@@ -397,6 +399,45 @@ def _case_notes(rows: list[CaseRow]) -> str:
     return "\n".join(lines)
 
 
+def _reason(row: dict[str, str]) -> str:
+    return row.get("reject_reason") or row.get("reason") or "valid"
+
+
+def _diagnostics_markdown(rows: list[CaseRow]) -> str:
+    lines = [
+        "|组别|距离m|最近距离m|最近点状态|主要失败/降级原因|检测率|有效率|",
+        "|---|---:|---:|---|---|---:|---:|",
+    ]
+    for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
+        samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+        if not samples:
+            lines.append(f"|{row.label}|{row.start_range_m:.0f}|-|-|无 CSV|-|-|")
+            continue
+        nearest = min(samples, key=lambda sample: _float(sample.get("range"), 1.0e9))
+        counts: dict[str, int] = {}
+        for sample in samples:
+            reason = _reason(sample)
+            counts[reason] = counts.get(reason, 0) + 1
+        common = ", ".join(f"{reason}:{count}" for reason, count in sorted(counts.items(), key=lambda item: item[1], reverse=True)[:4])
+        det_ratio = 100.0 * row.detected_frames / max(1, row.frames)
+        valid_ratio = 100.0 * row.valid_frames / max(1, row.frames)
+        lines.append(
+            f"|{row.label}|{row.start_range_m:.0f}|{_float(nearest.get('range')):.3f}|"
+            f"`{_reason(nearest)}`|{common}|{det_ratio:.1f}%|{valid_ratio:.1f}%|"
+        )
+    lines.extend(
+        [
+            "",
+            "- 放宽后的 LOS KF 参数为 `q_lambda=5e-4`、`q_lambda_dot=2e-2`、`r=8e-3`、`innovation_reject=0.75`。相较原始门限，它减少了末端 LOS 被直接判 invalid 的概率，但没有完全消除该问题。",
+            "- `TTC 70m` 最近点仍是 `los_innovation_reject`，说明末端 LOS 变化速度和 bbox 中心跳变仍可能超过当前 6D LOS KF 的一致性门限；这类失败不是加速度输出通道失效，而是导引量被质量门断开。",
+            "- `TTC 60m` 的检测率只有约一半，最近点虽然仍有效，但之后长时间 `no_detection`，拦截机错过后继续飞离；这更像视场/检测连续性问题。",
+            "- `VM` 组只有 `80m` 命中。固定 `N * V_m` 的需用过载基本保持在上限附近，缺少 TTC 对末端速度和增益的调度，近距丢检或外推时更容易错过碰撞判定窗口。",
+            "- 当前实际过载峰值低于导引需用过载，主要受 PX4 姿态角/角速度/推力限制、YOLO 约 9 FPS 采样、以及 frame centering 限制横向速度共同影响；因此日志中的 `n_cmd_g` 是导引层需求，不等于机体真实已经实现的过载。",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def write_report(
     rows: list[CaseRow],
     stamp: str,
@@ -443,7 +484,11 @@ def write_report(
 
 {image_lines}
 
-## 7. 结论
+## 7. LOS KF 与失败原因诊断
+
+{_diagnostics_markdown(rows)}
+
+## 8. 结论
 
 {_case_notes(rows)}
 """

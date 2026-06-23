@@ -6,6 +6,8 @@ cd "$SCRIPT_DIR"
 
 STAMP="${STAMP:-yolo_sitl_ttc_vm_$(date +%Y%m%d_%H%M%S)}"
 RANGES=(${RANGES:-50 60 70 80 90 100})
+RUN_TTC="${RUN_TTC:-1}"
+RUN_VM="${RUN_VM:-1}"
 ALTITUDE_OFFSET="${ALTITUDE_OFFSET:-20}"
 INTERCEPT_ALTITUDE_M="${INTERCEPT_ALTITUDE_M:-50}"
 INTRUDER_SPEED="${INTRUDER_SPEED:-5}"
@@ -29,6 +31,7 @@ BODY_RATE_SPEED_HOLD_GAIN="${BODY_RATE_SPEED_HOLD_GAIN:-1.2}"
 BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2="${BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2:-6.0}"
 BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2="${BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2:-18.0}"
 RATE_HZ="${RATE_HZ:-8}"
+CASE_TIMEOUT_S="${CASE_TIMEOUT_S:-180}"
 YAW_ERROR_GAIN="${YAW_ERROR_GAIN:-1.6}"
 MAX_YAW_RATE_DEG="${MAX_YAW_RATE_DEG:-45}"
 if [[ -z "${PX4_COMMAND_MODE:-}" && "$GUIDANCE_OUTPUT_MODE" == "accel_body_rate" ]]; then
@@ -44,6 +47,10 @@ YOLO_IMGSZ="${YOLO_IMGSZ:-640}"
 YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX="${YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX:-260}"
 SHADOW_AIRSIM_DETECT="${SHADOW_AIRSIM_DETECT:-1}"
 LOS_FILTER="${LOS_FILTER:-1}"
+LOS_FILTER_PROCESS_LAMBDA="${LOS_FILTER_PROCESS_LAMBDA:-5e-4}"
+LOS_FILTER_PROCESS_LAMBDA_DOT="${LOS_FILTER_PROCESS_LAMBDA_DOT:-2e-2}"
+LOS_FILTER_MEASUREMENT_NOISE="${LOS_FILTER_MEASUREMENT_NOISE:-8e-3}"
+LOS_FILTER_INNOVATION_REJECT="${LOS_FILTER_INNOVATION_REJECT:-0.75}"
 REJECT_TOP_CLIPPED_PITCH="${REJECT_TOP_CLIPPED_PITCH:-0}"
 FRAME_CENTERING="${FRAME_CENTERING:-1}"
 FRAME_CENTERING_SPEED_RATIO="${FRAME_CENTERING_SPEED_RATIO:-1.45}"
@@ -195,6 +202,8 @@ run_case() {
     fi
   fi
 
+  local rc=0
+  timeout --kill-after=10s "$CASE_TIMEOUT_S" \
   python3 examples/run_airsim_strapdown_vision_png.py \
     --enable-motion \
     --duration-s "$duration_s" \
@@ -253,6 +262,10 @@ run_case() {
     --yolo-single-target-max-center-jump-px "$YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX" \
     "${shadow_args[@]}" \
     "${los_filter_args[@]}" \
+    --los-filter-process-lambda "$LOS_FILTER_PROCESS_LAMBDA" \
+    --los-filter-process-lambda-dot "$LOS_FILTER_PROCESS_LAMBDA_DOT" \
+    --los-filter-measurement-noise "$LOS_FILTER_MEASUREMENT_NOISE" \
+    --los-filter-innovation-reject "$LOS_FILTER_INNOVATION_REJECT" \
     --frame-guard \
     "${frame_centering_args[@]}" \
     --yaw-control \
@@ -274,9 +287,13 @@ run_case() {
     --camera-pitch-deg "$CAMERA_PITCH_DEG" \
     --camera-roll-deg "$CAMERA_ROLL_DEG" \
     --camera-yaw-deg "$CAMERA_YAW_DEG" \
-    "${top_clip_args[@]}"
+    "${top_clip_args[@]}" || rc=$?
 
   stop_sim
+  if [[ "$rc" -ne 0 ]]; then
+    echo "case_failed label=${label} range=${range_m}m rc=${rc} timeout_s=${CASE_TIMEOUT_S}" >&2
+  fi
+  return 0
 }
 
 summarize_label() {
@@ -291,6 +308,7 @@ trap stop_sim EXIT
 
 echo "YOLO SITL TTC/Vm stamp: ${STAMP}"
 echo "Ranges: ${RANGES[*]}"
+echo "Run groups: TTC=${RUN_TTC}; VM=${RUN_VM}"
 echo "Detector: ${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
 echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"
@@ -298,20 +316,25 @@ echo "Guidance output: ${GUIDANCE_OUTPUT_MODE}; max_accel=${MAX_GUIDANCE_ACCEL_M
 echo "Body-rate: tilt=${BODY_RATE_MAX_TILT_DEG}deg rates=${BODY_RATE_MAX_ROLL_RATE_DEG}/${BODY_RATE_MAX_PITCH_RATE_DEG}deg/s thrust=${BODY_RATE_MIN_THRUST}/${BODY_RATE_HOVER_THRUST}/${BODY_RATE_MAX_THRUST}"
 echo "Body-rate speed hold: gain=${BODY_RATE_SPEED_HOLD_GAIN}; max_accel=${BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2}; total_limit=${BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2}"
 echo "Camera: x=${CAMERA_X}, y=${CAMERA_Y}, z=${CAMERA_Z}, pitch=${CAMERA_PITCH_DEG}, roll=${CAMERA_ROLL_DEG}, yaw=${CAMERA_YAW_DEG}"
-echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; LOS filter: ${LOS_FILTER}; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
+echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; LOS filter: ${LOS_FILTER}; LOS KF q=${LOS_FILTER_PROCESS_LAMBDA}/${LOS_FILTER_PROCESS_LAMBDA_DOT}, r=${LOS_FILTER_MEASUREMENT_NOISE}, reject=${LOS_FILTER_INNOVATION_REJECT}; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
 echo "Frame centering: ${FRAME_CENTERING}; speed_ratio=${FRAME_CENTERING_SPEED_RATIO}; terminal_speed_ratio=${TERMINAL_CAPTURE_SPEED_RATIO}; lateral=${FRAME_CENTERING_MAX_LATERAL_SPEED}/${TERMINAL_CAPTURE_MAX_LATERAL_SPEED}"
 echo "Frame centering loss hold last velocity: ${FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY}"
+echo "Case timeout: ${CASE_TIMEOUT_S}s"
 echo "Every case restarts PX4 SITL and Blocks."
 
-for range_m in "${RANGES[@]}"; do
-  run_case TTC ttc_png "$range_m"
-done
-summarize_label TTC
+if [[ "$RUN_TTC" == "1" || "$RUN_TTC" == "true" || "$RUN_TTC" == "TRUE" ]]; then
+  for range_m in "${RANGES[@]}"; do
+    run_case TTC ttc_png "$range_m"
+  done
+  summarize_label TTC
+fi
 
-for range_m in "${RANGES[@]}"; do
-  run_case VM fixed_vm_png "$range_m"
-done
-summarize_label VM
+if [[ "$RUN_VM" == "1" || "$RUN_VM" == "true" || "$RUN_VM" == "TRUE" ]]; then
+  for range_m in "${RANGES[@]}"; do
+    run_case VM fixed_vm_png "$range_m"
+  done
+  summarize_label VM
+fi
 
 python3 examples/generate_yolo_sitl_ttc_vm_report.py \
   --stamp "$STAMP" \

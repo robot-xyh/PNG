@@ -31,6 +31,25 @@ from vision_guidance.terminal_extrapolation import BLIND_PUSH, TERMINAL_VISUAL
 from vision_guidance.types import CameraIntrinsics, FrameDetection
 
 
+def _runtime_args(**overrides):
+    args = {
+        "rate_hz": 8.0,
+        "speed_ratio": 2.0,
+        "navigation_constant": 3.0,
+        "guidance_output_mode": "accel_body_rate",
+        "px4_interceptor": True,
+        "px4_command_mode": "mavlink_body_rate",
+        "body_rate_min_thrust": 0.25,
+        "body_rate_max_thrust": 0.75,
+        "los_filter_process_lambda": 1e-4,
+        "los_filter_process_lambda_dot": 5e-3,
+        "los_filter_measurement_noise": 5e-3,
+        "los_filter_innovation_reject": 0.25,
+    }
+    args.update(overrides)
+    return SimpleNamespace(**args)
+
+
 class StrapdownVisionPNGTest(unittest.TestCase):
     def test_png_acceleration_command_has_acceleration_units_and_limit(self):
         args = SimpleNamespace(max_guidance_accel_mps2=2.0)
@@ -180,15 +199,10 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(total[1], 1.0)
 
     def test_accel_body_rate_runtime_validation_requires_px4_body_rate_mode(self):
-        args = SimpleNamespace(
-            rate_hz=8.0,
-            speed_ratio=2.0,
-            navigation_constant=3.0,
+        args = _runtime_args(
             guidance_output_mode="accel_body_rate",
             px4_interceptor=False,
             px4_command_mode="velocity_yaw_rate",
-            body_rate_min_thrust=0.25,
-            body_rate_max_thrust=0.75,
         )
 
         with self.assertRaisesRegex(SystemExit, "requires --px4-interceptor"):
@@ -202,34 +216,33 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         _validate_runtime_args(args)
 
     def test_mavlink_body_rate_runtime_validation_rejects_other_output_modes(self):
-        args = SimpleNamespace(
-            rate_hz=8.0,
-            speed_ratio=2.0,
-            navigation_constant=3.0,
+        args = _runtime_args(
             guidance_output_mode="accel_integral",
-            px4_interceptor=True,
             px4_command_mode="mavlink_body_rate",
-            body_rate_min_thrust=0.25,
-            body_rate_max_thrust=0.75,
         )
 
         with self.assertRaisesRegex(SystemExit, "requires --guidance-output-mode accel_body_rate"):
             _validate_runtime_args(args)
 
     def test_body_rate_runtime_validation_rejects_invalid_thrust_range(self):
-        args = SimpleNamespace(
-            rate_hz=8.0,
-            speed_ratio=2.0,
-            navigation_constant=3.0,
-            guidance_output_mode="accel_body_rate",
-            px4_interceptor=True,
-            px4_command_mode="mavlink_body_rate",
+        args = _runtime_args(
             body_rate_min_thrust=0.8,
             body_rate_max_thrust=0.2,
         )
 
         with self.assertRaisesRegex(SystemExit, "min-thrust cannot exceed"):
             _validate_runtime_args(args)
+
+    def test_runtime_validation_rejects_invalid_los_filter_parameters(self):
+        for key, value, message in (
+            ("los_filter_process_lambda", -1e-4, "process-lambda must be non-negative"),
+            ("los_filter_process_lambda_dot", -1e-3, "process-lambda-dot must be non-negative"),
+            ("los_filter_measurement_noise", 0.0, "measurement-noise must be positive"),
+            ("los_filter_innovation_reject", 0.0, "innovation-reject must be positive"),
+        ):
+            args = _runtime_args(**{key: value})
+            with self.subTest(key=key), self.assertRaisesRegex(SystemExit, message):
+                _validate_runtime_args(args)
 
     def test_yaw_rate_from_pixel_error_turns_toward_right_side_target(self):
         intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
