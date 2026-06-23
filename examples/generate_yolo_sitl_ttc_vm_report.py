@@ -151,9 +151,13 @@ def _required_load(rows: list[dict[str, str]]) -> list[float]:
     return result
 
 
-def _g_eval_load(rows: list[dict[str, str]]) -> list[float]:
+def _guidance_load(rows: list[dict[str, str]]) -> list[float]:
     result: list[float] = []
     for row in rows:
+        n_cmd = _float(row.get("n_cmd_g"))
+        if math.isfinite(n_cmd):
+            result.append(n_cmd)
+            continue
         vec = _vector(row, ("g_eval_x", "g_eval_y", "g_eval_z"))
         if vec is None:
             result.append(math.nan)
@@ -244,7 +248,7 @@ def _summary_table(rows: list[CaseRow]) -> str:
 
 def _detail_table(rows: list[CaseRow]) -> str:
     lines = [
-        "|组别|距离m|碰撞|碰撞时间s|最小距离m|终点距离m|检测帧率|有效帧率|YOLO FPS|sim FPS|实际过载max g|指令P95 g|导引评估P95 g|",
+        "|组别|距离m|碰撞|碰撞时间s|最小距离m|终点距离m|检测帧率|有效帧率|YOLO FPS|sim FPS|实际过载max g|速度指令差分P95 g|需用过载P95 g|",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -256,7 +260,7 @@ def _detail_table(rows: list[CaseRow]) -> str:
             f"{'-' if not math.isfinite(row.hit_t_s) else f'{row.hit_t_s:.2f}'}|"
             f"{row.min_range_m:.3f}|{row.final_range_m:.3f}|{det_ratio:.1f}%|{valid_ratio:.1f}%|"
             f"{row.avg_detector_fps:.2f}|{row.avg_sim_sample_fps:.2f}|{row.max_load_factor_fd_g:.2f}|"
-            f"{_percentile(_required_load(samples), 0.95):.2f}|{_percentile(_g_eval_load(samples), 0.95):.2f}|"
+            f"{_percentile(_required_load(samples), 0.95):.2f}|{_percentile(_guidance_load(samples), 0.95):.2f}|"
         )
     return "\n".join(lines)
 
@@ -284,6 +288,13 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|高度差|`{sample.get('intruder_altitude_offset_m', '')} m`|",
             f"|目标速度 / speed ratio|`{sample.get('intruder_speed', '')} m/s` / `{sample.get('speed_ratio', '')}`|",
             f"|rate_hz|`{sample.get('rate_hz', '')}`|",
+            f"|guidance output|`{sample.get('guidance_output_mode', '')}`|",
+            f"|max guidance accel|`{sample.get('max_guidance_accel_mps2', '')} m/s^2`|",
+            f"|min speed ratio|`{sample.get('min_speed_ratio', '')}`|",
+            f"|body-rate tilt / attitude P|`{sample.get('body_rate_max_tilt_deg', '')} deg` / `{sample.get('body_rate_attitude_p', '')}`|",
+            f"|body-rate roll/pitch max rate|`{sample.get('body_rate_max_roll_rate_deg', '')}` / `{sample.get('body_rate_max_pitch_rate_deg', '')} deg/s`|",
+            f"|body-rate thrust|min/hover/max `{sample.get('body_rate_min_thrust', '')}` / `{sample.get('body_rate_hover_thrust', '')}` / `{sample.get('body_rate_max_thrust', '')}`|",
+            f"|body-rate speed hold|gain `{sample.get('body_rate_speed_hold_gain', '')}`, max accel `{sample.get('body_rate_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('body_rate_total_accel_limit_mps2', '')} m/s^2`|",
             f"|LOS filter|`{sample.get('los_filter_enabled', '')}`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
             f"|bbox noise|`{sample.get('bbox_noise_enabled', '')}`|",
@@ -334,7 +345,7 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
             ax_bbox.plot(t, _series(samples, "bbox_area"), linewidth=1.0, label=label)
             ax_ttc.plot(t, _series(samples, "ttc"), linewidth=1.0, label=label)
             ax_load.plot(t, _series(samples, "load_factor_fd_g"), linewidth=1.0, label=f"{label} actual")
-            ax_load.plot(t, _g_eval_load(samples), linewidth=0.9, linestyle="--", label=f"{label} eval")
+            ax_load.plot(t, _guidance_load(samples), linewidth=0.9, linestyle="--", label=f"{label} required")
             ax_fps.plot(t, _series(samples, "detector_fps"), linewidth=1.0, label=label)
         ax_range.set_title(f"{range_m:.0f}m true center range")
         ax_range.set_ylabel("m")
@@ -342,7 +353,7 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
         ax_bbox.set_ylabel("area")
         ax_ttc.set_title("TTC estimate")
         ax_ttc.set_ylabel("s")
-        ax_load.set_title("Actual overload and guidance evaluation")
+        ax_load.set_title("Actual overload and required overload")
         ax_load.set_ylabel("g")
         ax_fps.set_title("Detector FPS")
         ax_fps.set_xlabel("Time / s")
@@ -377,6 +388,12 @@ def _case_notes(rows: list[CaseRow]) -> str:
     lines.append(
         "- 本轮使用真实 YOLOv8 + ByteTrack，因此检测连续性和 GPU 推理速度会直接进入闭环；结果不能和 AirSim detect 函数的理想 bbox 直接等价比较。"
     )
+    lines.append(
+        "- `accel_integral` 模式的 `n_cmd_g` 来自导引层 `a_cmd`，底层仍通过 PX4/AirSim 速度 setpoint 闭环；实际过载由真实速度差分估计，因此会同时受 PX4 响应、速度限幅和视觉帧率影响。"
+    )
+    lines.append(
+        "- `accel_body_rate` 模式下 `n_cmd_g` 仍表示纯 PNG 需用过载；实际发送给 PX4 的是 `SET_ATTITUDE_TARGET` 机体系 `p/q/r` 角速度和归一化 thrust，日志中的 `body_rate_control_accel_*` 额外包含沿 LOS 的速度保持加速度。"
+    )
     return "\n".join(lines)
 
 
@@ -395,10 +412,12 @@ def write_report(
 
 ## 1. 实验目的
 
-按照此前已命中的 YOLO 案例配置，改用真正 PX4 SITL actor 场景，比较两种捷联视觉比例导引：
+按照此前已命中的 YOLO 案例配置，改用真正 PX4 SITL actor 场景，比较两种捷联视觉比例导引。本报告优先使用 `n_cmd_g` 作为需用过载；旧日志没有该字段时才回退到 `g_eval` 等效过载。
 
 - `TTC` 组：`ttc_png`，TTC 只参与增益调度，并保留 LOS/Vm soft guidance。
 - `VM` 组：`fixed_vm_png`，不使用 TTC，固定 `N * V_m` 导引增益。
+- `accel_integral` 输出模式：导引律先计算 `a_cmd` / `n_cmd_g`，再按当前仿真步长积分为速度 setpoint；这不是直接向 PX4 发送加速度 setpoint。
+- `accel_body_rate` 输出模式：导引律先计算 PNG 需用加速度，再转换为 PX4 `SET_ATTITUDE_TARGET` 机体系角速度 `p/q/r` 和 thrust；速度只作为沿 LOS 保速参考，不再把 PNG 横向修正直接加到速度指令上。
 
 {range_note}
 
@@ -420,7 +439,7 @@ def write_report(
 
 ## 6. 分距离曲线
 
-每个距离一张图，包含真实中心距离、bbox 面积、TTC 估计、实际过载/导引评估过载和 YOLO 检测 FPS。
+每个距离一张图，包含真实中心距离、bbox 面积、TTC 估计、实际过载/需用过载和 YOLO 检测 FPS。
 
 {image_lines}
 

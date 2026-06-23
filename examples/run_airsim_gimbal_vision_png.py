@@ -1254,7 +1254,24 @@ def _experiment_fields(
         "bbox_noise_seed": int(getattr(args, "bbox_noise_seed", 0)),
         "los_filter_enabled": int(bool(getattr(args, "los_filter", True))),
         "guidance_law": str(getattr(args, "guidance_law", "ttc_png")),
+        "guidance_output_mode": str(getattr(args, "guidance_output_mode", "velocity_bias")),
         "navigation_constant": float(getattr(args, "navigation_constant", 0.0)),
+        "max_guidance_accel_mps2": float(getattr(args, "max_guidance_accel_mps2", 0.0)),
+        "min_speed_ratio": float(getattr(args, "min_speed_ratio", 0.0)),
+        "accel_integral_reset_on_invalid": int(bool(getattr(args, "accel_integral_reset_on_invalid", False))),
+        "body_rate_max_tilt_deg": float(getattr(args, "body_rate_max_tilt_deg", 0.0)),
+        "body_rate_roll_gain": float(getattr(args, "body_rate_roll_gain", 0.0)),
+        "body_rate_pitch_gain": float(getattr(args, "body_rate_pitch_gain", 0.0)),
+        "body_rate_attitude_p": float(getattr(args, "body_rate_attitude_p", 0.0)),
+        "body_rate_max_roll_rate_deg": float(getattr(args, "body_rate_max_roll_rate_deg", 0.0)),
+        "body_rate_max_pitch_rate_deg": float(getattr(args, "body_rate_max_pitch_rate_deg", 0.0)),
+        "body_rate_hover_thrust": float(getattr(args, "body_rate_hover_thrust", 0.0)),
+        "body_rate_thrust_gain": float(getattr(args, "body_rate_thrust_gain", 0.0)),
+        "body_rate_min_thrust": float(getattr(args, "body_rate_min_thrust", 0.0)),
+        "body_rate_max_thrust": float(getattr(args, "body_rate_max_thrust", 0.0)),
+        "body_rate_speed_hold_gain": float(getattr(args, "body_rate_speed_hold_gain", 0.0)),
+        "body_rate_speed_hold_max_accel_mps2": float(getattr(args, "body_rate_speed_hold_max_accel_mps2", 0.0)),
+        "body_rate_total_accel_limit_mps2": float(getattr(args, "body_rate_total_accel_limit_mps2", 0.0)),
         "detector_source": str(getattr(args, "detector_source", "airsim")),
         "yolo_model": str(getattr(args, "yolo_model", "")),
         "yolo_class_id": "" if getattr(args, "yolo_class_id", None) is None else int(args.yolo_class_id),
@@ -1277,6 +1294,10 @@ def _json_safe(value):
         return {str(key): _json_safe(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
+    try:
+        json.dumps(value)
+    except TypeError:
+        return str(value)
     return value
 
 
@@ -1317,7 +1338,7 @@ def _write_run_metadata(
         "csv_path": str(csv_path),
         "settings_path": str(args.settings_path),
         "vehicle_names": {"interceptor": args.interceptor, "intruder": args.intruder},
-        "args": vars(args),
+        "args": {key: value for key, value in vars(args).items() if not str(key).startswith("_")},
         "intrinsics": {
             "fx": float(intrinsics.fx),
             "fy": float(intrinsics.fy),

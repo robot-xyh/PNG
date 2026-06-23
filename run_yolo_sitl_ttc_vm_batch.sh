@@ -11,10 +11,31 @@ INTERCEPT_ALTITUDE_M="${INTERCEPT_ALTITUDE_M:-50}"
 INTRUDER_SPEED="${INTRUDER_SPEED:-5}"
 SPEED_RATIO="${SPEED_RATIO:-2}"
 NAVIGATION_CONSTANT="${NAVIGATION_CONSTANT:-3.0}"
+GUIDANCE_OUTPUT_MODE="${GUIDANCE_OUTPUT_MODE:-accel_integral}"
+MAX_GUIDANCE_ACCEL_MPS2="${MAX_GUIDANCE_ACCEL_MPS2:-15.0}"
+MIN_SPEED_RATIO="${MIN_SPEED_RATIO:-0.60}"
+ACCEL_INTEGRAL_RESET_ON_INVALID="${ACCEL_INTEGRAL_RESET_ON_INVALID:-0}"
+BODY_RATE_MAX_TILT_DEG="${BODY_RATE_MAX_TILT_DEG:-20}"
+BODY_RATE_ROLL_GAIN="${BODY_RATE_ROLL_GAIN:-1.0}"
+BODY_RATE_PITCH_GAIN="${BODY_RATE_PITCH_GAIN:-1.0}"
+BODY_RATE_ATTITUDE_P="${BODY_RATE_ATTITUDE_P:-4.0}"
+BODY_RATE_MAX_ROLL_RATE_DEG="${BODY_RATE_MAX_ROLL_RATE_DEG:-60}"
+BODY_RATE_MAX_PITCH_RATE_DEG="${BODY_RATE_MAX_PITCH_RATE_DEG:-60}"
+BODY_RATE_HOVER_THRUST="${BODY_RATE_HOVER_THRUST:-0.50}"
+BODY_RATE_THRUST_GAIN="${BODY_RATE_THRUST_GAIN:-0.50}"
+BODY_RATE_MIN_THRUST="${BODY_RATE_MIN_THRUST:-0.25}"
+BODY_RATE_MAX_THRUST="${BODY_RATE_MAX_THRUST:-0.75}"
+BODY_RATE_SPEED_HOLD_GAIN="${BODY_RATE_SPEED_HOLD_GAIN:-1.2}"
+BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2="${BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2:-6.0}"
+BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2="${BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2:-18.0}"
 RATE_HZ="${RATE_HZ:-8}"
 YAW_ERROR_GAIN="${YAW_ERROR_GAIN:-1.6}"
 MAX_YAW_RATE_DEG="${MAX_YAW_RATE_DEG:-45}"
-PX4_COMMAND_MODE="${PX4_COMMAND_MODE:-velocity_yaw_rate}"
+if [[ -z "${PX4_COMMAND_MODE:-}" && "$GUIDANCE_OUTPUT_MODE" == "accel_body_rate" ]]; then
+  PX4_COMMAND_MODE="mavlink_body_rate"
+else
+  PX4_COMMAND_MODE="${PX4_COMMAND_MODE:-velocity_yaw_rate}"
+fi
 YOLO_MODEL="${YOLO_MODEL:-vision_guidance/best.pt}"
 YOLO_DEVICE="${YOLO_DEVICE:-0}"
 YOLO_CONF="${YOLO_CONF:-0.1}"
@@ -22,6 +43,7 @@ YOLO_IOU="${YOLO_IOU:-0.7}"
 YOLO_IMGSZ="${YOLO_IMGSZ:-640}"
 YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX="${YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX:-260}"
 SHADOW_AIRSIM_DETECT="${SHADOW_AIRSIM_DETECT:-1}"
+LOS_FILTER="${LOS_FILTER:-1}"
 REJECT_TOP_CLIPPED_PITCH="${REJECT_TOP_CLIPPED_PITCH:-0}"
 FRAME_CENTERING="${FRAME_CENTERING:-1}"
 FRAME_CENTERING_SPEED_RATIO="${FRAME_CENTERING_SPEED_RATIO:-1.45}"
@@ -42,9 +64,9 @@ INTRUDER_ACTOR_SCALE="${INTRUDER_ACTOR_SCALE:-1.0}"
 SETTINGS_PATH="${SETTINGS_PATH:-$SCRIPT_DIR/config/airsim_blocks_px4_actor_settings.json}"
 LOG_DIR="$SCRIPT_DIR/logs/strict_reset"
 TRAJECTORY_DIR="$SCRIPT_DIR/logs/yolo_sitl_ttc_vm"
-REPORT_PATH="${REPORT_PATH:-$SCRIPT_DIR/完整方案/YOLO_SITL_TTC_VM拦截对比报告.md}"
-ASSET_DIR="${ASSET_DIR:-$SCRIPT_DIR/完整方案/assets/YOLO_SITL_TTC_VM拦截对比报告}"
-REPORT_TITLE="${REPORT_TITLE:-YOLO + ByteTrack PX4 SITL TTC / V_m 拦截对比报告}"
+REPORT_PATH="${REPORT_PATH:-$SCRIPT_DIR/完整方案/YOLO_SITL_AccelPNG_TTC_VM拦截对比报告.md}"
+ASSET_DIR="${ASSET_DIR:-$SCRIPT_DIR/完整方案/assets/YOLO_SITL_AccelPNG_TTC_VM拦截对比报告}"
+REPORT_TITLE="${REPORT_TITLE:-YOLO + ByteTrack PX4 SITL 加速度过载 PNG TTC / V_m 拦截对比报告}"
 RANGE_NOTE="${RANGE_NOTE:-两组均测试 50m、60m、70m、80m、90m、100m，每个工况重启 PX4 SITL 和 Blocks。}"
 
 mkdir -p "$LOG_DIR" "$TRAJECTORY_DIR"
@@ -143,9 +165,17 @@ run_case() {
   if [[ "$SHADOW_AIRSIM_DETECT" == "1" || "$SHADOW_AIRSIM_DETECT" == "true" || "$SHADOW_AIRSIM_DETECT" == "TRUE" ]]; then
     shadow_args=(--shadow-airsim-detect)
   fi
+  local los_filter_args=(--no-los-filter)
+  if [[ "$LOS_FILTER" == "1" || "$LOS_FILTER" == "true" || "$LOS_FILTER" == "TRUE" ]]; then
+    los_filter_args=(--los-filter)
+  fi
   local top_clip_args=(--no-reject-top-clipped-pitch)
   if [[ "$REJECT_TOP_CLIPPED_PITCH" == "1" || "$REJECT_TOP_CLIPPED_PITCH" == "true" || "$REJECT_TOP_CLIPPED_PITCH" == "TRUE" ]]; then
     top_clip_args=(--reject-top-clipped-pitch)
+  fi
+  local accel_reset_args=(--no-accel-integral-reset-on-invalid)
+  if [[ "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "1" || "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "true" || "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "TRUE" ]]; then
+    accel_reset_args=(--accel-integral-reset-on-invalid)
   fi
   local frame_centering_args=(--no-frame-centering)
   if [[ "$FRAME_CENTERING" == "1" || "$FRAME_CENTERING" == "true" || "$FRAME_CENTERING" == "TRUE" ]]; then
@@ -172,6 +202,23 @@ run_case() {
     --intruder-speed "$INTRUDER_SPEED" \
     --speed-ratio "$SPEED_RATIO" \
     "${guidance_args[@]}" \
+    --guidance-output-mode "$GUIDANCE_OUTPUT_MODE" \
+    --max-guidance-accel-mps2 "$MAX_GUIDANCE_ACCEL_MPS2" \
+    --min-speed-ratio "$MIN_SPEED_RATIO" \
+    "${accel_reset_args[@]}" \
+    --body-rate-max-tilt-deg "$BODY_RATE_MAX_TILT_DEG" \
+    --body-rate-roll-gain "$BODY_RATE_ROLL_GAIN" \
+    --body-rate-pitch-gain "$BODY_RATE_PITCH_GAIN" \
+    --body-rate-attitude-p "$BODY_RATE_ATTITUDE_P" \
+    --body-rate-max-roll-rate-deg "$BODY_RATE_MAX_ROLL_RATE_DEG" \
+    --body-rate-max-pitch-rate-deg "$BODY_RATE_MAX_PITCH_RATE_DEG" \
+    --body-rate-hover-thrust "$BODY_RATE_HOVER_THRUST" \
+    --body-rate-thrust-gain "$BODY_RATE_THRUST_GAIN" \
+    --body-rate-min-thrust "$BODY_RATE_MIN_THRUST" \
+    --body-rate-max-thrust "$BODY_RATE_MAX_THRUST" \
+    --body-rate-speed-hold-gain "$BODY_RATE_SPEED_HOLD_GAIN" \
+    --body-rate-speed-hold-max-accel-mps2 "$BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2" \
+    --body-rate-total-accel-limit-mps2 "$BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2" \
     --intercept-altitude-m "$INTERCEPT_ALTITUDE_M" \
     --intruder-altitude-offset-m "$ALTITUDE_OFFSET" \
     --start-horizontal-range-m "$range_m" \
@@ -205,7 +252,7 @@ run_case() {
     --yolo-single-target-mode \
     --yolo-single-target-max-center-jump-px "$YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX" \
     "${shadow_args[@]}" \
-    --los-filter \
+    "${los_filter_args[@]}" \
     --frame-guard \
     "${frame_centering_args[@]}" \
     --yaw-control \
@@ -247,8 +294,11 @@ echo "Ranges: ${RANGES[*]}"
 echo "Detector: ${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
 echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"
+echo "Guidance output: ${GUIDANCE_OUTPUT_MODE}; max_accel=${MAX_GUIDANCE_ACCEL_MPS2}; min_speed_ratio=${MIN_SPEED_RATIO}; reset_on_invalid=${ACCEL_INTEGRAL_RESET_ON_INVALID}"
+echo "Body-rate: tilt=${BODY_RATE_MAX_TILT_DEG}deg rates=${BODY_RATE_MAX_ROLL_RATE_DEG}/${BODY_RATE_MAX_PITCH_RATE_DEG}deg/s thrust=${BODY_RATE_MIN_THRUST}/${BODY_RATE_HOVER_THRUST}/${BODY_RATE_MAX_THRUST}"
+echo "Body-rate speed hold: gain=${BODY_RATE_SPEED_HOLD_GAIN}; max_accel=${BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2}; total_limit=${BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2}"
 echo "Camera: x=${CAMERA_X}, y=${CAMERA_Y}, z=${CAMERA_Z}, pitch=${CAMERA_PITCH_DEG}, roll=${CAMERA_ROLL_DEG}, yaw=${CAMERA_YAW_DEG}"
-echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
+echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; LOS filter: ${LOS_FILTER}; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
 echo "Frame centering: ${FRAME_CENTERING}; speed_ratio=${FRAME_CENTERING_SPEED_RATIO}; terminal_speed_ratio=${TERMINAL_CAPTURE_SPEED_RATIO}; lateral=${FRAME_CENTERING_MAX_LATERAL_SPEED}/${TERMINAL_CAPTURE_MAX_LATERAL_SPEED}"
 echo "Frame centering loss hold last velocity: ${FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY}"
 echo "Every case restarts PX4 SITL and Blocks."
