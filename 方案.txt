@@ -41,3 +41,80 @@
       - 相机俯仰上仰 10-15 度
       - 进入末端后若 top clipped，直接切到外推并加小的上仰/爬升偏置
 
+
+• 可以按优先级分四层处理：
+
+  1. 控制链路改成“加速度 -> 姿态 setpoint”，不要直接手写 body-rate
+  当前 body-rate 版是：
+
+  a_cmd -> 简单映射成 p/q/r + thrust
+
+  更稳的做法是：
+
+  PNG a_cmd
+  -> 期望总加速度 a_des
+  -> 期望机体 z 轴 / 期望姿态 quaternion
+  -> thrust
+  -> PX4 姿态/角速度内环执行
+
+  也就是发送 SET_ATTITUDE_TARGET 的 姿态四元数 + thrust，而不是直接发 body-
+  rate。body-rate 更像内环指令，对延迟和映射误差很敏感；姿态 setpoint 更适合作为
+  PNG 过载控制接口。
+
+  2. 做延迟补偿
+  YOLO 约 9 FPS，加上 PX4 响应，末端总延迟很容易到 0.15-0.30s。应使用预测 LOS：
+
+  lambda_pred = lambda + lambda_dot * tau_delay
+  omega_pred  = omega_LOS
+
+  TTC 也要用预测后的近距状态。否则角速度版总是在“追过去的目标”。
+
+  3. 末端视场保持优先
+  捷联相机必须先看住目标：
+
+  目标靠近边缘 -> 降速
+  目标靠近边缘 -> 限制横向 PNG
+  目标靠近边缘 -> yaw/pitch/vertical 优先居中
+  目标丢失但刚刚连续稳定 -> image KF 外推 + blind push
+
+  尤其 1-3m 末端，不应继续大横向机动把目标甩出画面。
+
+  4. LOS KF 改成末端自适应门控
+  不要简单固定 innovation_reject。建议：
+
+  远距：严格 KF
+  中距：正常 KF
+  近距 / bbox 大 / LOS rate 大：放宽 innovation gate
+  terminal：即使 KF reject，也保留 yaw/pitch 居中控制，不立刻清零 PNG
+
+  现在失败里还有 los_innovation_reject，说明门控仍会在关键时刻断导引。
+
+  5. 近距速度调度
+  角速度版执行有滞后，不能一直按 speed_ratio=2 冲：
+
+  远距：2.0
+  中距：1.4-1.6
+  近距：1.1-1.3
+  terminal：限制横向速度/过载突变
+
+  目标速度 5m/s 时，末端闭合速度过大，9 FPS 视觉很难稳定闭环。
+
+  6. 提升视觉有效帧率
+  优先保证稳定而不是分辨率：
+
+  640x480 或 imgsz=416/512
+  关闭保存图片
+  关闭 shadow detect
+  YOLO 每帧检测，ByteTrack 辅助
+  单目标模式限制 ID 跳变
+  必要时加 ROI crop / optical flow 中间帧跟踪
+
+  当前真正限制是闭环有效帧率和连续性。
+
+  建议实施顺序
+
+  1. 先把 body-rate 改为 attitude quaternion + thrust。
+  2. 加 tau_delay LOS 预测补偿。
+  3. 末端 frame_centering 更硬：边缘降速、限制横向 PNG。
+  4. LOS KF terminal 自适应放宽，不再一 reject 就清零。
+  5. 重新跑 50-100m 对比 TTC 和 V_m。
