@@ -74,12 +74,21 @@ elif [[ -z "${PX4_COMMAND_MODE:-}" && "$GUIDANCE_OUTPUT_MODE" == "accel_attitude
 else
   PX4_COMMAND_MODE="${PX4_COMMAND_MODE:-velocity_yaw_rate}"
 fi
+DETECTOR_SOURCE="${DETECTOR_SOURCE:-yolo_bytetrack}"
 YOLO_MODEL="${YOLO_MODEL:-vision_guidance/best.pt}"
 YOLO_DEVICE="${YOLO_DEVICE:-0}"
 YOLO_CONF="${YOLO_CONF:-0.1}"
 YOLO_IOU="${YOLO_IOU:-0.7}"
 YOLO_IMGSZ="${YOLO_IMGSZ:-640}"
 YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX="${YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX:-260}"
+KCF_YOLO_PERIOD_N="${KCF_YOLO_PERIOD_N:-8}"
+KCF_YOLO_PERIOD_S="${KCF_YOLO_PERIOD_S:-0.5}"
+KCF_MAX_COAST_S="${KCF_MAX_COAST_S:-0.8}"
+KCF_MIN_YOLO_IOU="${KCF_MIN_YOLO_IOU:-0.25}"
+KCF_MAX_CENTER_JUMP_PX="${KCF_MAX_CENTER_JUMP_PX:-180}"
+KCF_AREA_RATIO_MIN="${KCF_AREA_RATIO_MIN:-0.35}"
+KCF_AREA_RATIO_MAX="${KCF_AREA_RATIO_MAX:-2.8}"
+KCF_RESET_ON_YOLO_DRIFT="${KCF_RESET_ON_YOLO_DRIFT:-1}"
 SHADOW_AIRSIM_DETECT="${SHADOW_AIRSIM_DETECT:-1}"
 LOS_FILTER="${LOS_FILTER:-1}"
 LOS_FILTER_PROCESS_LAMBDA="${LOS_FILTER_PROCESS_LAMBDA:-5e-4}"
@@ -261,6 +270,10 @@ run_case() {
   if [[ "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "1" || "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "true" || "$ACCEL_INTEGRAL_RESET_ON_INVALID" == "TRUE" ]]; then
     accel_reset_args=(--accel-integral-reset-on-invalid)
   fi
+  local kcf_reset_args=(--no-kcf-reset-on-yolo-drift)
+  if [[ "$KCF_RESET_ON_YOLO_DRIFT" == "1" || "$KCF_RESET_ON_YOLO_DRIFT" == "true" || "$KCF_RESET_ON_YOLO_DRIFT" == "TRUE" ]]; then
+    kcf_reset_args=(--kcf-reset-on-yolo-drift)
+  fi
   local frame_centering_args=(--no-frame-centering)
   if [[ "$FRAME_CENTERING" == "1" || "$FRAME_CENTERING" == "true" || "$FRAME_CENTERING" == "TRUE" ]]; then
     frame_centering_args=(
@@ -342,7 +355,7 @@ run_case() {
     --intruder-actor-scale "$INTRUDER_ACTOR_SCALE" \
     --intruder-actor-respawn \
     --mesh 'IntruderActor' \
-    --detector-source yolo_bytetrack \
+    --detector-source "$DETECTOR_SOURCE" \
     --yolo-model "$YOLO_MODEL" \
     --yolo-class-id 0 \
     --yolo-conf "$YOLO_CONF" \
@@ -353,6 +366,14 @@ run_case() {
     --yolo-allow-untracked-fallback \
     --yolo-single-target-mode \
     --yolo-single-target-max-center-jump-px "$YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX" \
+    --kcf-yolo-period-n "$KCF_YOLO_PERIOD_N" \
+    --kcf-yolo-period-s "$KCF_YOLO_PERIOD_S" \
+    --kcf-max-coast-s "$KCF_MAX_COAST_S" \
+    --kcf-min-yolo-iou "$KCF_MIN_YOLO_IOU" \
+    --kcf-max-center-jump-px "$KCF_MAX_CENTER_JUMP_PX" \
+    --kcf-area-ratio-min "$KCF_AREA_RATIO_MIN" \
+    --kcf-area-ratio-max "$KCF_AREA_RATIO_MAX" \
+    "${kcf_reset_args[@]}" \
     "${shadow_args[@]}" \
     "${los_filter_args[@]}" \
     --los-filter-process-lambda "$LOS_FILTER_PROCESS_LAMBDA" \
@@ -413,7 +434,8 @@ trap stop_sim EXIT
 echo "YOLO SITL TTC/Vm stamp: ${STAMP}"
 echo "Ranges: ${RANGES[*]}"
 echo "Run groups: TTC=${RUN_TTC}; VM=${RUN_VM}"
-echo "Detector: ${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
+echo "Detector: source=${DETECTOR_SOURCE}, model=${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
+echo "KCF: period_n=${KCF_YOLO_PERIOD_N}, period_s=${KCF_YOLO_PERIOD_S}, max_coast=${KCF_MAX_COAST_S}, min_iou=${KCF_MIN_YOLO_IOU}, center_jump=${KCF_MAX_CENTER_JUMP_PX}, area_ratio=${KCF_AREA_RATIO_MIN}/${KCF_AREA_RATIO_MAX}, reset_on_drift=${KCF_RESET_ON_YOLO_DRIFT}"
 echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"
 echo "Guidance output: ${GUIDANCE_OUTPUT_MODE}; max_accel=${MAX_GUIDANCE_ACCEL_MPS2}; min_speed_ratio=${MIN_SPEED_RATIO}; reset_on_invalid=${ACCEL_INTEGRAL_RESET_ON_INVALID}"

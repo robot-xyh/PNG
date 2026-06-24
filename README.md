@@ -47,21 +47,32 @@ detected `box2D` into `FrameDetection`; it does not read the intruder's true
 pose, `relative_pose`, `geo_point`, or true velocity.
 
 The gimbal and strapdown validation scripts can replace AirSim detection with
-YOLOv8 + ByteTrack:
+YOLOv8 + ByteTrack, or YOLOv8 with KCF tracking between sparse YOLO corrections:
 
 ```bash
-python3 -m pip install torch ultralytics lap opencv-python
+python3 -m pip install torch ultralytics lap opencv-contrib-python
 
 python3 examples/run_airsim_strapdown_vision_png.py \
   --enable-motion \
   --detector-source yolo_bytetrack \
   --yolo-model /path/to/uav_yolov8.pt \
   --yolo-class-id 0
+
+python3 examples/run_airsim_strapdown_vision_png.py \
+  --enable-motion \
+  --detector-source yolo_kcf \
+  --yolo-model /path/to/uav_yolov8.pt \
+  --yolo-class-id 0 \
+  --kcf-yolo-period-n 8 \
+  --kcf-yolo-period-s 0.5
 ```
 
 YOLO mode is fail-fast: if the model path, dependencies, or `--yolo-class-id`
 are missing, the script exits instead of silently falling back to AirSim
 detection. ByteTrack `track_id` is logged and used for target continuity.
+`yolo_kcf` initializes or corrects from YOLO, then outputs KCF boxes on
+intermediate frames; CSV logs include `kcf_state`, `kcf_source`, `kcf_age_s`,
+and `kcf_yolo_iou`.
 
 Expected AirSim setup:
 
