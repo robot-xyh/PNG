@@ -11,9 +11,16 @@ from examples.run_airsim_strapdown_vision_png import (
     _apply_bbox_noise,
     _body_rate_control_acceleration,
     _body_rate_command_from_accel,
+    _body_rate_neutral_thrust,
     _candidate_guidance_velocity,
+    _command_vehicle_velocity,
     _fixed_camera_pose,
     _image_kf_takeover_allowed,
+    _attitude_command_from_accel,
+    _attitude_control_acceleration,
+    _attitude_neutral_thrust,
+    _normalized_thrust_from_accel,
+    _predict_los_delay,
     _kf_yaw_rate_command,
     _output_paths_strapdown,
     _png_acceleration_command,
@@ -31,6 +38,9 @@ from vision_guidance.terminal_extrapolation import BLIND_PUSH, TERMINAL_VISUAL
 from vision_guidance.types import CameraIntrinsics, FrameDetection
 
 
+AIRSIM_HOVER_THRUST = 9.80665 / 16.717785072
+
+
 def _runtime_args(**overrides):
     args = {
         "rate_hz": 8.0,
@@ -39,18 +49,105 @@ def _runtime_args(**overrides):
         "guidance_output_mode": "accel_body_rate",
         "px4_interceptor": True,
         "px4_command_mode": "mavlink_body_rate",
+        "thrust_model": "airsim_generic_quad",
+        "vehicle_mass_kg": 1.0,
+        "vehicle_max_total_thrust_n": 16.717785072,
         "body_rate_min_thrust": 0.25,
         "body_rate_max_thrust": 0.75,
+        "attitude_min_thrust": 0.25,
+        "attitude_max_thrust": 0.80,
         "los_filter_process_lambda": 1e-4,
         "los_filter_process_lambda_dot": 5e-3,
         "los_filter_measurement_noise": 5e-3,
         "los_filter_innovation_reject": 0.25,
+        "los_filter_terminal_innovation_reject": 1.20,
+        "los_filter_terminal_area_ratio": 0.01,
+        "los_filter_terminal_error_ratio": 0.55,
+        "los_delay_compensation_s": 0.18,
     }
     args.update(overrides)
     return SimpleNamespace(**args)
 
 
 class StrapdownVisionPNGTest(unittest.TestCase):
+    def test_airsim_generic_quad_thrust_model_uses_mass_and_max_thrust(self):
+        args = SimpleNamespace(
+            thrust_model="airsim_generic_quad",
+            vehicle_mass_kg=1.0,
+            vehicle_max_total_thrust_n=16.717785072,
+        )
+
+        hover, raw_hover, cos_tilt = _normalized_thrust_from_accel(
+            np.zeros(3),
+            roll_rad=0.0,
+            pitch_rad=0.0,
+            min_thrust=0.0,
+            max_thrust=1.0,
+            hover_thrust=0.5,
+            thrust_gain=0.5,
+            args=args,
+        )
+        climb, raw_climb, _ = _normalized_thrust_from_accel(
+            np.array([0.0, 0.0, -4.903325]),
+            roll_rad=0.0,
+            pitch_rad=0.0,
+            min_thrust=0.0,
+            max_thrust=1.0,
+            hover_thrust=0.5,
+            thrust_gain=0.5,
+            args=args,
+        )
+        tilted, raw_tilted, tilted_cos = _normalized_thrust_from_accel(
+            np.zeros(3),
+            roll_rad=np.deg2rad(20.0),
+            pitch_rad=0.0,
+            min_thrust=0.0,
+            max_thrust=1.0,
+            hover_thrust=0.5,
+            thrust_gain=0.5,
+            args=args,
+        )
+
+        self.assertAlmostEqual(hover, AIRSIM_HOVER_THRUST, places=6)
+        self.assertAlmostEqual(raw_hover, AIRSIM_HOVER_THRUST, places=6)
+        self.assertAlmostEqual(cos_tilt, 1.0)
+        self.assertAlmostEqual(climb, 1.5 * AIRSIM_HOVER_THRUST, places=6)
+        self.assertAlmostEqual(raw_climb, climb, places=6)
+        self.assertGreater(tilted, hover)
+        self.assertLess(tilted_cos, 1.0)
+
+    def test_empirical_thrust_model_remains_available(self):
+        args = SimpleNamespace(thrust_model="empirical")
+
+        thrust, raw, _ = _normalized_thrust_from_accel(
+            np.array([0.0, 0.0, -4.903325]),
+            roll_rad=np.deg2rad(20.0),
+            pitch_rad=0.0,
+            min_thrust=0.0,
+            max_thrust=1.0,
+            hover_thrust=0.5,
+            thrust_gain=0.5,
+            args=args,
+        )
+
+        self.assertAlmostEqual(raw, 0.75)
+        self.assertAlmostEqual(thrust, 0.75)
+
+    def test_neutral_thrust_uses_airsim_model_defaults(self):
+        args = _runtime_args(
+            body_rate_hover_thrust=0.5,
+            body_rate_thrust_gain=0.5,
+            body_rate_min_thrust=0.0,
+            body_rate_max_thrust=1.0,
+            attitude_hover_thrust=0.5,
+            attitude_thrust_gain=0.5,
+            attitude_min_thrust=0.0,
+            attitude_max_thrust=1.0,
+        )
+
+        self.assertAlmostEqual(_body_rate_neutral_thrust(args), AIRSIM_HOVER_THRUST, places=6)
+        self.assertAlmostEqual(_attitude_neutral_thrust(args), AIRSIM_HOVER_THRUST, places=6)
+
     def test_png_acceleration_command_has_acceleration_units_and_limit(self):
         args = SimpleNamespace(max_guidance_accel_mps2=2.0)
         lambda_i = np.array([1.0, 0.0, 0.0])
@@ -119,8 +216,19 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(command[1], 0.0)
         self.assertAlmostEqual(dt, 0.0)
 
+        args.guidance_output_mode = "accel_attitude"
+        command, accel, dt = _candidate_guidance_velocity(current, lambda_i, omega_los, 3.0, 10.0, 0.2, True, args)
+
+        self.assertAlmostEqual(accel[1], 3.0)
+        self.assertAlmostEqual(command[0], 10.0)
+        self.assertAlmostEqual(command[1], 0.0)
+        self.assertAlmostEqual(dt, 0.0)
+
     def test_body_rate_command_from_accel_maps_body_lateral_and_vertical(self):
         args = SimpleNamespace(
+            thrust_model="airsim_generic_quad",
+            vehicle_mass_kg=1.0,
+            vehicle_max_total_thrust_n=16.717785072,
             body_rate_max_tilt_deg=20.0,
             body_rate_roll_gain=1.0,
             body_rate_pitch_gain=1.0,
@@ -128,10 +236,10 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             body_rate_max_roll_rate_deg=60.0,
             body_rate_max_pitch_rate_deg=60.0,
             max_yaw_rate_deg=90.0,
-            body_rate_hover_thrust=0.5,
-            body_rate_thrust_gain=0.5,
+            body_rate_hover_thrust=AIRSIM_HOVER_THRUST,
+            body_rate_thrust_gain=AIRSIM_HOVER_THRUST,
             body_rate_min_thrust=0.25,
-            body_rate_max_thrust=0.75,
+            body_rate_max_thrust=0.95,
         )
 
         result = _body_rate_command_from_accel(
@@ -147,10 +255,14 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(result["pitch_sp_rad"], 0.0)
         self.assertGreater(result["body_rates_rad_s"][0], 0.0)
         self.assertAlmostEqual(result["body_rates_rad_s"][2], np.deg2rad(30.0))
-        self.assertAlmostEqual(result["thrust"], 0.75)
+        self.assertGreater(result["thrust"], AIRSIM_HOVER_THRUST)
+        self.assertAlmostEqual(result["thrust"], result["thrust_raw"])
 
     def test_body_rate_command_from_accel_limits_tilt_rates_and_thrust(self):
         args = SimpleNamespace(
+            thrust_model="airsim_generic_quad",
+            vehicle_mass_kg=1.0,
+            vehicle_max_total_thrust_n=16.717785072,
             body_rate_max_tilt_deg=10.0,
             body_rate_roll_gain=10.0,
             body_rate_pitch_gain=10.0,
@@ -158,8 +270,8 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             body_rate_max_roll_rate_deg=45.0,
             body_rate_max_pitch_rate_deg=40.0,
             max_yaw_rate_deg=30.0,
-            body_rate_hover_thrust=0.5,
-            body_rate_thrust_gain=2.0,
+            body_rate_hover_thrust=AIRSIM_HOVER_THRUST,
+            body_rate_thrust_gain=AIRSIM_HOVER_THRUST,
             body_rate_min_thrust=0.2,
             body_rate_max_thrust=0.8,
         )
@@ -198,6 +310,88 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(total[0], 3.0)
         self.assertAlmostEqual(total[1], 1.0)
 
+    def test_attitude_command_from_accel_maps_accel_to_quaternion_and_thrust(self):
+        args = SimpleNamespace(
+            thrust_model="airsim_generic_quad",
+            vehicle_mass_kg=1.0,
+            vehicle_max_total_thrust_n=16.717785072,
+            attitude_max_tilt_deg=25.0,
+            attitude_yaw_lookahead_s=0.25,
+            max_yaw_rate_deg=60.0,
+            attitude_hover_thrust=AIRSIM_HOVER_THRUST,
+            attitude_thrust_gain=AIRSIM_HOVER_THRUST,
+            attitude_min_thrust=0.25,
+            attitude_max_thrust=0.95,
+        )
+
+        result = _attitude_command_from_accel(
+            np.array([0.0, 4.903325, -4.903325]),
+            np.array([1.0, 0.0, 0.0]),
+            0.0,
+            0.0,
+            args,
+        )
+
+        self.assertGreater(result["roll_sp_rad"], 0.0)
+        self.assertAlmostEqual(result["pitch_sp_rad"], 0.0)
+        self.assertAlmostEqual(np.linalg.norm(result["attitude_quat_wxyz"]), 1.0)
+        self.assertGreater(result["thrust"], AIRSIM_HOVER_THRUST)
+
+    def test_attitude_command_maps_inertial_accel_through_commanded_yaw(self):
+        args = SimpleNamespace(
+            thrust_model="airsim_generic_quad",
+            vehicle_mass_kg=1.0,
+            vehicle_max_total_thrust_n=16.717785072,
+            attitude_max_tilt_deg=25.0,
+            attitude_yaw_lookahead_s=0.0,
+            max_yaw_rate_deg=60.0,
+            attitude_hover_thrust=AIRSIM_HOVER_THRUST,
+            attitude_thrust_gain=AIRSIM_HOVER_THRUST,
+            attitude_min_thrust=0.25,
+            attitude_max_thrust=0.8,
+        )
+
+        result = _attitude_command_from_accel(
+            np.array([0.0, 4.903325, 0.0]),
+            None,
+            0.0,
+            np.deg2rad(90.0),
+            args,
+        )
+
+        self.assertAlmostEqual(result["roll_sp_rad"], 0.0, places=6)
+        self.assertLess(result["pitch_sp_rad"], 0.0)
+        np.testing.assert_allclose(result["accel_yaw_body"][:2], np.array([4.903325, 0.0]), atol=1.0e-6)
+
+    def test_attitude_control_acceleration_uses_attitude_limits(self):
+        args = SimpleNamespace(
+            attitude_speed_hold_gain=2.0,
+            attitude_speed_hold_max_accel_mps2=3.0,
+            attitude_total_accel_limit_mps2=10.0,
+        )
+
+        total, speed_hold = _attitude_control_acceleration(
+            png_acceleration_I=np.array([0.0, 1.0, 0.0]),
+            current_velocity_I=np.zeros(3),
+            velocity_reference_I=np.array([10.0, 0.0, 0.0]),
+            args=args,
+        )
+
+        self.assertAlmostEqual(np.linalg.norm(speed_hold), 3.0)
+        self.assertAlmostEqual(total[0], 3.0)
+        self.assertAlmostEqual(total[1], 1.0)
+
+    def test_predict_los_delay_advances_los_with_los_rate(self):
+        lam, omega = _predict_los_delay(
+            np.array([1.0, 0.0, 0.0]),
+            np.array([0.0, 0.0, 1.0]),
+            0.1,
+        )
+
+        self.assertGreater(lam[1], 0.0)
+        self.assertAlmostEqual(np.linalg.norm(lam), 1.0)
+        self.assertLess(abs(float(np.dot(lam, omega))), 1.0e-9)
+
     def test_accel_body_rate_runtime_validation_requires_px4_body_rate_mode(self):
         args = _runtime_args(
             guidance_output_mode="accel_body_rate",
@@ -224,6 +418,32 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "requires --guidance-output-mode accel_body_rate"):
             _validate_runtime_args(args)
 
+    def test_accel_attitude_runtime_validation_requires_px4_attitude_mode(self):
+        args = _runtime_args(
+            guidance_output_mode="accel_attitude",
+            px4_interceptor=False,
+            px4_command_mode="velocity_yaw_rate",
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --px4-interceptor"):
+            _validate_runtime_args(args)
+
+        args.px4_interceptor = True
+        with self.assertRaisesRegex(SystemExit, "requires --px4-command-mode mavlink_attitude"):
+            _validate_runtime_args(args)
+
+        args.px4_command_mode = "mavlink_attitude"
+        _validate_runtime_args(args)
+
+    def test_mavlink_attitude_runtime_validation_rejects_other_output_modes(self):
+        args = _runtime_args(
+            guidance_output_mode="accel_integral",
+            px4_command_mode="mavlink_attitude",
+        )
+
+        with self.assertRaisesRegex(SystemExit, "requires --guidance-output-mode accel_attitude"):
+            _validate_runtime_args(args)
+
     def test_body_rate_runtime_validation_rejects_invalid_thrust_range(self):
         args = _runtime_args(
             body_rate_min_thrust=0.8,
@@ -233,16 +453,75 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         with self.assertRaisesRegex(SystemExit, "min-thrust cannot exceed"):
             _validate_runtime_args(args)
 
+    def test_attitude_runtime_validation_rejects_invalid_thrust_range(self):
+        args = _runtime_args(
+            guidance_output_mode="accel_attitude",
+            px4_command_mode="mavlink_attitude",
+            attitude_min_thrust=0.9,
+            attitude_max_thrust=0.2,
+        )
+
+        with self.assertRaisesRegex(SystemExit, "attitude-min-thrust cannot exceed"):
+            _validate_runtime_args(args)
+
     def test_runtime_validation_rejects_invalid_los_filter_parameters(self):
         for key, value, message in (
             ("los_filter_process_lambda", -1e-4, "process-lambda must be non-negative"),
             ("los_filter_process_lambda_dot", -1e-3, "process-lambda-dot must be non-negative"),
             ("los_filter_measurement_noise", 0.0, "measurement-noise must be positive"),
             ("los_filter_innovation_reject", 0.0, "innovation-reject must be positive"),
+            ("los_filter_terminal_innovation_reject", 0.0, "terminal-innovation-reject must be positive"),
+            ("los_filter_terminal_area_ratio", -0.1, "terminal-area-ratio must be non-negative"),
+            ("los_filter_terminal_error_ratio", -0.1, "terminal-error-ratio must be non-negative"),
+            ("los_delay_compensation_s", -0.1, "delay-compensation-s must be non-negative"),
         ):
             args = _runtime_args(**{key: value})
             with self.subTest(key=key), self.assertRaisesRegex(SystemExit, message):
                 _validate_runtime_args(args)
+
+    def test_mavlink_attitude_velocity_command_still_streams_velocity_for_preparation(self):
+        class FakeOffboard:
+            def __init__(self):
+                self.velocity_calls = []
+                self.armed = 0
+                self.offboard = 0
+
+            def send_velocity(self, command, yaw_rate_deg_s):
+                self.velocity_calls.append((np.asarray(command, dtype=float), float(yaw_rate_deg_s)))
+
+            def arm(self):
+                self.armed += 1
+
+            def request_offboard(self):
+                self.offboard += 1
+
+        args = SimpleNamespace(
+            px4_interceptor=True,
+            px4_intruder=False,
+            interceptor="Interceptor",
+            intruder="Intruder",
+            px4_command_mode="mavlink_attitude",
+            px4_max_vertical_speed=2.0,
+            _px4_mavlink_offboard=FakeOffboard(),
+        )
+
+        future = _command_vehicle_velocity(
+            client=None,
+            airsim_module=None,
+            vehicle_name="Interceptor",
+            velocity=np.array([1.0, 2.0, 5.0]),
+            yaw_rate_deg_s=12.0,
+            command_duration=0.2,
+            args=args,
+        )
+
+        self.assertIsNone(future)
+        self.assertEqual(len(args._px4_mavlink_offboard.velocity_calls), 1)
+        command, yaw_rate = args._px4_mavlink_offboard.velocity_calls[0]
+        np.testing.assert_allclose(command, np.array([1.0, 2.0, 2.0]))
+        self.assertAlmostEqual(yaw_rate, 12.0)
+        self.assertEqual(args._px4_mavlink_offboard.armed, 1)
+        self.assertEqual(args._px4_mavlink_offboard.offboard, 1)
 
     def test_yaw_rate_from_pixel_error_turns_toward_right_side_target(self):
         intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
