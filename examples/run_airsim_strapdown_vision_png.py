@@ -297,6 +297,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminal-image-kf-meas-noise-rad", type=float, default=0.006)
     parser.add_argument("--terminal-image-kf-accel-noise-rad-s2", type=float, default=8.0)
     parser.add_argument("--terminal-image-kf-innovation-reject-rad", type=float, default=0.20)
+    parser.add_argument(
+        "--terminal-image-kf-soft-reject-predict",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help=(
+            "When a terminal image-KF measurement innovation is too large, keep the previous "
+            "prediction for a short hold instead of resetting the image KF."
+        ),
+    )
     parser.add_argument("--terminal-image-kf-max-angle-rad", type=float, default=1.0)
     parser.add_argument("--terminal-image-kf-max-rate-rad-s", type=float, default=8.0)
     parser.add_argument(

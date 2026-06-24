@@ -149,6 +149,39 @@ class TerminalImageKFTest(unittest.TestCase):
         self.assertFalse(estimate.valid)
         self.assertEqual(estimate.reject_reason, "image_kf_innovation_reject")
 
+    def test_large_innovation_can_soft_reject_to_prediction(self):
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+        kf = TerminalImageKF(
+            TerminalImageKFConfig(
+                innovation_reject_rad=0.05,
+                max_predict_s=0.30,
+                soft_reject_predict=True,
+            )
+        )
+        kf.update(
+            timestamp=0.0,
+            center=(320.0, 240.0),
+            intrinsics=intrinsics,
+            detected=True,
+            measurement_valid=True,
+            clipped=False,
+            track_id=1,
+        )
+
+        estimate = kf.update(
+            timestamp=0.05,
+            center=center_from_angle_error(np.array([0.4, 0.0]), intrinsics),
+            intrinsics=intrinsics,
+            detected=True,
+            measurement_valid=True,
+            clipped=False,
+            track_id=1,
+        )
+
+        self.assertTrue(estimate.valid)
+        self.assertEqual(estimate.mode, IMAGE_KF_PREDICT)
+        self.assertEqual(estimate.reject_reason, "image_kf_soft_reject")
+
 
 if __name__ == "__main__":
     unittest.main()

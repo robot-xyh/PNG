@@ -21,6 +21,7 @@ class TerminalImageKFConfig:
     measurement_noise_rad: float = 0.006
     accel_noise_rad_s2: float = 8.0
     innovation_reject_rad: float = 0.20
+    soft_reject_predict: bool = False
     max_angle_rad: float = 1.0
     max_rate_rad_s: float = 8.0
     min_dt_s: float = 1.0e-3
@@ -113,6 +114,8 @@ class TerminalImageKF:
         innovation = theta - self.x[:2]
         innovation_norm = float(np.linalg.norm(innovation))
         if innovation_norm > max(1.0e-9, self.config.innovation_reject_rad):
+            if self.config.soft_reject_predict:
+                return self._prediction_estimate(timestamp, "image_kf_soft_reject")
             self.reset(theta, timestamp, track_id)
             return self._estimate(timestamp, IMAGE_KF_INVALID, False, "image_kf_innovation_reject")
 

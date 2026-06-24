@@ -4,14 +4,17 @@ import argparse
 import csv
 import json
 import math
+import re
 import sys
 from dataclasses import dataclass
 from pathlib import Path
+from zipfile import ZipFile
 
 import matplotlib
 
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+import numpy as np
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
@@ -166,6 +169,90 @@ def _guidance_load(rows: list[dict[str, str]]) -> list[float]:
     return result
 
 
+def _unit(vector: np.ndarray) -> np.ndarray | None:
+    norm = float(np.linalg.norm(vector))
+    if not np.isfinite(norm) or norm <= 1.0e-9:
+        return None
+    return vector / norm
+
+
+def _angle_deg(left: np.ndarray | None, right: np.ndarray | None) -> float:
+    if left is None or right is None:
+        return math.nan
+    if not np.all(np.isfinite(left)) or not np.all(np.isfinite(right)):
+        return math.nan
+    dot = float(np.clip(np.dot(left, right), -1.0, 1.0))
+    return math.degrees(math.acos(dot))
+
+
+def _np_vector(row: dict[str, str], keys: tuple[str, str, str]) -> np.ndarray | None:
+    values = np.array([_float(row.get(key)) for key in keys], dtype=float)
+    if not np.all(np.isfinite(values)):
+        return None
+    return values
+
+
+def _finite_difference_vectors(times: list[float], positions: list[np.ndarray | None]) -> list[np.ndarray | None]:
+    velocities: list[np.ndarray | None] = [None] * len(times)
+    if len(times) < 2:
+        return velocities
+    for index in range(len(times)):
+        if index == 0:
+            left, right = 0, 1
+        elif index == len(times) - 1:
+            left, right = len(times) - 2, len(times) - 1
+        else:
+            left, right = index - 1, index + 1
+        if positions[left] is None or positions[right] is None:
+            continue
+        dt = times[right] - times[left]
+        if math.isfinite(dt) and dt > 1.0e-5:
+            velocities[index] = (positions[right] - positions[left]) / dt
+    return velocities
+
+
+def _camera_shadow_metrics(samples: list[dict[str, str]]) -> list[dict[str, float]]:
+    times = [_float(row.get("t")) for row in samples]
+    camera_pos = [_np_vector(row, ("camera_world_x", "camera_world_y", "camera_world_z")) for row in samples]
+    intruder_pos = [_np_vector(row, ("intruder_x", "intruder_y", "intruder_z")) for row in samples]
+    camera_vel = _finite_difference_vectors(times, camera_pos)
+    intruder_vel = _finite_difference_vectors(times, intruder_pos)
+    metrics: list[dict[str, float]] = []
+    for index, row in enumerate(samples):
+        rel = None if camera_pos[index] is None or intruder_pos[index] is None else intruder_pos[index] - camera_pos[index]
+        rel_vel = None if camera_vel[index] is None or intruder_vel[index] is None else intruder_vel[index] - camera_vel[index]
+        truth_los = _unit(rel) if rel is not None else None
+        visual_vector = _np_vector(row, ("lambda_x", "lambda_y", "lambda_z"))
+        visual_los = _unit(visual_vector) if visual_vector is not None else None
+        range_m = float(np.linalg.norm(rel)) if rel is not None else math.nan
+        closing_speed = math.nan
+        lambda_dot_norm = math.nan
+        shadow_vc_g = math.nan
+        shadow_vm_g = math.nan
+        if rel is not None and rel_vel is not None and math.isfinite(range_m) and range_m > 1.0e-6:
+            los = rel / range_m
+            closing_speed = -float(np.dot(rel_vel, los))
+            omega = np.cross(rel, rel_vel) / max(range_m * range_m, 1.0e-12)
+            lambda_dot = np.cross(omega, los)
+            lambda_dot_norm = float(np.linalg.norm(lambda_dot))
+            if closing_speed > 1.0e-3:
+                shadow_vc_g = 3.0 * closing_speed * lambda_dot_norm / GRAVITY_MPS2
+            else:
+                shadow_vc_g = 0.0
+            vm = _float(row.get("speed_ratio"), 2.0) * _float(row.get("intruder_speed"), 5.0)
+            shadow_vm_g = 3.0 * vm * lambda_dot_norm / GRAVITY_MPS2
+        metrics.append(
+            {
+                "t": times[index],
+                "range_camera_m": range_m,
+                "shadow_vc_n_req_g": shadow_vc_g,
+                "shadow_vm_n_req_g": shadow_vm_g,
+                "visual_los_error_deg": _angle_deg(visual_los, truth_los),
+            }
+        )
+    return metrics
+
+
 def _load_summary(path: Path, label: str) -> list[CaseRow]:
     if not path.exists():
         return []
@@ -268,43 +355,52 @@ def _detail_table(rows: list[CaseRow]) -> str:
 def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
     sample = _first_sample(rows)
     meta = _first_meta(rows).get("args", {})
+
+    def cfg(key: str, default: object = "") -> object:
+        value = sample.get(key, "")
+        if value != "":
+            return value
+        return meta.get(key, default)
+
     return "\n".join(
         [
             "|参数|值|",
             "|---|---|",
             f"|stamp|`{stamp}`|",
             f"|settings|`{meta.get('settings_path', sample.get('settings_path', ''))}`|",
-            f"|拦截机|`PX4 SITL / {sample.get('px4_command_mode', '')}`|",
-            f"|目标 actor|`{sample.get('intruder_actor_name', '')}`|",
-            f"|actor asset|`{sample.get('intruder_actor_asset', '')}`|",
-            f"|actor scale|`{sample.get('intruder_actor_scale', '')}`|",
-            f"|检测源|`{sample.get('detector_source', '')}`|",
-            f"|YOLO model|`{sample.get('yolo_model', '')}`|",
-            f"|YOLO device|`{sample.get('yolo_device', '')}` runtime `{sample.get('yolo_runtime_device', '')}`|",
-            f"|YOLO conf / iou / imgsz|`{sample.get('yolo_conf', '')}` / `{sample.get('yolo_iou', '')}` / `{sample.get('yolo_imgsz', '')}`|",
-            f"|tracker|`{sample.get('yolo_tracker', '')}`，single target `{sample.get('yolo_single_target_mode', '')}`|",
-            f"|相机外参|`x={sample.get('camera_x', '')}, y={sample.get('camera_y', '')}, z={sample.get('camera_z', '')}`|",
-            f"|FOV / resolution|`{sample.get('fov_deg', '')} deg`, `{sample.get('image_width_runtime', sample.get('width', ''))}x{sample.get('image_height_runtime', sample.get('height', ''))}`|",
-            f"|高度差|`{sample.get('intruder_altitude_offset_m', '')} m`|",
-            f"|目标速度 / speed ratio|`{sample.get('intruder_speed', '')} m/s` / `{sample.get('speed_ratio', '')}`|",
-            f"|rate_hz|`{sample.get('rate_hz', '')}`|",
-            f"|guidance output|`{sample.get('guidance_output_mode', '')}`|",
-            f"|max guidance accel|`{sample.get('max_guidance_accel_mps2', '')} m/s^2`|",
-            f"|min speed ratio|`{sample.get('min_speed_ratio', '')}`|",
-            f"|thrust model|`{sample.get('thrust_model', '')}`, mass `{sample.get('vehicle_mass_kg', '')} kg`, max total thrust `{sample.get('vehicle_max_total_thrust_n', '')} N`|",
-            f"|body-rate tilt / attitude P|`{sample.get('body_rate_max_tilt_deg', '')} deg` / `{sample.get('body_rate_attitude_p', '')}`|",
-            f"|body-rate roll/pitch max rate|`{sample.get('body_rate_max_roll_rate_deg', '')}` / `{sample.get('body_rate_max_pitch_rate_deg', '')} deg/s`|",
-            f"|body-rate thrust|min/hover/max `{sample.get('body_rate_min_thrust', '')}` / `{sample.get('body_rate_hover_thrust', '')}` / `{sample.get('body_rate_max_thrust', '')}`|",
-            f"|body-rate speed hold|gain `{sample.get('body_rate_speed_hold_gain', '')}`, max accel `{sample.get('body_rate_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('body_rate_total_accel_limit_mps2', '')} m/s^2`|",
-            f"|attitude tilt / yaw lookahead|`{sample.get('attitude_max_tilt_deg', '')} deg` / `{sample.get('attitude_yaw_lookahead_s', '')} s`|",
-            f"|attitude thrust|min/hover/max `{sample.get('attitude_min_thrust', '')}` / `{sample.get('attitude_hover_thrust', '')}` / `{sample.get('attitude_max_thrust', '')}`|",
-            f"|attitude speed hold|gain `{sample.get('attitude_speed_hold_gain', '')}`, max accel `{sample.get('attitude_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('attitude_total_accel_limit_mps2', '')} m/s^2`|",
-            f"|LOS filter|`{sample.get('los_filter_enabled', '')}`|",
-            f"|LOS KF q lambda / lambda_dot|`{sample.get('los_filter_process_lambda', '')}` / `{sample.get('los_filter_process_lambda_dot', '')}`|",
-            f"|LOS KF r / innovation gate|`{sample.get('los_filter_measurement_noise', '')}` / `{sample.get('los_filter_innovation_reject', '')}`|",
-            f"|LOS terminal gate / delay|`{sample.get('los_filter_terminal_innovation_reject', '')}` / `{sample.get('los_delay_compensation_s', '')} s`|",
+            f"|拦截机|`PX4 SITL / {cfg('px4_command_mode')}`|",
+            f"|目标 actor|`{cfg('intruder_actor_name')}`|",
+            f"|actor asset|`{cfg('intruder_actor_asset')}`|",
+            f"|actor scale|`{cfg('intruder_actor_scale')}`|",
+            f"|检测源|`{cfg('detector_source')}`|",
+            f"|YOLO model|`{cfg('yolo_model')}`|",
+            f"|YOLO device|`{cfg('yolo_device')}` runtime `{sample.get('yolo_runtime_device', '')}`|",
+            f"|YOLO conf / iou / imgsz|`{cfg('yolo_conf')}` / `{cfg('yolo_iou')}` / `{cfg('yolo_imgsz')}`|",
+            f"|tracker|`{cfg('yolo_tracker')}`，single target `{cfg('yolo_single_target_mode')}`|",
+            f"|相机外参|`x={cfg('camera_x')}, y={cfg('camera_y')}, z={cfg('camera_z')}`|",
+            f"|FOV / resolution|`{cfg('fov_deg')} deg`, `{sample.get('image_width_runtime', sample.get('width', ''))}x{sample.get('image_height_runtime', sample.get('height', ''))}`|",
+            f"|高度差|`{cfg('intruder_altitude_offset_m')} m`|",
+            f"|目标速度 / speed ratio|`{cfg('intruder_speed')} m/s` / `{cfg('speed_ratio')}`|",
+            f"|rate_hz|`{cfg('rate_hz')}`|",
+            f"|guidance output|`{cfg('guidance_output_mode')}`|",
+            f"|max guidance accel|`{cfg('max_guidance_accel_mps2')} m/s^2`|",
+            f"|min speed ratio|`{cfg('min_speed_ratio')}`|",
+            f"|thrust model|`{cfg('thrust_model')}`, mass `{cfg('vehicle_mass_kg')} kg`, max total thrust `{cfg('vehicle_max_total_thrust_n')} N`|",
+            f"|body-rate tilt / attitude P|`{cfg('body_rate_max_tilt_deg')} deg` / `{cfg('body_rate_attitude_p')}`|",
+            f"|body-rate roll/pitch max rate|`{cfg('body_rate_max_roll_rate_deg')}` / `{cfg('body_rate_max_pitch_rate_deg')} deg/s`|",
+            f"|body-rate thrust|min/hover/max `{cfg('body_rate_min_thrust')}` / `{cfg('body_rate_hover_thrust')}` / `{cfg('body_rate_max_thrust')}`|",
+            f"|body-rate speed hold|gain `{cfg('body_rate_speed_hold_gain')}`, max accel `{cfg('body_rate_speed_hold_max_accel_mps2')} m/s^2`, total limit `{cfg('body_rate_total_accel_limit_mps2')} m/s^2`|",
+            f"|attitude tilt / yaw lookahead|`{cfg('attitude_max_tilt_deg')} deg` / `{cfg('attitude_yaw_lookahead_s')} s`|",
+            f"|attitude thrust|min/hover/max `{cfg('attitude_min_thrust')}` / `{cfg('attitude_hover_thrust')}` / `{cfg('attitude_max_thrust')}`|",
+            f"|attitude speed hold|gain `{cfg('attitude_speed_hold_gain')}`, max accel `{cfg('attitude_speed_hold_max_accel_mps2')} m/s^2`, total limit `{cfg('attitude_total_accel_limit_mps2')} m/s^2`|",
+            f"|LOS filter|`{cfg('los_filter_enabled', meta.get('los_filter', ''))}`|",
+            f"|LOS KF q lambda / lambda_dot|`{cfg('los_filter_process_lambda')}` / `{cfg('los_filter_process_lambda_dot')}`|",
+            f"|LOS KF r / innovation gate|`{cfg('los_filter_measurement_noise')}` / `{cfg('los_filter_innovation_reject')}`|",
+            f"|LOS terminal gate / delay|`{cfg('los_filter_terminal_innovation_reject')}` / `{cfg('los_delay_compensation_s')} s`|",
+            f"|terminal image KF|predict `{cfg('terminal_image_kf_max_predict_s')} s`, reject `{cfg('terminal_image_kf_innovation_reject_rad')} rad`, soft reject `{cfg('terminal_image_kf_soft_reject_predict', False)}`|",
+            f"|terminal image KF dynamics|accel noise `{cfg('terminal_image_kf_accel_noise_rad_s2')} rad/s^2`, max rate `{cfg('terminal_image_kf_max_rate_rad_s')} rad/s`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
-            f"|bbox noise|`{sample.get('bbox_noise_enabled', '')}`|",
+            f"|bbox noise|`{cfg('bbox_noise_enabled', meta.get('bbox_noise', ''))}`|",
         ]
     )
 
@@ -374,6 +470,109 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
         plt.close(fig)
         images[range_m] = path
     return images
+
+
+def plot_shadow_summary(rows: list[CaseRow], output: Path) -> None:
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    ax_los, ax_shadow, ax_det, ax_near = axes.flat
+    for label in ("TTC", "VM"):
+        group = [row for row in rows if row.label == label]
+        if not group:
+            continue
+        x_values: list[float] = []
+        los_p95: list[float] = []
+        shadow_vc_p95: list[float] = []
+        shadow_vm_p95: list[float] = []
+        near_det: list[float] = []
+        near_no_det: list[float] = []
+        for row in group:
+            samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+            if not samples:
+                continue
+            shadow = _camera_shadow_metrics(samples)
+            nearest = min(samples, key=lambda sample: _float(sample.get("range"), 1.0e9))
+            nearest_t = _float(nearest.get("t"))
+            near_indices = [
+                index
+                for index, sample in enumerate(samples)
+                if math.isfinite(nearest_t) and abs(_float(sample.get("t")) - nearest_t) <= 1.0
+            ]
+            x_values.append(row.start_range_m)
+            los_p95.append(_percentile([item["visual_los_error_deg"] for item in shadow], 0.95))
+            shadow_vc_p95.append(_percentile([item["shadow_vc_n_req_g"] for item in shadow], 0.95))
+            shadow_vm_p95.append(_percentile([item["shadow_vm_n_req_g"] for item in shadow], 0.95))
+            if near_indices:
+                detected = sum(1 for index in near_indices if _float(samples[index].get("detected"), 0.0) > 0.0)
+                near_det.append(100.0 * detected / len(near_indices))
+                near_no_det.append(float(len(near_indices) - detected))
+            else:
+                near_det.append(math.nan)
+                near_no_det.append(math.nan)
+        ax_los.plot(x_values, los_p95, marker="o", label=LABELS[label])
+        ax_shadow.plot(x_values, shadow_vc_p95, marker="o", label=f"{label} N*Vc")
+        ax_shadow.plot(x_values, shadow_vm_p95, marker="x", linestyle="--", label=f"{label} N*Vm")
+        ax_det.plot(x_values, near_det, marker="o", label=LABELS[label])
+        ax_near.plot(x_values, near_no_det, marker="o", label=LABELS[label])
+    ax_los.set_title("Visual LOS vs camera-truth LOS P95")
+    ax_los.set_ylabel("deg")
+    ax_shadow.set_title("Camera-truth shadow PNG required overload P95")
+    ax_shadow.set_ylabel("g")
+    ax_det.set_title("Detection ratio near closest approach")
+    ax_det.set_ylabel("%")
+    ax_near.set_title("No-detection frames near closest approach")
+    ax_near.set_ylabel("frames in +/-1s")
+    for ax in axes.flat:
+        ax.set_xlabel("Initial horizontal range / m")
+        ax.grid(True, alpha=0.3)
+        ax.legend(fontsize=8)
+    fig.tight_layout()
+    fig.savefig(output, dpi=170)
+    plt.close(fig)
+
+
+def _shadow_diagnostics_markdown(rows: list[CaseRow]) -> str:
+    lines = [
+        "影子测试不参与导引，只用日志中的相机光心 `camera_world_*` 与目标真值位置离线计算经典 `N*Vc` 和固定 `N*Vm` PNG 理论需用过载，并和视觉 LOS、检测连续性对齐。",
+        "",
+        "|组别|距离m|碰撞|最小距离m|最近点检测率|最近点无检测帧|视觉LOS误差P95|影子N*Vc P95 g|影子N*Vm P95 g|视觉需用P95 g|实际过载max g|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+    ]
+    for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
+        samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+        if not samples:
+            continue
+        shadow = _camera_shadow_metrics(samples)
+        nearest = min(samples, key=lambda sample: _float(sample.get("range"), 1.0e9))
+        nearest_t = _float(nearest.get("t"))
+        near_indices = [
+            index
+            for index, sample in enumerate(samples)
+            if math.isfinite(nearest_t) and abs(_float(sample.get("t")) - nearest_t) <= 1.0
+        ]
+        if near_indices:
+            detected = sum(1 for index in near_indices if _float(samples[index].get("detected"), 0.0) > 0.0)
+            near_detect_ratio = 100.0 * detected / len(near_indices)
+            near_no_detection = len(near_indices) - detected
+            near_los_p95 = _percentile([shadow[index]["visual_los_error_deg"] for index in near_indices], 0.95)
+        else:
+            near_detect_ratio = math.nan
+            near_no_detection = 0
+            near_los_p95 = math.nan
+        lines.append(
+            f"|{row.label}|{row.start_range_m:.0f}|{1 if row.hit else 0}|{row.min_range_m:.3f}|"
+            f"{near_detect_ratio:.1f}%|{near_no_detection}/{len(near_indices)}|{near_los_p95:.1f}|"
+            f"{_percentile([item['shadow_vc_n_req_g'] for item in shadow], 0.95):.2f}|"
+            f"{_percentile([item['shadow_vm_n_req_g'] for item in shadow], 0.95):.2f}|"
+            f"{_percentile(_guidance_load(samples), 0.95):.2f}|{row.max_load_factor_fd_g:.2f}|"
+        )
+    lines.extend(
+        [
+            "",
+            "- 如果影子 `N*Vc` P95 很低但视觉 LOS 误差和无检测帧较高，优先定位检测连续性、LOS KF/外推和 frame-centering。",
+            "- 如果视觉需用过载高而实际过载低，优先定位 PX4 姿态/推力响应、倾角限制和 speed-hold 混合项。",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def _case_notes(rows: list[CaseRow]) -> str:
@@ -493,10 +692,308 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
     return "\n".join(lines)
 
 
+def _png_control_flow_markdown() -> str:
+    return """当前批测默认 `guidance_output=accel_attitude`、`px4_command_mode=mavlink_attitude`，因此实际链路是“PNG 需用加速度 -> 姿态四元数 + thrust”，不是直接向 PX4 发送角速度。项目中仍保留 `accel_body_rate + mavlink_body_rate`，该模式才是“PNG 需用加速度 -> 机体系角速度 p/q/r + thrust”。
+
+### 9.1 视觉量到 6D LOS
+
+YOLOv8 + ByteTrack 输出 `bbox center=(u,v)`、`bbox area`、`track_id` 和置信度。bbox 中心先通过相机内参转换成相机坐标系单位射线：
+
+```text
+x_n = (u - cx) / fx
+y_n = (v - cy) / fy
+lambda_C = normalize([x_n, y_n, 1])
+```
+
+再使用相机外参和机体姿态转到惯性系：
+
+```text
+lambda_I = normalize(R_IB * R_BC * lambda_C)
+```
+
+其中 `R_BC` 是相机到机体的固定安装旋转，`R_IB` 是机体到惯性系的姿态。LOS 角速度由相邻 LOS 差分并投影到垂直 LOS 的平面得到：
+
+```text
+lambda_dot = project_perpendicular((lambda_I[k] - lambda_I[k-1]) / dt, lambda_I[k])
+omega_LOS = lambda_I x lambda_dot
+```
+
+启用 LOS KF 时，滤波器输出平滑后的 `lambda_I` 和 `omega_LOS`；末端允许更松的 innovation gate，避免目标仍在检测框内时 PNG 加速度被过早清零。
+
+### 9.2 PNG 生成需用加速度和需用过载
+
+两种导引的共同输出都是导引层需用加速度 `a_cmd`：
+
+```text
+a_cmd = guidance_gain * (omega_LOS x lambda_I)
+a_cmd = clip_norm(a_cmd, max_guidance_accel_mps2)
+n_cmd_g = ||a_cmd|| / g
+```
+
+`omega_LOS x lambda_I` 给出垂直于视线的修正方向；`n_cmd_g` 是导引层需用过载，只表示 PNG 希望产生的机动强度。它不等于无人机真实过载，真实过载还受 PX4 姿态控制、推力限制、速度保持项、视觉帧率和 frame centering 限速影响。
+
+TTC 组使用 bbox 面积扩张估计 `TTC ~= A / A_dot`，当前只把 TTC 用作增益调度和末端触发；当 TTC 无效但 LOS 有效时，仍保留 LOS/V_m soft guidance。V_m 组不使用 TTC，直接采用固定：
+
+```text
+guidance_gain = N * V_m
+V_m = speed_ratio * intruder_speed
+```
+
+### 9.3 与速度保持项合成
+
+在 `accel_attitude` 和 `accel_body_rate` 中，PNG 横向修正不再积分成速度指令。速度只作为沿 LOS 的保速参考：
+
+```text
+v_ref = speed_cap * lambda_I
+a_speed_hold = K_v * (v_ref - v_current)
+a_control_I = clip_norm(a_cmd + a_speed_hold, total_accel_limit)
+```
+
+`a_cmd` 是纯 PNG 需用加速度；`a_speed_hold` 是工程闭环项，用于避免飞机速度掉到无法追击或过度横向漂移。报告中的 `n_cmd_g` 仍来自 `a_cmd`，而 `attitude_control_accel_*` / `body_rate_control_accel_*` 记录合成后的控制加速度。
+
+### 9.4 加速度到姿态四元数，本轮默认链路
+
+当前批测使用 `accel_attitude + mavlink_attitude`。程序先由图像中心误差和 LOS 水平投影得到期望航向：
+
+```text
+yaw_sp = current_yaw + yaw_rate_cmd * attitude_yaw_lookahead_s
+```
+
+随后把惯性系合成加速度旋转到期望 yaw 对应的水平坐标系：
+
+```text
+a_yaw_body = R_z(yaw_sp)^T * a_control_I
+```
+
+再用小角度近似得到姿态 setpoint：
+
+```text
+pitch_sp = -a_yaw_body.x / g
+roll_sp  =  a_yaw_body.y / g
+```
+
+roll/pitch 按 `attitude_max_tilt_deg` 限幅，然后和 `yaw_sp` 合成为姿态四元数：
+
+```text
+R_sp = R_z(yaw_sp) * R_y(pitch_sp) * R_x(roll_sp)
+q_sp = quat(R_sp)
+```
+
+垂向加速度通过 AirSim GenericQuad 质量和最大推力参数换算成归一化 thrust 的线性近似：
+
+```text
+thrust = hover_thrust + thrust_gain * (-a_control_I.z / g)
+thrust = clamp(thrust, min_thrust, max_thrust)
+```
+
+最后通过 MAVLink `SET_ATTITUDE_TARGET` 发送：
+
+```text
+type_mask = BODY_ROLL_RATE_IGNORE | BODY_PITCH_RATE_IGNORE | BODY_YAW_RATE_IGNORE
+q = q_sp
+body rates = 0
+thrust = thrust
+```
+
+PX4 在 Offboard 下跟踪姿态四元数和 thrust，内部姿态/角速度控制器再驱动电机模型。
+
+### 9.5 加速度到机体系角速度，备用链路
+
+若显式设置 `GUIDANCE_OUTPUT_MODE=accel_body_rate`、`PX4_COMMAND_MODE=mavlink_body_rate`，程序会先把 `a_control_I` 转到机体系：
+
+```text
+a_control_B = R_BI * a_control_I
+```
+
+再用小角度近似得到期望 roll/pitch：
+
+```text
+roll_sp  =  body_rate_roll_gain  * a_control_B.y / g
+pitch_sp = -body_rate_pitch_gain * a_control_B.x / g
+```
+
+姿态误差通过比例环变成机体系角速度：
+
+```text
+p_cmd = K_att * (roll_sp  - roll)
+q_cmd = K_att * (pitch_sp - pitch)
+r_cmd = yaw_rate_cmd
+```
+
+再按最大 roll/pitch/yaw rate 限幅。MAVLink 发送仍使用 `SET_ATTITUDE_TARGET`，但 `type_mask` 忽略姿态四元数，只让 PX4 接收 `body_roll_rate/body_pitch_rate/body_yaw_rate` 和 thrust。
+
+### 9.6 本报告中过载曲线的含义
+
+- `需用过载 n_cmd_g`：由 PNG 的 `a_cmd` 直接换算，是导引层希望产生的过载。
+- `实际过载 max g`：由拦截机真实速度差分估计，体现 PX4 和 AirSim 动力学真正实现出的机动。
+- `速度指令差分 P95 g`：兼容旧速度输出模式的指标，本轮 `accel_attitude` 下主要作为参考，不代表直接发送给 PX4 的控制量。
+
+因此，若 `n_cmd_g` 很平滑但实际过载不足，问题通常在姿态/推力响应、速度保持、限幅或视觉低帧率；若 `n_cmd_g` 本身突变，则应优先检查 LOS/KF、bbox 裁切、丢检外推和 frame guard 状态切换。"""
+
+
+def _export_docx(docx_path: Path | None = None) -> Path | None:
+    try:
+        from docx import Document
+        from docx.enum.section import WD_ORIENT
+        from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_TABLE_ALIGNMENT
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+        from docx.oxml import OxmlElement
+        from docx.oxml.ns import qn
+        from docx.shared import Cm, Pt
+    except ImportError:
+        print("python-docx not installed; skip docx export")
+        return None
+
+    output_path = docx_path or REPORT_PATH.with_suffix(".docx")
+    text = REPORT_PATH.read_text(encoding="utf-8")
+    doc = Document()
+    section = doc.sections[0]
+    section.orientation = WD_ORIENT.PORTRAIT
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.top_margin = Cm(1.5)
+    section.bottom_margin = Cm(1.5)
+    section.left_margin = Cm(1.3)
+    section.right_margin = Cm(1.3)
+
+    for style_name in ("Normal", "Body Text"):
+        if style_name in doc.styles:
+            style = doc.styles[style_name]
+            style.font.name = "Arial"
+            style._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+            style.font.size = Pt(10.5)
+    for level in range(1, 5):
+        style_name = f"Heading {level}"
+        if style_name in doc.styles:
+            style = doc.styles[style_name]
+            style.font.name = "Arial"
+            style._element.rPr.rFonts.set(qn("w:eastAsia"), "Microsoft YaHei")
+            style.font.bold = True
+
+    heading_re = re.compile(r"^(#{1,6})\s+(.*)$")
+    image_re = re.compile(r"^!\[([^\]]*)\]\(([^)]+)\)\s*$")
+    token_re = re.compile(r"(`[^`]+`|\*\*[^*]+\*\*)")
+
+    def add_runs(paragraph, value: str) -> None:
+        pos = 0
+        for match in token_re.finditer(value):
+            if match.start() > pos:
+                paragraph.add_run(value[pos : match.start()])
+            token = match.group(0)
+            if token.startswith("`"):
+                run = paragraph.add_run(token[1:-1])
+                run.font.name = "Consolas"
+                run._element.rPr.rFonts.set(qn("w:eastAsia"), "Consolas")
+            else:
+                run = paragraph.add_run(token[2:-2])
+                run.bold = True
+            pos = match.end()
+        if pos < len(value):
+            paragraph.add_run(value[pos:])
+
+    def set_cell_text(cell, value: str, *, bold: bool = False) -> None:
+        cell.text = ""
+        paragraph = cell.paragraphs[0]
+        paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        run = paragraph.add_run(value.replace("`", ""))
+        run.bold = bold
+        run.font.size = Pt(8)
+        cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
+    def shade(cell) -> None:
+        tc_pr = cell._tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), "D9EAF7")
+        tc_pr.append(shd)
+
+    lines = text.splitlines()
+    index = 0
+    in_code = False
+    code_lines: list[str] = []
+    while index < len(lines):
+        line = lines[index].rstrip()
+        if line.startswith("```"):
+            if in_code:
+                paragraph = doc.add_paragraph()
+                run = paragraph.add_run("\n".join(code_lines))
+                run.font.name = "Consolas"
+                run._element.rPr.rFonts.set(qn("w:eastAsia"), "Consolas")
+                run.font.size = Pt(9)
+                code_lines = []
+                in_code = False
+            else:
+                in_code = True
+            index += 1
+            continue
+        if in_code:
+            code_lines.append(line)
+            index += 1
+            continue
+        if not line:
+            index += 1
+            continue
+        heading = heading_re.match(line)
+        if heading:
+            level = min(len(heading.group(1)), 4)
+            doc.add_heading(heading.group(2), level=level)
+            index += 1
+            continue
+        image = image_re.match(line)
+        if image:
+            label, rel = image.groups()
+            path = REPORT_PATH.parent / rel
+            if path.exists():
+                paragraph = doc.add_paragraph()
+                paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                paragraph.add_run().add_picture(str(path), width=Cm(18.0))
+                if label:
+                    caption = doc.add_paragraph(label)
+                    caption.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            index += 1
+            continue
+        if line.startswith("|"):
+            table_lines: list[str] = []
+            while index < len(lines) and lines[index].strip().startswith("|"):
+                table_lines.append(lines[index].strip())
+                index += 1
+            raw_rows = [[cell.strip() for cell in item.strip("|").split("|")] for item in table_lines]
+            if len(raw_rows) >= 2:
+                body_rows = [raw_rows[0]] + raw_rows[2:]
+                cols = max(len(row) for row in body_rows)
+                table = doc.add_table(rows=len(body_rows), cols=cols)
+                table.alignment = WD_TABLE_ALIGNMENT.CENTER
+                table.style = "Table Grid"
+                for row_i, row in enumerate(body_rows):
+                    for col_i in range(cols):
+                        cell = table.cell(row_i, col_i)
+                        set_cell_text(cell, row[col_i] if col_i < len(row) else "", bold=row_i == 0)
+                        if row_i == 0:
+                            shade(cell)
+                doc.add_paragraph()
+            continue
+        if line.startswith("- "):
+            paragraph = doc.add_paragraph(style="List Bullet")
+            add_runs(paragraph, line[2:])
+            index += 1
+            continue
+        paragraph = doc.add_paragraph()
+        add_runs(paragraph, line)
+        index += 1
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    doc.save(output_path)
+    with ZipFile(output_path) as archive:
+        media = [name for name in archive.namelist() if name.startswith("word/media/")]
+    print(f"docx={output_path}")
+    print(f"docx_media_count={len(media)}")
+    return output_path
+
+
 def write_report(
     rows: list[CaseRow],
     stamp: str,
     summary_img: Path,
+    shadow_summary_img: Path,
     per_distance: dict[float, Path],
     *,
     title: str,
@@ -544,7 +1041,17 @@ def write_report(
 
 {_diagnostics_markdown(rows)}
 
-## 8. 结论
+## 8. 相机光心真值影子测试诊断
+
+![shadow_summary]({_rel(shadow_summary_img)})
+
+{_shadow_diagnostics_markdown(rows)}
+
+## 9. PNG 到过载、姿态和角速度的控制流程
+
+{_png_control_flow_markdown()}
+
+## 10. 结论
 
 {_case_notes(rows)}
 """
@@ -558,6 +1065,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--asset-dir", default=str(ASSET_DIR))
     parser.add_argument("--title", default=DEFAULT_TITLE)
     parser.add_argument("--range-note", default=DEFAULT_RANGE_NOTE)
+    parser.add_argument("--docx-path", default="")
+    parser.add_argument("--no-docx", action="store_true")
     return parser.parse_args()
 
 
@@ -571,11 +1080,15 @@ def main() -> None:
         raise SystemExit(f"no rows found for stamp {args.stamp}")
     ASSET_DIR.mkdir(parents=True, exist_ok=True)
     summary_img = ASSET_DIR / f"summary_{args.stamp}.png"
+    shadow_summary_img = ASSET_DIR / f"shadow_summary_{args.stamp}.png"
     plot_summary(rows, summary_img)
+    plot_shadow_summary(rows, shadow_summary_img)
     per_distance = plot_per_distance(rows, ASSET_DIR)
-    write_report(rows, args.stamp, summary_img, per_distance, title=args.title, range_note=args.range_note)
+    write_report(rows, args.stamp, summary_img, shadow_summary_img, per_distance, title=args.title, range_note=args.range_note)
     print(f"report={REPORT_PATH}")
     print(f"stamp={args.stamp}")
+    if not args.no_docx:
+        _export_docx(_resolve(args.docx_path) if args.docx_path else REPORT_PATH.with_suffix(".docx"))
 
 
 if __name__ == "__main__":
