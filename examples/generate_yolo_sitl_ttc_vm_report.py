@@ -291,13 +291,18 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|guidance output|`{sample.get('guidance_output_mode', '')}`|",
             f"|max guidance accel|`{sample.get('max_guidance_accel_mps2', '')} m/s^2`|",
             f"|min speed ratio|`{sample.get('min_speed_ratio', '')}`|",
+            f"|thrust model|`{sample.get('thrust_model', '')}`, mass `{sample.get('vehicle_mass_kg', '')} kg`, max total thrust `{sample.get('vehicle_max_total_thrust_n', '')} N`|",
             f"|body-rate tilt / attitude P|`{sample.get('body_rate_max_tilt_deg', '')} deg` / `{sample.get('body_rate_attitude_p', '')}`|",
             f"|body-rate roll/pitch max rate|`{sample.get('body_rate_max_roll_rate_deg', '')}` / `{sample.get('body_rate_max_pitch_rate_deg', '')} deg/s`|",
             f"|body-rate thrust|min/hover/max `{sample.get('body_rate_min_thrust', '')}` / `{sample.get('body_rate_hover_thrust', '')}` / `{sample.get('body_rate_max_thrust', '')}`|",
             f"|body-rate speed hold|gain `{sample.get('body_rate_speed_hold_gain', '')}`, max accel `{sample.get('body_rate_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('body_rate_total_accel_limit_mps2', '')} m/s^2`|",
+            f"|attitude tilt / yaw lookahead|`{sample.get('attitude_max_tilt_deg', '')} deg` / `{sample.get('attitude_yaw_lookahead_s', '')} s`|",
+            f"|attitude thrust|min/hover/max `{sample.get('attitude_min_thrust', '')}` / `{sample.get('attitude_hover_thrust', '')}` / `{sample.get('attitude_max_thrust', '')}`|",
+            f"|attitude speed hold|gain `{sample.get('attitude_speed_hold_gain', '')}`, max accel `{sample.get('attitude_speed_hold_max_accel_mps2', '')} m/s^2`, total limit `{sample.get('attitude_total_accel_limit_mps2', '')} m/s^2`|",
             f"|LOS filter|`{sample.get('los_filter_enabled', '')}`|",
             f"|LOS KF q lambda / lambda_dot|`{sample.get('los_filter_process_lambda', '')}` / `{sample.get('los_filter_process_lambda_dot', '')}`|",
             f"|LOS KF r / innovation gate|`{sample.get('los_filter_measurement_noise', '')}` / `{sample.get('los_filter_innovation_reject', '')}`|",
+            f"|LOS terminal gate / delay|`{sample.get('los_filter_terminal_innovation_reject', '')}` / `{sample.get('los_delay_compensation_s', '')} s`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
             f"|bbox noise|`{sample.get('bbox_noise_enabled', '')}`|",
         ]
@@ -396,6 +401,9 @@ def _case_notes(rows: list[CaseRow]) -> str:
     lines.append(
         "- `accel_body_rate` 模式下 `n_cmd_g` 仍表示纯 PNG 需用过载；实际发送给 PX4 的是 `SET_ATTITUDE_TARGET` 机体系 `p/q/r` 角速度和归一化 thrust，日志中的 `body_rate_control_accel_*` 额外包含沿 LOS 的速度保持加速度。"
     )
+    lines.append(
+        "- `accel_attitude` 模式下 `n_cmd_g` 同样表示纯 PNG 需用过载；实际发送给 PX4 的是 `SET_ATTITUDE_TARGET` 姿态四元数和归一化 thrust，日志中的 `attitude_control_accel_*` 记录姿态指令生成前的合成加速度。"
+    )
     return "\n".join(lines)
 
 
@@ -425,16 +433,63 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
             f"|{row.label}|{row.start_range_m:.0f}|{_float(nearest.get('range')):.3f}|"
             f"`{_reason(nearest)}`|{common}|{det_ratio:.1f}%|{valid_ratio:.1f}%|"
         )
-    lines.extend(
-        [
-            "",
-            "- 放宽后的 LOS KF 参数为 `q_lambda=5e-4`、`q_lambda_dot=2e-2`、`r=8e-3`、`innovation_reject=0.75`。相较原始门限，它减少了末端 LOS 被直接判 invalid 的概率，但没有完全消除该问题。",
-            "- `TTC 70m` 最近点仍是 `los_innovation_reject`，说明末端 LOS 变化速度和 bbox 中心跳变仍可能超过当前 6D LOS KF 的一致性门限；这类失败不是加速度输出通道失效，而是导引量被质量门断开。",
-            "- `TTC 60m` 的检测率只有约一半，最近点虽然仍有效，但之后长时间 `no_detection`，拦截机错过后继续飞离；这更像视场/检测连续性问题。",
-            "- `VM` 组只有 `80m` 命中。固定 `N * V_m` 的需用过载基本保持在上限附近，缺少 TTC 对末端速度和增益的调度，近距丢检或外推时更容易错过碰撞判定窗口。",
-            "- 当前实际过载峰值低于导引需用过载，主要受 PX4 姿态角/角速度/推力限制、YOLO 约 9 FPS 采样、以及 frame centering 限制横向速度共同影响；因此日志中的 `n_cmd_g` 是导引层需求，不等于机体真实已经实现的过载。",
-        ]
-    )
+    sample = _first_sample(rows)
+    near_misses = [row for row in rows if not row.hit and math.isfinite(row.min_range_m) and row.min_range_m <= 3.0]
+    low_detection = [row for row in rows if row.frames > 0 and row.detected_frames / max(1, row.frames) < 0.6]
+    nearest_rejects: list[str] = []
+    actual_peak: list[float] = []
+    required_p95: list[float] = []
+    for row in rows:
+        samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+        if not samples:
+            continue
+        nearest = min(samples, key=lambda sample_row: _float(sample_row.get("range"), 1.0e9))
+        reason = _reason(nearest)
+        if not row.hit and reason not in {"valid", ""}:
+            nearest_rejects.append(f"{row.label} {row.start_range_m:.0f}m:`{reason}`")
+        actual_peak.append(row.max_load_factor_fd_g)
+        required_p95.append(_percentile(_guidance_load(samples), 0.95))
+
+    dynamic_lines = [
+        "",
+        (
+            "- LOS KF 参数："
+            f"`q_lambda={sample.get('los_filter_process_lambda', '')}`、"
+            f"`q_lambda_dot={sample.get('los_filter_process_lambda_dot', '')}`、"
+            f"`r={sample.get('los_filter_measurement_noise', '')}`、"
+            f"`innovation_reject={sample.get('los_filter_innovation_reject', '')}`、"
+            f"`terminal_reject={sample.get('los_filter_terminal_innovation_reject', '')}`。"
+        ),
+    ]
+    if near_misses:
+        dynamic_lines.append(
+            "- 未命中但最近距离小于等于 3m 的工况："
+            + "，".join(f"{row.label} {row.start_range_m:.0f}m({row.min_range_m:.3f}m)" for row in near_misses)
+            + "。这些工况已接近目标，但没有触发 AirSim 碰撞判定，后续应重点看末端视场保持、外推和碰撞几何。"
+        )
+    if low_detection:
+        dynamic_lines.append(
+            "- 检测率低于 60% 的工况："
+            + "，".join(
+                f"{row.label} {row.start_range_m:.0f}m({100.0 * row.detected_frames / max(1, row.frames):.1f}%)"
+                for row in low_detection
+            )
+            + "。这类失败优先归因于 YOLO/ByteTrack 连续性和固定相机视场保持，而不是导引律公式本身。"
+        )
+    if nearest_rejects:
+        dynamic_lines.append(
+            "- 最近点处仍处于降级或无效状态的未命中工况："
+            + "，".join(nearest_rejects)
+            + "。这些样本说明末端质量门、视觉外推和 bbox 裁切处理仍会影响命中窗口。"
+        )
+    if actual_peak and required_p95:
+        actual_mean = sum(value for value in actual_peak if math.isfinite(value)) / max(1, len([value for value in actual_peak if math.isfinite(value)]))
+        required_mean = sum(value for value in required_p95 if math.isfinite(value)) / max(1, len([value for value in required_p95 if math.isfinite(value)]))
+        dynamic_lines.append(
+            f"- 本轮平均实际过载峰值约 `{actual_mean:.2f} g`，平均需用过载 P95 约 `{required_mean:.2f} g`。"
+            "两者不是同一个量：`n_cmd_g` 是导引层需求，实际过载还受 PX4 姿态/推力限制、YOLO 约 9 FPS 采样和 frame centering 限速影响。"
+        )
+    lines.extend(dynamic_lines)
     return "\n".join(lines)
 
 
@@ -459,6 +514,7 @@ def write_report(
 - `VM` 组：`fixed_vm_png`，不使用 TTC，固定 `N * V_m` 导引增益。
 - `accel_integral` 输出模式：导引律先计算 `a_cmd` / `n_cmd_g`，再按当前仿真步长积分为速度 setpoint；这不是直接向 PX4 发送加速度 setpoint。
 - `accel_body_rate` 输出模式：导引律先计算 PNG 需用加速度，再转换为 PX4 `SET_ATTITUDE_TARGET` 机体系角速度 `p/q/r` 和 thrust；速度只作为沿 LOS 保速参考，不再把 PNG 横向修正直接加到速度指令上。
+- `accel_attitude` 输出模式：导引律先计算 PNG 需用加速度，再转换为 PX4 `SET_ATTITUDE_TARGET` 姿态四元数和 thrust；速度只作为沿 LOS 保速参考。
 
 {range_note}
 
