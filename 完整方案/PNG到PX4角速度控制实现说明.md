@@ -175,6 +175,16 @@ v_ref = speed_cap * lambda_I
 --px4-command-mode mavlink_body_rate
 ```
 
+角速度链路现在有两个 profile：
+
+```text
+--body-rate-control-profile legacy
+--body-rate-control-profile v2
+```
+
+- `legacy` 是默认值，保持原来的 roll/pitch 误差比例环和原推力解算方式，方便复现实验。
+- `v2` 是新增的改进链路：四元数姿态误差生成机体系角速度，只使用角速度斜率限制，不再额外加入一阶低通；推力使用向量投影法并预留推力余量。
+
 ### 6.1 合成控制加速度
 
 先在惯性系叠加沿 LOS 的速度保持项：
@@ -198,6 +208,17 @@ a_control_I = clip_norm(a_control_I, body_rate_total_accel_limit_mps2)
 - `body_rate_speed_hold_accel_x/y/z`
 - `body_rate_control_accel_x/y/z`
 - `body_rate_control_accel_norm_mps2`
+- `body_rate_png_scale`
+- `body_rate_speed_hold_scale`
+- `body_rate_frame_guard_active`
+
+在 `v2` 中，如果目标接近画面边缘、bbox 裁切、frame-centering 激活或进入 terminal 状态，会降低 `a_cmd` 和速度保持项的权重，使控制优先级偏向“先看住目标，再拦截”。默认参数为：
+
+```text
+body_rate_v2_guard_error_ratio = 0.55
+body_rate_v2_guard_png_scale = 0.60
+body_rate_v2_guard_speed_hold_scale = 0.45
+```
 
 ### 6.2 惯性系加速度转机体系
 
@@ -218,7 +239,15 @@ R_BI = R_IB^T
 
 ### 6.3 加速度转期望姿态角
 
-当前用小角度近似把横向加速度转成 roll/pitch setpoint：
+两种 profile 都先把控制加速度转换为期望 roll/pitch setpoint。实现不是直接线性使用 `a/g`，而是先构造需要的机体 Z 轴比力：
+
+```text
+specific_force_B = [-a_control_B.x, -a_control_B.y, g - a_control_B.z]
+roll_sp  = atan2(-specific_force_B.y, specific_force_B.z)
+pitch_sp = atan2( specific_force_B.x, specific_force_B.z)
+```
+
+小角度时近似等价于：
 
 ```text
 roll_sp  = body_rate_roll_gain  * a_control_B.y / g
@@ -239,7 +268,7 @@ pitch_sp = clamp(pitch_sp, -body_rate_max_tilt, body_rate_max_tilt)
 
 ### 6.4 姿态误差转角速度
 
-用比例环把期望姿态角变成机体系角速度：
+`legacy` 用 roll/pitch 欧拉角误差比例环把期望姿态角变成机体系角速度：
 
 ```text
 p_cmd = K_att * (roll_sp  - roll)
@@ -273,18 +302,78 @@ r_cmd = clamp(r_cmd, -max_yaw_rate,             max_yaw_rate)
 - `body_rate_q_deg_s`
 - `body_rate_r_deg_s`
 
-### 6.5 垂直加速度转 thrust
+`v2` 使用四元数姿态误差：
 
 ```text
-thrust = body_rate_hover_thrust + body_rate_thrust_gain * (-a_control_I.z / g)
+q_current = quat(roll, pitch, yaw)
+q_desired = quat(roll_sp, pitch_sp, yaw)
+q_err = inverse(q_current) * q_desired
+e_att = 2 * q_err.xyz
+
+p_raw = Kp_roll  * e_att.x
+q_raw = Kp_pitch * e_att.y
+r_raw = Kp_yaw   * e_att.z + yaw_rate_cmd
+```
+
+随后做角速度限幅和斜率限制：
+
+```text
+p/q = clamp(p/q, -body_rate_v2_max_pq_rate, body_rate_v2_max_pq_rate)
+r   = clamp(r,   -max_yaw_rate,             max_yaw_rate)
+
+delta_rate = clamp(
+    rate_cmd - rate_prev,
+    -slew_limit * dt,
+     slew_limit * dt
+)
+rate_cmd = rate_prev + delta_rate
+```
+
+这里没有新增一阶低通 LPF。原因是末端拦截窗口很短，额外 LPF 会带来相位滞后；`v2` 只保留角加速度意义上的 slew rate limit。
+
+新增日志字段：
+
+- `body_rate_q_error_x/y/z`
+- `body_rate_p_raw_deg_s`
+- `body_rate_q_raw_deg_s`
+- `body_rate_r_raw_deg_s`
+- `body_rate_p_clipped_deg_s`
+- `body_rate_q_clipped_deg_s`
+- `body_rate_r_clipped_deg_s`
+- `body_rate_p_slew_limited`
+- `body_rate_q_slew_limited`
+- `body_rate_r_slew_limited`
+
+### 6.5 加速度转 thrust
+
+`legacy` 下，AirSim GenericQuad 推力模型仍使用：
+
+```text
+required_up_accel = g - a_control_I.z
+thrust_raw = mass * required_up_accel / (max_total_thrust * cos(roll_sp) * cos(pitch_sp))
 thrust = clamp(thrust, body_rate_min_thrust, body_rate_max_thrust)
 ```
 
-AirSim/PX4 使用 NED 坐标，`z` 向下；因此希望向上加速时 `a_control_I.z < 0`，thrust 增大。
+代码中对 `cos(roll_sp) * cos(pitch_sp)` 做了下限保护，避免数值发散，但大倾角时仍可能更早进入推力饱和。
+
+`v2` 使用向量投影推力，避免欧拉角三角函数奇点：
+
+```text
+z_B_I = R_IB * [0, 0, 1]^T
+required_specific_force_I = [-a_control_I.x, -a_control_I.y, g - a_control_I.z]
+thrust_raw = mass * dot(required_specific_force_I, z_B_I) / max_total_thrust
+thrust_max_reserved = min(body_rate_max_thrust, 1 - body_rate_v2_thrust_reserve)
+thrust = clamp(thrust_raw, body_rate_min_thrust, thrust_max_reserved)
+```
+
+AirSim/PX4 使用 NED 坐标，`z` 向下；level hover 时 `z_B_I=[0,0,1]`，所以 `thrust_raw = mass*g/max_total_thrust`。`body_rate_v2_thrust_reserve` 默认 `0.15`，用于给角速度环保留电机差速控制余量。
 
 日志字段：
 
 - `body_rate_thrust`
+- `body_rate_thrust_raw`
+- `body_rate_thrust_reserved_max`
+- `body_rate_thrust_saturated`
 
 ### 6.6 MAVLink 发送
 
