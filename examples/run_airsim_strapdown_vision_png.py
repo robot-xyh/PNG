@@ -419,6 +419,36 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--body-rate-max-roll-rate-deg", type=float, default=60.0)
     parser.add_argument("--body-rate-max-pitch-rate-deg", type=float, default=60.0)
     parser.add_argument(
+        "--body-rate-control-profile",
+        choices=("legacy", "v2"),
+        default="legacy",
+        help=(
+            "legacy preserves the original roll/pitch error P loop. "
+            "v2 uses quaternion attitude error, body-rate slew limiting, projection thrust, "
+            "and light frame-centering acceleration scaling."
+        ),
+    )
+    parser.add_argument("--body-rate-v2-kp-roll", type=float, default=5.0)
+    parser.add_argument("--body-rate-v2-kp-pitch", type=float, default=5.0)
+    parser.add_argument("--body-rate-v2-kp-yaw", type=float, default=3.0)
+    parser.add_argument("--body-rate-v2-max-pq-rate-deg-s", type=float, default=120.0)
+    parser.add_argument("--body-rate-v2-slew-pq-deg-s2", type=float, default=720.0)
+    parser.add_argument("--body-rate-v2-slew-r-deg-s2", type=float, default=540.0)
+    parser.add_argument(
+        "--body-rate-v2-thrust-reserve",
+        type=float,
+        default=0.15,
+        help="Reserve this normalized thrust fraction from the upper clamp for attitude authority.",
+    )
+    parser.add_argument(
+        "--body-rate-v2-guard-error-ratio",
+        type=float,
+        default=0.55,
+        help="Image error ratio above which v2 reduces PNG/speed-hold acceleration priority.",
+    )
+    parser.add_argument("--body-rate-v2-guard-png-scale", type=float, default=0.60)
+    parser.add_argument("--body-rate-v2-guard-speed-hold-scale", type=float, default=0.45)
+    parser.add_argument(
         "--vehicle-mass-kg",
         type=float,
         default=AIRSIM_GENERIC_QUAD_MASS_KG,
@@ -597,6 +627,18 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--vehicle-max-total-thrust-n must be positive")
     if args.body_rate_min_thrust > args.body_rate_max_thrust:
         raise SystemExit("--body-rate-min-thrust cannot exceed --body-rate-max-thrust")
+    if args.body_rate_v2_kp_roll < 0.0 or args.body_rate_v2_kp_pitch < 0.0 or args.body_rate_v2_kp_yaw < 0.0:
+        raise SystemExit("--body-rate-v2-kp-* values must be non-negative")
+    if args.body_rate_v2_max_pq_rate_deg_s < 0.0:
+        raise SystemExit("--body-rate-v2-max-pq-rate-deg-s must be non-negative")
+    if args.body_rate_v2_slew_pq_deg_s2 < 0.0 or args.body_rate_v2_slew_r_deg_s2 < 0.0:
+        raise SystemExit("--body-rate-v2-slew-* values must be non-negative")
+    if not 0.0 <= args.body_rate_v2_thrust_reserve < 1.0:
+        raise SystemExit("--body-rate-v2-thrust-reserve must be in [0, 1)")
+    if not 0.0 <= args.body_rate_v2_guard_png_scale <= 1.0:
+        raise SystemExit("--body-rate-v2-guard-png-scale must be in [0, 1]")
+    if not 0.0 <= args.body_rate_v2_guard_speed_hold_scale <= 1.0:
+        raise SystemExit("--body-rate-v2-guard-speed-hold-scale must be in [0, 1]")
     if args.attitude_min_thrust > args.attitude_max_thrust:
         raise SystemExit("--attitude-min-thrust cannot exceed --attitude-max-thrust")
     if args.los_filter_process_lambda < 0.0:
@@ -1239,6 +1281,49 @@ def _euler_to_quaternion_wxyz(roll_rad: float, pitch_rad: float, yaw_rad: float)
     return _rotation_matrix_to_quaternion_wxyz(R)
 
 
+def _normalize_quaternion_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = np.asarray(quat, dtype=float)
+    if q.shape != (4,) or not np.all(np.isfinite(q)):
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    norm = float(np.linalg.norm(q))
+    if norm <= 1.0e-9:
+        return np.array([1.0, 0.0, 0.0, 0.0], dtype=float)
+    q = q / norm
+    if q[0] < 0.0:
+        q = -q
+    return q
+
+
+def _quaternion_multiply_wxyz(a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    qa = _normalize_quaternion_wxyz(a)
+    qb = _normalize_quaternion_wxyz(b)
+    aw, ax, ay, az = qa
+    bw, bx, by, bz = qb
+    return _normalize_quaternion_wxyz(
+        np.array(
+            [
+                aw * bw - ax * bx - ay * by - az * bz,
+                aw * bx + ax * bw + ay * bz - az * by,
+                aw * by - ax * bz + ay * bw + az * bx,
+                aw * bz + ax * by - ay * bx + az * bw,
+            ],
+            dtype=float,
+        )
+    )
+
+
+def _quaternion_conjugate_wxyz(quat: np.ndarray) -> np.ndarray:
+    q = _normalize_quaternion_wxyz(quat)
+    return np.array([q[0], -q[1], -q[2], -q[3]], dtype=float)
+
+
+def _quaternion_error_vector_wxyz(q_desired: np.ndarray, q_current: np.ndarray) -> np.ndarray:
+    q_err = _quaternion_multiply_wxyz(_quaternion_conjugate_wxyz(q_current), q_desired)
+    if q_err[0] < 0.0:
+        q_err = -q_err
+    return 2.0 * np.asarray(q_err[1:4], dtype=float)
+
+
 def _attitude_control_acceleration(
     *,
     png_acceleration_I: np.ndarray,
@@ -1311,7 +1396,9 @@ def _body_rate_command_from_accel(
     R_IB: np.ndarray,
     roll_rad: float,
     pitch_rad: float,
+    yaw_rad: float,
     yaw_rate_deg_s: float,
+    dt_s: float,
     args,
 ) -> dict[str, float | np.ndarray]:
     accel_I = np.asarray(acceleration_I, dtype=float)
@@ -1326,11 +1413,100 @@ def _body_rate_command_from_accel(
     pitch_sp *= float(args.body_rate_pitch_gain)
     roll_sp = float(np.clip(roll_sp, -max_tilt, max_tilt))
     pitch_sp = float(np.clip(pitch_sp, -max_tilt, max_tilt))
+    max_yaw_rate = np.deg2rad(max(0.0, float(args.max_yaw_rate_deg)))
+    profile = str(getattr(args, "body_rate_control_profile", "legacy"))
+
+    if profile == "v2":
+        q_current = _euler_to_quaternion_wxyz(float(roll_rad), float(pitch_rad), float(yaw_rad))
+        q_desired = _euler_to_quaternion_wxyz(roll_sp, pitch_sp, float(yaw_rad))
+        q_error = _quaternion_error_vector_wxyz(q_desired, q_current)
+        max_pq_rate = np.deg2rad(max(0.0, float(args.body_rate_v2_max_pq_rate_deg_s)))
+        raw_cmd = np.array(
+            [
+                float(args.body_rate_v2_kp_roll) * float(q_error[0]),
+                float(args.body_rate_v2_kp_pitch) * float(q_error[1]),
+                float(args.body_rate_v2_kp_yaw) * float(q_error[2]) + np.deg2rad(float(yaw_rate_deg_s)),
+            ],
+            dtype=float,
+        )
+        clipped_cmd = np.array(
+            [
+                float(np.clip(raw_cmd[0], -max_pq_rate, max_pq_rate)),
+                float(np.clip(raw_cmd[1], -max_pq_rate, max_pq_rate)),
+                float(np.clip(raw_cmd[2], -max_yaw_rate, max_yaw_rate)),
+            ],
+            dtype=float,
+        )
+        dt = max(1.0e-4, float(dt_s))
+        slew_limits = np.deg2rad(
+            np.array(
+                [
+                    max(0.0, float(args.body_rate_v2_slew_pq_deg_s2)),
+                    max(0.0, float(args.body_rate_v2_slew_pq_deg_s2)),
+                    max(0.0, float(args.body_rate_v2_slew_r_deg_s2)),
+                ],
+                dtype=float,
+            )
+        )
+        prev = getattr(args, "_body_rate_v2_prev_cmd_rad_s", None)
+        if prev is None:
+            cmd = clipped_cmd
+            slew_limited = np.zeros(3, dtype=int)
+        else:
+            prev_cmd = np.asarray(prev, dtype=float)
+            if prev_cmd.shape != (3,) or not np.all(np.isfinite(prev_cmd)):
+                prev_cmd = clipped_cmd
+            max_delta = slew_limits * dt
+            delta = clipped_cmd - prev_cmd
+            limited_delta = np.clip(delta, -max_delta, max_delta)
+            cmd = prev_cmd + limited_delta
+            slew_limited = (np.abs(delta - limited_delta) > 1.0e-9).astype(int)
+        args._body_rate_v2_prev_cmd_rad_s = np.array(cmd, dtype=float)
+
+        min_cmd = max(0.0, float(args.body_rate_min_thrust))
+        requested_max_cmd = min(1.0, float(args.body_rate_max_thrust))
+        reserved_max_cmd = max(min_cmd, min(requested_max_cmd, 1.0 - float(args.body_rate_v2_thrust_reserve)))
+        thrust_axis_I = np.asarray(R_IB, dtype=float) @ np.array([0.0, 0.0, 1.0], dtype=float)
+        axis_norm = float(np.linalg.norm(thrust_axis_I))
+        if axis_norm <= 1.0e-9 or not np.all(np.isfinite(thrust_axis_I)):
+            thrust_axis_I = np.array([0.0, 0.0, 1.0], dtype=float)
+        else:
+            thrust_axis_I = thrust_axis_I / axis_norm
+        required_specific_force_I = np.array(
+            [-float(accel_I[0]), -float(accel_I[1]), GRAVITY_MPS2 - float(accel_I[2])],
+            dtype=float,
+        )
+        mass = max(1.0e-6, float(getattr(args, "vehicle_mass_kg", AIRSIM_GENERIC_QUAD_MASS_KG)))
+        max_total_thrust = max(
+            1.0e-6,
+            float(getattr(args, "vehicle_max_total_thrust_n", AIRSIM_GENERIC_QUAD_MAX_TOTAL_THRUST_N)),
+        )
+        thrust_raw = mass * float(np.dot(required_specific_force_I, thrust_axis_I)) / max_total_thrust
+        if not math.isfinite(thrust_raw):
+            thrust_raw = float(args.body_rate_hover_thrust)
+        thrust = float(np.clip(thrust_raw, min_cmd, reserved_max_cmd))
+        thrust_saturated = int(thrust <= min_cmd + 1.0e-9 or thrust >= reserved_max_cmd - 1.0e-9)
+        return {
+            "profile": profile,
+            "accel_B": accel_B,
+            "body_z_specific_force": body_z_specific_force,
+            "roll_sp_rad": roll_sp,
+            "pitch_sp_rad": pitch_sp,
+            "body_rates_rad_s": cmd,
+            "body_rates_raw_rad_s": raw_cmd,
+            "body_rates_clipped_rad_s": clipped_cmd,
+            "body_rate_q_error": q_error,
+            "body_rate_slew_limited": slew_limited,
+            "thrust": thrust,
+            "thrust_raw": float(thrust_raw),
+            "thrust_cos_tilt": float(np.dot(thrust_axis_I, np.array([0.0, 0.0, 1.0], dtype=float))),
+            "thrust_reserved_max": reserved_max_cmd,
+            "thrust_saturated": thrust_saturated,
+        }
 
     attitude_p = max(0.0, float(args.body_rate_attitude_p))
     max_roll_rate = np.deg2rad(max(0.0, float(args.body_rate_max_roll_rate_deg)))
     max_pitch_rate = np.deg2rad(max(0.0, float(args.body_rate_max_pitch_rate_deg)))
-    max_yaw_rate = np.deg2rad(max(0.0, float(args.max_yaw_rate_deg)))
     p_cmd = float(np.clip(attitude_p * (roll_sp - float(roll_rad)), -max_roll_rate, max_roll_rate))
     q_cmd = float(np.clip(attitude_p * (pitch_sp - float(pitch_rad)), -max_pitch_rate, max_pitch_rate))
     r_cmd = float(np.clip(np.deg2rad(float(yaw_rate_deg_s)), -max_yaw_rate, max_yaw_rate))
@@ -1351,9 +1527,15 @@ def _body_rate_command_from_accel(
         "roll_sp_rad": roll_sp,
         "pitch_sp_rad": pitch_sp,
         "body_rates_rad_s": np.array([p_cmd, q_cmd, r_cmd], dtype=float),
+        "body_rates_raw_rad_s": np.array([p_cmd, q_cmd, r_cmd], dtype=float),
+        "body_rates_clipped_rad_s": np.array([p_cmd, q_cmd, r_cmd], dtype=float),
+        "body_rate_q_error": np.zeros(3, dtype=float),
+        "body_rate_slew_limited": np.zeros(3, dtype=int),
         "thrust": thrust,
         "thrust_raw": thrust_raw,
         "thrust_cos_tilt": thrust_cos_tilt,
+        "thrust_reserved_max": float(args.body_rate_max_thrust),
+        "thrust_saturated": int(thrust <= float(args.body_rate_min_thrust) + 1.0e-9 or thrust >= float(args.body_rate_max_thrust) - 1.0e-9),
     }
 
 
@@ -2122,13 +2304,17 @@ def _body_rate_control_acceleration(
     png_acceleration_I: np.ndarray,
     current_velocity_I: np.ndarray,
     velocity_reference_I: np.ndarray,
+    png_scale: float = 1.0,
+    speed_hold_scale: float = 1.0,
     args,
 ) -> tuple[np.ndarray, np.ndarray]:
     speed_hold = float(args.body_rate_speed_hold_gain) * (
         np.asarray(velocity_reference_I, dtype=float) - np.asarray(current_velocity_I, dtype=float)
     )
+    speed_hold *= float(np.clip(float(speed_hold_scale), 0.0, 1.0))
     speed_hold = _clip_vector_norm(speed_hold, float(args.body_rate_speed_hold_max_accel_mps2))
-    total = np.asarray(png_acceleration_I, dtype=float) + speed_hold
+    png = np.asarray(png_acceleration_I, dtype=float) * float(np.clip(float(png_scale), 0.0, 1.0))
+    total = png + speed_hold
     total = _clip_vector_norm(total, float(args.body_rate_total_accel_limit_mps2))
     return total, speed_hold
 
@@ -3038,11 +3224,20 @@ def main() -> None:
         body_rate_roll_sp_rad = 0.0
         body_rate_pitch_sp_rad = 0.0
         body_rate_cmd_rad_s = np.zeros(3)
+        body_rate_raw_cmd_rad_s = np.zeros(3)
+        body_rate_clipped_cmd_rad_s = np.zeros(3)
+        body_rate_q_error = np.zeros(3)
+        body_rate_slew_limited = np.zeros(3, dtype=int)
         body_rate_thrust = _body_rate_neutral_thrust(args)
         body_rate_thrust_raw = body_rate_thrust
         body_rate_thrust_cos_tilt = 1.0
+        body_rate_thrust_reserved_max = float(args.body_rate_max_thrust)
+        body_rate_thrust_saturated = 0
         body_rate_speed_hold_accel = np.zeros(3)
         body_rate_control_accel = np.zeros(3)
+        body_rate_png_scale = 1.0
+        body_rate_speed_hold_scale = 1.0
+        body_rate_frame_guard_active = 0
         attitude_command_active = 0
         attitude_control_accel = np.zeros(3)
         attitude_speed_hold_accel = np.zeros(3)
@@ -3639,10 +3834,25 @@ def main() -> None:
             target_body_bearing_deg = _wrap_angle_deg(target_bearing - body_yaw_deg)
         if args.enable_motion:
             if args.guidance_output_mode == "accel_body_rate":
+                body_rate_frame_guard_active = int(
+                    str(getattr(args, "body_rate_control_profile", "legacy")) == "v2"
+                    and (
+                        bool(frame_centering_active)
+                        or bool(detection_clipped)
+                        or bool(pitch_measurement_rejected)
+                        or effective_image_error_ratio >= max(0.0, float(args.body_rate_v2_guard_error_ratio))
+                        or str(terminal_result.state or "").lower() not in {"", "waiting"}
+                    )
+                )
+                if body_rate_frame_guard_active:
+                    body_rate_png_scale = float(args.body_rate_v2_guard_png_scale)
+                    body_rate_speed_hold_scale = float(args.body_rate_v2_guard_speed_hold_scale)
                 body_rate_control_accel, body_rate_speed_hold_accel = _body_rate_control_acceleration(
                     png_acceleration_I=a_cmd,
                     current_velocity_I=interceptor_vel,
                     velocity_reference_I=v_cmd,
+                    png_scale=body_rate_png_scale,
+                    speed_hold_scale=body_rate_speed_hold_scale,
                     args=args,
                 )
                 body_rate_result = _body_rate_command_from_accel(
@@ -3650,7 +3860,9 @@ def main() -> None:
                     R_IB,
                     roll_rad,
                     pitch_rad,
+                    yaw_rad,
                     yaw_rate_cmd_deg_s,
+                    guidance_dt,
                     args,
                 )
                 body_rate_accel_B = np.asarray(body_rate_result["accel_B"], dtype=float)
@@ -3658,9 +3870,15 @@ def main() -> None:
                 body_rate_roll_sp_rad = float(body_rate_result["roll_sp_rad"])
                 body_rate_pitch_sp_rad = float(body_rate_result["pitch_sp_rad"])
                 body_rate_cmd_rad_s = np.asarray(body_rate_result["body_rates_rad_s"], dtype=float)
+                body_rate_raw_cmd_rad_s = np.asarray(body_rate_result["body_rates_raw_rad_s"], dtype=float)
+                body_rate_clipped_cmd_rad_s = np.asarray(body_rate_result["body_rates_clipped_rad_s"], dtype=float)
+                body_rate_q_error = np.asarray(body_rate_result["body_rate_q_error"], dtype=float)
+                body_rate_slew_limited = np.asarray(body_rate_result["body_rate_slew_limited"], dtype=int)
                 body_rate_thrust = float(body_rate_result["thrust"])
                 body_rate_thrust_raw = float(body_rate_result["thrust_raw"])
                 body_rate_thrust_cos_tilt = float(body_rate_result["thrust_cos_tilt"])
+                body_rate_thrust_reserved_max = float(body_rate_result["thrust_reserved_max"])
+                body_rate_thrust_saturated = int(body_rate_result["thrust_saturated"])
                 body_rate_command_active = 1
                 _command_interceptor_body_rate(body_rate_cmd_rad_s, body_rate_thrust, args)
             elif args.guidance_output_mode == "accel_attitude":
@@ -3960,15 +4178,29 @@ def main() -> None:
                 "guidance_dt": guidance_dt,
                 "accel_integral_dt": accel_integral_dt,
                 "body_rate_control_active": int(body_rate_command_active),
+                "body_rate_control_profile": str(args.body_rate_control_profile),
                 "body_rate_max_tilt_deg": float(args.body_rate_max_tilt_deg),
                 "body_rate_roll_gain": float(args.body_rate_roll_gain),
                 "body_rate_pitch_gain": float(args.body_rate_pitch_gain),
                 "body_rate_attitude_p": float(args.body_rate_attitude_p),
+                "body_rate_v2_kp_roll": float(args.body_rate_v2_kp_roll),
+                "body_rate_v2_kp_pitch": float(args.body_rate_v2_kp_pitch),
+                "body_rate_v2_kp_yaw": float(args.body_rate_v2_kp_yaw),
+                "body_rate_v2_max_pq_rate_deg_s": float(args.body_rate_v2_max_pq_rate_deg_s),
+                "body_rate_v2_slew_pq_deg_s2": float(args.body_rate_v2_slew_pq_deg_s2),
+                "body_rate_v2_slew_r_deg_s2": float(args.body_rate_v2_slew_r_deg_s2),
+                "body_rate_v2_thrust_reserve": float(args.body_rate_v2_thrust_reserve),
+                "body_rate_v2_guard_error_ratio": float(args.body_rate_v2_guard_error_ratio),
+                "body_rate_v2_guard_png_scale": float(args.body_rate_v2_guard_png_scale),
+                "body_rate_v2_guard_speed_hold_scale": float(args.body_rate_v2_guard_speed_hold_scale),
                 "body_rate_hover_thrust": float(args.body_rate_hover_thrust),
                 "body_rate_thrust_gain": float(args.body_rate_thrust_gain),
                 "body_rate_speed_hold_gain": float(args.body_rate_speed_hold_gain),
                 "body_rate_speed_hold_max_accel_mps2": float(args.body_rate_speed_hold_max_accel_mps2),
                 "body_rate_total_accel_limit_mps2": float(args.body_rate_total_accel_limit_mps2),
+                "body_rate_png_scale": float(body_rate_png_scale),
+                "body_rate_speed_hold_scale": float(body_rate_speed_hold_scale),
+                "body_rate_frame_guard_active": int(body_rate_frame_guard_active),
                 "roll_deg": float(np.rad2deg(roll_rad)),
                 "pitch_deg": float(np.rad2deg(pitch_rad)),
                 "a_cmd_body_x": float(body_rate_accel_B[0]),
@@ -3986,6 +4218,18 @@ def main() -> None:
                 "body_rate_control_accel_norm_mps2": float(np.linalg.norm(body_rate_control_accel)),
                 "roll_sp_deg": float(np.rad2deg(body_rate_roll_sp_rad)),
                 "pitch_sp_deg": float(np.rad2deg(body_rate_pitch_sp_rad)),
+                "body_rate_q_error_x": float(body_rate_q_error[0]),
+                "body_rate_q_error_y": float(body_rate_q_error[1]),
+                "body_rate_q_error_z": float(body_rate_q_error[2]),
+                "body_rate_p_raw_deg_s": float(np.rad2deg(body_rate_raw_cmd_rad_s[0])),
+                "body_rate_q_raw_deg_s": float(np.rad2deg(body_rate_raw_cmd_rad_s[1])),
+                "body_rate_r_raw_deg_s": float(np.rad2deg(body_rate_raw_cmd_rad_s[2])),
+                "body_rate_p_clipped_deg_s": float(np.rad2deg(body_rate_clipped_cmd_rad_s[0])),
+                "body_rate_q_clipped_deg_s": float(np.rad2deg(body_rate_clipped_cmd_rad_s[1])),
+                "body_rate_r_clipped_deg_s": float(np.rad2deg(body_rate_clipped_cmd_rad_s[2])),
+                "body_rate_p_slew_limited": int(body_rate_slew_limited[0]),
+                "body_rate_q_slew_limited": int(body_rate_slew_limited[1]),
+                "body_rate_r_slew_limited": int(body_rate_slew_limited[2]),
                 "body_rate_p_rad_s": float(body_rate_cmd_rad_s[0]),
                 "body_rate_q_rad_s": float(body_rate_cmd_rad_s[1]),
                 "body_rate_r_rad_s": float(body_rate_cmd_rad_s[2]),
@@ -3995,6 +4239,8 @@ def main() -> None:
                 "body_rate_thrust": float(body_rate_thrust),
                 "body_rate_thrust_raw": float(body_rate_thrust_raw),
                 "body_rate_thrust_cos_tilt": float(body_rate_thrust_cos_tilt),
+                "body_rate_thrust_reserved_max": float(body_rate_thrust_reserved_max),
+                "body_rate_thrust_saturated": int(body_rate_thrust_saturated),
                 "attitude_control_active": int(attitude_command_active),
                 "attitude_max_tilt_deg": float(args.attitude_max_tilt_deg),
                 "attitude_yaw_lookahead_s": float(args.attitude_yaw_lookahead_s),
