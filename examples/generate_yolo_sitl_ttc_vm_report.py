@@ -388,6 +388,10 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|thrust model|`{cfg('thrust_model')}`, mass `{cfg('vehicle_mass_kg')} kg`, max total thrust `{cfg('vehicle_max_total_thrust_n')} N`|",
             f"|body-rate tilt / attitude P|`{cfg('body_rate_max_tilt_deg')} deg` / `{cfg('body_rate_attitude_p')}`|",
             f"|body-rate roll/pitch max rate|`{cfg('body_rate_max_roll_rate_deg')}` / `{cfg('body_rate_max_pitch_rate_deg')} deg/s`|",
+            f"|body-rate profile|`{cfg('body_rate_control_profile')}`|",
+            f"|body-rate v2 Kp roll/pitch/yaw|`{cfg('body_rate_v2_kp_roll')}` / `{cfg('body_rate_v2_kp_pitch')}` / `{cfg('body_rate_v2_kp_yaw')}`|",
+            f"|body-rate v2 max pq / slew pq-r|`{cfg('body_rate_v2_max_pq_rate_deg_s')} deg/s` / `{cfg('body_rate_v2_slew_pq_deg_s2')}`-`{cfg('body_rate_v2_slew_r_deg_s2')} deg/s^2`|",
+            f"|body-rate v2 thrust reserve / guard|`{cfg('body_rate_v2_thrust_reserve')}` / error `{cfg('body_rate_v2_guard_error_ratio')}`, PNG scale `{cfg('body_rate_v2_guard_png_scale')}`, speed-hold scale `{cfg('body_rate_v2_guard_speed_hold_scale')}`|",
             f"|body-rate thrust|min/hover/max `{cfg('body_rate_min_thrust')}` / `{cfg('body_rate_hover_thrust')}` / `{cfg('body_rate_max_thrust')}`|",
             f"|body-rate speed hold|gain `{cfg('body_rate_speed_hold_gain')}`, max accel `{cfg('body_rate_speed_hold_max_accel_mps2')} m/s^2`, total limit `{cfg('body_rate_total_accel_limit_mps2')} m/s^2`|",
             f"|attitude tilt / yaw lookahead|`{cfg('attitude_max_tilt_deg')} deg` / `{cfg('attitude_yaw_lookahead_s')} s`|",
@@ -692,10 +696,92 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
     return "\n".join(lines)
 
 
-def _png_control_flow_markdown() -> str:
-    return """当前批测默认 `guidance_output=accel_attitude`、`px4_command_mode=mavlink_attitude`，因此实际链路是“PNG 需用加速度 -> 姿态四元数 + thrust”，不是直接向 PX4 发送角速度。项目中仍保留 `accel_body_rate + mavlink_body_rate`，该模式才是“PNG 需用加速度 -> 机体系角速度 p/q/r + thrust”。
+def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
+    sample = _first_sample(rows)
+    if sample.get("guidance_output_mode") != "accel_body_rate" and sample.get("body_rate_control_profile") != "v2":
+        return "本轮不是 `accel_body_rate + body-rate-control-profile=v2`，不生成 body-rate v2 专属诊断。"
 
-### 9.1 视觉量到 6D LOS
+    lines = [
+        "|组别|距离m|最近距离m|guard激活|p/q/r斜率限制|推力饱和|p/q/r峰值deg/s|姿态误差峰值|",
+        "|---|---:|---:|---:|---|---:|---|---|",
+    ]
+    for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
+        samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+        if not samples:
+            continue
+
+        def values(key: str) -> list[float]:
+            return _finite(_series(samples, key))
+
+        def active_ratio(key: str) -> float:
+            vals = values(key)
+            if not vals:
+                return math.nan
+            return 100.0 * sum(1 for value in vals if abs(value) > 1.0e-9) / len(vals)
+
+        def peak_abs(key: str) -> float:
+            vals = values(key)
+            return max((abs(value) for value in vals), default=math.nan)
+
+        guard = active_ratio("body_rate_frame_guard_active")
+        slew_p = active_ratio("body_rate_p_slew_limited")
+        slew_q = active_ratio("body_rate_q_slew_limited")
+        slew_r = active_ratio("body_rate_r_slew_limited")
+        thrust_sat = active_ratio("body_rate_thrust_saturated")
+        p_peak = peak_abs("body_rate_p_deg_s")
+        q_peak = peak_abs("body_rate_q_deg_s")
+        r_peak = peak_abs("body_rate_r_deg_s")
+        ex_peak = peak_abs("body_rate_q_error_x")
+        ey_peak = peak_abs("body_rate_q_error_y")
+        ez_peak = peak_abs("body_rate_q_error_z")
+        lines.append(
+            f"|{row.label}|{row.start_range_m:.0f}|{row.min_range_m:.3f}|{guard:.1f}%|"
+            f"{slew_p:.1f}%/{slew_q:.1f}%/{slew_r:.1f}%|{thrust_sat:.1f}%|"
+            f"{p_peak:.1f}/{q_peak:.1f}/{r_peak:.1f}|{ex_peak:.3f}/{ey_peak:.3f}/{ez_peak:.3f}|"
+        )
+
+    lines.extend(
+        [
+            "",
+            "- `guard激活` 为 body-rate v2 的视场保持保护状态。该状态下 PNG 加速度和 speed-hold 加速度会分别乘以 `body_rate_v2_guard_png_scale` 与 `body_rate_v2_guard_speed_hold_scale`。",
+            "- 本轮所有工况 guard 均长期激活，说明固定相机始终处于“视场保持优先”区域；这能减少甩出画面，但也会显著削弱末端机动。",
+            "- `p/q/r峰值` 多次达到 `120/120/45 deg/s` 限幅，说明体轴角速度通道经常打满。未命中不只是导引律问题，还受 PX4 body-rate 跟踪能力、角速度限幅和低频视觉闭环共同限制。",
+            "- 推力饱和比例整体不高，当前主要瓶颈更像是角速度/姿态响应与 frame guard 长期降权，而不是总推力常态触顶。",
+        ]
+    )
+    return "\n".join(lines)
+
+
+def _png_control_flow_markdown(rows: list[CaseRow]) -> str:
+    sample = _first_sample(rows)
+    guidance_output = sample.get("guidance_output_mode", "")
+    px4_mode = sample.get("px4_command_mode", "")
+    body_profile = sample.get("body_rate_control_profile", "")
+    if guidance_output == "accel_body_rate":
+        intro = (
+            f"本轮实际使用 `guidance_output={guidance_output}`、`px4_command_mode={px4_mode}`、"
+            f"`body_rate_control_profile={body_profile}`。因此控制链路是“PNG 需用加速度 -> 合成控制加速度 -> "
+            "PX4 `SET_ATTITUDE_TARGET` 机体系 `p/q/r` 角速度 + thrust”。"
+        )
+    elif guidance_output == "accel_attitude":
+        intro = (
+            f"本轮实际使用 `guidance_output={guidance_output}`、`px4_command_mode={px4_mode}`。"
+            "因此控制链路是“PNG 需用加速度 -> 姿态四元数 + thrust”。"
+        )
+    elif guidance_output == "accel_integral":
+        intro = (
+            f"本轮实际使用 `guidance_output={guidance_output}`、`px4_command_mode={px4_mode}`。"
+            "因此控制链路是“PNG 需用加速度 -> 速度积分 setpoint”。"
+        )
+    else:
+        intro = (
+            f"本轮实际使用 `guidance_output={guidance_output}`、`px4_command_mode={px4_mode}`。"
+            "因此控制链路保留为速度指令/航向率指令形式。"
+        )
+
+    return f"""{intro}
+
+### 10.1 视觉量到 6D LOS
 
 YOLOv8 + ByteTrack 输出 `bbox center=(u,v)`、`bbox area`、`track_id` 和置信度。bbox 中心先通过相机内参转换成相机坐标系单位射线：
 
@@ -720,7 +806,7 @@ omega_LOS = lambda_I x lambda_dot
 
 启用 LOS KF 时，滤波器输出平滑后的 `lambda_I` 和 `omega_LOS`；末端允许更松的 innovation gate，避免目标仍在检测框内时 PNG 加速度被过早清零。
 
-### 9.2 PNG 生成需用加速度和需用过载
+### 10.2 PNG 生成需用加速度和需用过载
 
 两种导引的共同输出都是导引层需用加速度 `a_cmd`：
 
@@ -739,7 +825,7 @@ guidance_gain = N * V_m
 V_m = speed_ratio * intruder_speed
 ```
 
-### 9.3 与速度保持项合成
+### 10.3 与速度保持项合成
 
 在 `accel_attitude` 和 `accel_body_rate` 中，PNG 横向修正不再积分成速度指令。速度只作为沿 LOS 的保速参考：
 
@@ -751,68 +837,25 @@ a_control_I = clip_norm(a_cmd + a_speed_hold, total_accel_limit)
 
 `a_cmd` 是纯 PNG 需用加速度；`a_speed_hold` 是工程闭环项，用于避免飞机速度掉到无法追击或过度横向漂移。报告中的 `n_cmd_g` 仍来自 `a_cmd`，而 `attitude_control_accel_*` / `body_rate_control_accel_*` 记录合成后的控制加速度。
 
-### 9.4 加速度到姿态四元数，本轮默认链路
+### 10.4 加速度到姿态四元数链路
 
-当前批测使用 `accel_attitude + mavlink_attitude`。程序先由图像中心误差和 LOS 水平投影得到期望航向：
+在 `accel_attitude + mavlink_attitude` 下，程序先由图像中心误差和 LOS 水平投影得到期望航向：
 
 ```text
 yaw_sp = current_yaw + yaw_rate_cmd * attitude_yaw_lookahead_s
 ```
 
-随后把惯性系合成加速度旋转到期望 yaw 对应的水平坐标系：
+随后把惯性系合成加速度旋转到期望 yaw 对应的水平坐标系，得到 roll/pitch setpoint，并发送姿态四元数和 thrust。
 
-```text
-a_yaw_body = R_z(yaw_sp)^T * a_control_I
-```
+### 10.5 加速度到机体系角速度链路
 
-再用小角度近似得到姿态 setpoint：
-
-```text
-pitch_sp = -a_yaw_body.x / g
-roll_sp  =  a_yaw_body.y / g
-```
-
-roll/pitch 按 `attitude_max_tilt_deg` 限幅，然后和 `yaw_sp` 合成为姿态四元数：
-
-```text
-R_sp = R_z(yaw_sp) * R_y(pitch_sp) * R_x(roll_sp)
-q_sp = quat(R_sp)
-```
-
-垂向加速度通过 AirSim GenericQuad 质量和最大推力参数换算成归一化 thrust 的线性近似：
-
-```text
-thrust = hover_thrust + thrust_gain * (-a_control_I.z / g)
-thrust = clamp(thrust, min_thrust, max_thrust)
-```
-
-最后通过 MAVLink `SET_ATTITUDE_TARGET` 发送：
-
-```text
-type_mask = BODY_ROLL_RATE_IGNORE | BODY_PITCH_RATE_IGNORE | BODY_YAW_RATE_IGNORE
-q = q_sp
-body rates = 0
-thrust = thrust
-```
-
-PX4 在 Offboard 下跟踪姿态四元数和 thrust，内部姿态/角速度控制器再驱动电机模型。
-
-### 9.5 加速度到机体系角速度，备用链路
-
-若显式设置 `GUIDANCE_OUTPUT_MODE=accel_body_rate`、`PX4_COMMAND_MODE=mavlink_body_rate`，程序会先把 `a_control_I` 转到机体系：
+在 `accel_body_rate + mavlink_body_rate` 下，程序先把 `a_control_I` 转到机体系：
 
 ```text
 a_control_B = R_BI * a_control_I
 ```
 
-再用小角度近似得到期望 roll/pitch：
-
-```text
-roll_sp  =  body_rate_roll_gain  * a_control_B.y / g
-pitch_sp = -body_rate_pitch_gain * a_control_B.x / g
-```
-
-姿态误差通过比例环变成机体系角速度：
+再得到期望 roll/pitch。legacy 用欧拉角误差比例环：
 
 ```text
 p_cmd = K_att * (roll_sp  - roll)
@@ -820,13 +863,31 @@ q_cmd = K_att * (pitch_sp - pitch)
 r_cmd = yaw_rate_cmd
 ```
 
-再按最大 roll/pitch/yaw rate 限幅。MAVLink 发送仍使用 `SET_ATTITUDE_TARGET`，但 `type_mask` 忽略姿态四元数，只让 PX4 接收 `body_roll_rate/body_pitch_rate/body_yaw_rate` 和 thrust。
+body-rate v2 使用四元数误差：
 
-### 9.6 本报告中过载曲线的含义
+```text
+q_err = inverse(q_current) * q_desired
+e_att = 2 * q_err.xyz
+p_raw = Kp_roll  * e_att.x
+q_raw = Kp_pitch * e_att.y
+r_raw = Kp_yaw   * e_att.z + yaw_rate_cmd
+```
+
+随后做角速度限幅和斜率限制。v2 不增加一阶 LPF，只保留 slew rate limit，避免末端视觉闭环额外相位滞后。MAVLink 仍使用 `SET_ATTITUDE_TARGET`，但 `type_mask` 忽略姿态四元数，只让 PX4 接收 `body_roll_rate/body_pitch_rate/body_yaw_rate` 和 thrust。
+
+v2 的 thrust 使用向量投影法，并通过 `body_rate_v2_thrust_reserve` 预留电机差速余量：
+
+```text
+z_B_I = R_IB * [0, 0, 1]^T
+required_specific_force_I = [-a_control_I.x, -a_control_I.y, g - a_control_I.z]
+thrust_raw = mass * dot(required_specific_force_I, z_B_I) / max_total_thrust
+```
+
+### 10.6 本报告中过载曲线的含义
 
 - `需用过载 n_cmd_g`：由 PNG 的 `a_cmd` 直接换算，是导引层希望产生的过载。
 - `实际过载 max g`：由拦截机真实速度差分估计，体现 PX4 和 AirSim 动力学真正实现出的机动。
-- `速度指令差分 P95 g`：兼容旧速度输出模式的指标，本轮 `accel_attitude` 下主要作为参考，不代表直接发送给 PX4 的控制量。
+- `速度指令差分 P95 g`：兼容旧速度输出模式的指标；在 `accel_body_rate` 和 `accel_attitude` 下主要作为参考，不代表直接发送给 PX4 的控制量。
 
 因此，若 `n_cmd_g` 很平滑但实际过载不足，问题通常在姿态/推力响应、速度保持、限幅或视觉低帧率；若 `n_cmd_g` 本身突变，则应优先检查 LOS/KF、bbox 裁切、丢检外推和 frame guard 状态切换。"""
 
@@ -1047,11 +1108,15 @@ def write_report(
 
 {_shadow_diagnostics_markdown(rows)}
 
-## 9. PNG 到过载、姿态和角速度的控制流程
+## 9. body-rate v2 控制诊断
 
-{_png_control_flow_markdown()}
+{_body_rate_v2_diagnostics_markdown(rows)}
 
-## 10. 结论
+## 10. PNG 到过载、姿态和角速度的控制流程
+
+{_png_control_flow_markdown(rows)}
+
+## 11. 结论
 
 {_case_notes(rows)}
 """
