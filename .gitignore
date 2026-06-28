@@ -3,6 +3,7 @@ __pycache__/
 .pytest_cache/
 .venv/
 .env
+.airsim_runtime/
 *.log
 *.webm
 Blocks/

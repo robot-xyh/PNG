@@ -14,6 +14,9 @@ run object detection and does not send MAVLink or flight-control commands.
 - Hard-coded AirSim/PX4 ports are only defaults. If an existing Blocks/PX4
   instance is using a default port, the launcher must allocate a conflict-free
   settings file and report the actual RPC/PX4 ports.
+- Every launch must force the current AirSim/PX4 host IP fields to
+  `127.0.0.1`. Multiple Blocks instances must be isolated by ports, not by
+  binding AirSim/PX4 traffic to external network interfaces.
 - Client code must connect using `AIRSIM_RPC_HOST` and `AIRSIM_RPC_PORT` when
   those variables are set. This is required when multiple Blocks instances run
   on the same machine.

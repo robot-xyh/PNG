@@ -29,6 +29,12 @@ UDP_FIELDS = {
 }
 DEFAULT_API_PORT = 41451
 DEFAULT_HOST = "127.0.0.1"
+PX4_REQUIRED_HOST_FIELDS = ("LocalHostIp", "ControlIp", "UdpIp")
+PX4_OPTIONAL_HOST_FIELDS = {
+    "QgcHostIp": "QgcPort",
+    "LogViewerHostIp": "LogViewerPort",
+}
+PX4_HOST_FIELDS = tuple(PX4_REQUIRED_HOST_FIELDS) + tuple(PX4_OPTIONAL_HOST_FIELDS)
 
 
 def _port_free(port: int, kind: str, host: str = DEFAULT_HOST) -> bool:
@@ -75,6 +81,51 @@ def _iter_vehicle_port_fields(settings: dict[str, Any]):
                 yield vehicle_name, vehicle, field, value, kind
 
 
+def _iter_px4_vehicles(settings: dict[str, Any]):
+    vehicles = settings.get("Vehicles", {})
+    if not isinstance(vehicles, dict):
+        return
+    for vehicle_name, vehicle in vehicles.items():
+        if not isinstance(vehicle, dict):
+            continue
+        vehicle_type = str(vehicle.get("VehicleType", ""))
+        has_px4_marker = (
+            vehicle_type == "PX4Multirotor"
+            or bool(vehicle.get("UseTcp"))
+            or bool(vehicle.get("UseSerial"))
+            or any(field in vehicle for field in PX4_HOST_FIELDS)
+        )
+        if has_px4_marker:
+            yield vehicle_name, vehicle
+
+
+def _force_localhost(settings: dict[str, Any], host: str) -> list[str]:
+    notes: list[str] = []
+    for vehicle_name, vehicle in _iter_px4_vehicles(settings):
+        for field in PX4_REQUIRED_HOST_FIELDS:
+            old_value = vehicle.get(field)
+            if old_value == host:
+                continue
+            vehicle[field] = host
+            old_display = "<missing>" if old_value is None else repr(old_value)
+            notes.append(f"{vehicle_name}.{field} {old_display} -> {host!r}")
+        for field, port_field in PX4_OPTIONAL_HOST_FIELDS.items():
+            old_value = vehicle.get(field)
+            port_value = vehicle.get(port_field, 0)
+            try:
+                port_enabled = int(port_value or 0) > 0
+            except (TypeError, ValueError):
+                port_enabled = bool(port_value)
+            if not port_enabled and old_value in (None, ""):
+                continue
+            if old_value == host:
+                continue
+            vehicle[field] = host
+            old_display = "<missing>" if old_value is None else repr(old_value)
+            notes.append(f"{vehicle_name}.{field} {old_display} -> {host!r}")
+    return notes
+
+
 def _json_dump(path: Path, settings: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
@@ -95,6 +146,11 @@ def main() -> int:
     parser.add_argument("--label", default=os.environ.get("AIRSIM_INSTANCE_LABEL", "blocks"))
     parser.add_argument("--rpc-base", type=int, default=int(os.environ.get("AIRSIM_RPC_PORT_BASE", DEFAULT_API_PORT)))
     parser.add_argument("--px4-base", type=int, default=int(os.environ.get("AIRSIM_PX4_PORT_BASE", 4560)))
+    parser.add_argument(
+        "--localhost-ip",
+        default=DEFAULT_HOST,
+        help="Loopback IP forced into AirSim/PX4 host fields before Blocks starts.",
+    )
     args = parser.parse_args()
 
     settings_path = Path(args.settings).expanduser().resolve()
@@ -111,14 +167,35 @@ def main() -> int:
         print(f"settings root must be a JSON object: {settings_path}", file=sys.stderr)
         return 2
 
+    changed = False
+    notes: list[str] = []
+    host_notes = _force_localhost(settings, args.localhost_ip)
+    if host_notes:
+        changed = True
+        notes.extend(host_notes)
+
     if args.policy == "off":
         rpc_port = int(settings.get("ApiServerPort", DEFAULT_API_PORT) or DEFAULT_API_PORT)
+        output_settings = settings_path
+        if changed:
+            stem = settings_path.stem
+            safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in args.label)
+            output_settings = (
+                Path(args.output_dir).expanduser().resolve()
+                / f"{stem}_{safe_label}_{os.getpid()}_{int(time.time())}.json"
+            )
+            _json_dump(output_settings, settings)
+            print("AirSim port guard rewrote settings:", file=sys.stderr)
+            for note in notes:
+                print(f"  {note}", file=sys.stderr)
+            print(f"  resolved_settings={output_settings}", file=sys.stderr)
         values = {
-            "AIRSIM_SETTINGS_PATH_RESOLVED": str(settings_path),
-            "AIRSIM_RPC_HOST": DEFAULT_HOST,
+            "AIRSIM_SETTINGS_PATH_RESOLVED": str(output_settings),
+            "AIRSIM_RPC_HOST": args.localhost_ip,
             "AIRSIM_RPC_PORT": str(rpc_port),
             "AIRSIM_PORT_POLICY": "off",
-            "AIRSIM_PORT_REWRITTEN": "0",
+            "AIRSIM_PORT_REWRITTEN": "1" if changed else "0",
+            "AIRSIM_LOCALHOST_IP": args.localhost_ip,
         }
         if args.env_path:
             _write_env(Path(args.env_path), values)
@@ -126,8 +203,6 @@ def main() -> int:
         return 0
 
     reserved: set[int] = set()
-    changed = False
-    notes: list[str] = []
 
     rpc_port = int(settings.get("ApiServerPort", DEFAULT_API_PORT) or DEFAULT_API_PORT)
     rpc_free = _port_usable(rpc_port, "tcp", reserved)
@@ -180,11 +255,12 @@ def main() -> int:
 
     values = {
         "AIRSIM_SETTINGS_PATH_RESOLVED": str(output_settings),
-        "AIRSIM_RPC_HOST": DEFAULT_HOST,
+        "AIRSIM_RPC_HOST": args.localhost_ip,
         "AIRSIM_RPC_PORT": str(rpc_port),
         "AIRSIM_PX4_TCP_PORTS": ",".join(str(port) for port in px4_tcp_ports),
         "AIRSIM_PORT_POLICY": args.policy,
         "AIRSIM_PORT_REWRITTEN": "1" if changed else "0",
+        "AIRSIM_LOCALHOST_IP": args.localhost_ip,
     }
     if px4_tcp_ports:
         values["AIRSIM_PX4_TCP_PORT"] = str(px4_tcp_ports[0])
