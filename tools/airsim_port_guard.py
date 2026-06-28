@@ -28,7 +28,9 @@ UDP_FIELDS = {
     "UdpPort",
 }
 DEFAULT_API_PORT = 41451
-DEFAULT_HOST = "127.0.0.1"
+DEFAULT_HOST = "127.0.0.2"
+HOST_IP_FIELDS = {"LocalHostIp", "ControlIp", "UdpIp"}
+DEFAULT_LOOPBACK_HOSTS = {"127.0.0.1", "localhost"}
 
 
 def _port_free(port: int, kind: str, host: str = DEFAULT_HOST) -> bool:
@@ -44,18 +46,18 @@ def _port_free(port: int, kind: str, host: str = DEFAULT_HOST) -> bool:
     return True
 
 
-def _port_usable(port: int, kind: str, reserved: set[int]) -> bool:
+def _port_usable(port: int, kind: str, reserved: set[int], host: str) -> bool:
     if port in reserved:
         return False
     if kind == "any":
-        return _port_free(port, "tcp") and _port_free(port, "udp")
-    return _port_free(port, kind)
+        return _port_free(port, "tcp", host) and _port_free(port, "udp", host)
+    return _port_free(port, kind, host)
 
 
-def _next_free(start: int, kind: str, reserved: set[int]) -> int:
+def _next_free(start: int, kind: str, reserved: set[int], host: str) -> int:
     port = max(1024, int(start))
     for candidate in range(port, 65535):
-        if _port_usable(candidate, kind, reserved):
+        if _port_usable(candidate, kind, reserved, host):
             reserved.add(candidate)
             return candidate
     raise RuntimeError(f"no free {kind} port found from {start}")
@@ -80,10 +82,55 @@ def _json_dump(path: Path, settings: dict[str, Any]) -> None:
     path.write_text(json.dumps(settings, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
 
 
+def _normalize_loopback_host_ips(value: Any, host: str, notes: list[str], path: str = "") -> bool:
+    if not host:
+        return False
+    changed = False
+    if isinstance(value, dict):
+        for key, child in value.items():
+            child_path = f"{path}.{key}" if path else str(key)
+            if key in HOST_IP_FIELDS and isinstance(child, str) and child in DEFAULT_LOOPBACK_HOSTS and child != host:
+                value[key] = host
+                notes.append(f"{child_path} {child} -> {host}")
+                changed = True
+                continue
+            if isinstance(child, (dict, list)):
+                changed = _normalize_loopback_host_ips(child, host, notes, child_path) or changed
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            if isinstance(child, (dict, list)):
+                changed = _normalize_loopback_host_ips(child, host, notes, f"{path}[{index}]") or changed
+    return changed
+
+
 def _write_env(path: Path, values: dict[str, str]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     lines = [f"{key}={shlex.quote(str(value))}" for key, value in values.items()]
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _runtime_settings_path(settings_path: Path, output_dir: str, label: str) -> Path:
+    stem = settings_path.stem
+    safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in label)
+    return Path(output_dir).expanduser().resolve() / f"{stem}_{safe_label}_{os.getpid()}_{int(time.time())}.json"
+
+
+def _write_rewritten_settings(
+    *,
+    settings_path: Path,
+    settings: dict[str, Any],
+    output_dir: str,
+    label: str,
+    notes: list[str],
+    reason: str,
+) -> Path:
+    output_settings = _runtime_settings_path(settings_path, output_dir, label)
+    _json_dump(output_settings, settings)
+    print(f"AirSim port guard rewrote settings ({reason}):", file=sys.stderr)
+    for note in notes:
+        print(f"  {note}", file=sys.stderr)
+    print(f"  resolved_settings={output_settings}", file=sys.stderr)
+    return output_settings
 
 
 def main() -> int:
@@ -93,9 +140,11 @@ def main() -> int:
     parser.add_argument("--env-path", default="", help="Optional env file to write.")
     parser.add_argument("--policy", default=os.environ.get("AIRSIM_PORT_POLICY", "auto"), choices=("auto", "strict", "off"))
     parser.add_argument("--label", default=os.environ.get("AIRSIM_INSTANCE_LABEL", "blocks"))
+    parser.add_argument("--host", default=os.environ.get("AIRSIM_RPC_HOST", DEFAULT_HOST))
     parser.add_argument("--rpc-base", type=int, default=int(os.environ.get("AIRSIM_RPC_PORT_BASE", DEFAULT_API_PORT)))
     parser.add_argument("--px4-base", type=int, default=int(os.environ.get("AIRSIM_PX4_PORT_BASE", 4560)))
     args = parser.parse_args()
+    host = str(args.host or DEFAULT_HOST)
 
     settings_path = Path(args.settings).expanduser().resolve()
     if not settings_path.exists():
@@ -112,13 +161,27 @@ def main() -> int:
         return 2
 
     if args.policy == "off":
+        notes: list[str] = []
+        changed = _normalize_loopback_host_ips(settings, host, notes)
+        output_settings = settings_path
+        if changed:
+            output_settings = _write_rewritten_settings(
+                settings_path=settings_path,
+                settings=settings,
+                output_dir=args.output_dir,
+                label=args.label,
+                notes=notes,
+                reason="host",
+            )
+        else:
+            print("AirSim port guard: port policy off; using original settings.", file=sys.stderr)
         rpc_port = int(settings.get("ApiServerPort", DEFAULT_API_PORT) or DEFAULT_API_PORT)
         values = {
-            "AIRSIM_SETTINGS_PATH_RESOLVED": str(settings_path),
-            "AIRSIM_RPC_HOST": DEFAULT_HOST,
+            "AIRSIM_SETTINGS_PATH_RESOLVED": str(output_settings),
+            "AIRSIM_RPC_HOST": host,
             "AIRSIM_RPC_PORT": str(rpc_port),
             "AIRSIM_PORT_POLICY": "off",
-            "AIRSIM_PORT_REWRITTEN": "0",
+            "AIRSIM_PORT_REWRITTEN": "1" if changed else "0",
         }
         if args.env_path:
             _write_env(Path(args.env_path), values)
@@ -128,16 +191,17 @@ def main() -> int:
     reserved: set[int] = set()
     changed = False
     notes: list[str] = []
+    changed = _normalize_loopback_host_ips(settings, host, notes) or changed
 
     rpc_port = int(settings.get("ApiServerPort", DEFAULT_API_PORT) or DEFAULT_API_PORT)
-    rpc_free = _port_usable(rpc_port, "tcp", reserved)
+    rpc_free = _port_usable(rpc_port, "tcp", reserved, host)
     if rpc_free:
         reserved.add(rpc_port)
     elif args.policy == "strict":
         print(f"AirSim RPC port {rpc_port} is already in use; refusing to start Blocks.", file=sys.stderr)
         return 3
     else:
-        new_port = _next_free(max(args.rpc_base, rpc_port + 1), "tcp", reserved)
+        new_port = _next_free(max(args.rpc_base, rpc_port + 1), "tcp", reserved, host)
         settings["ApiServerPort"] = new_port
         notes.append(f"ApiServerPort {rpc_port} -> {new_port}")
         rpc_port = new_port
@@ -145,7 +209,7 @@ def main() -> int:
 
     px4_tcp_ports: list[int] = []
     for vehicle_name, vehicle, field, old_port, kind in _iter_vehicle_port_fields(settings):
-        free = _port_usable(old_port, kind, reserved)
+        free = _port_usable(old_port, kind, reserved, host)
         if free:
             reserved.add(old_port)
             if field == "TcpPort":
@@ -158,7 +222,7 @@ def main() -> int:
             )
             return 3
         base = args.px4_base if field == "TcpPort" else old_port + 1
-        new_port = _next_free(max(base, old_port + 1), kind, reserved)
+        new_port = _next_free(max(base, old_port + 1), kind, reserved, host)
         vehicle[field] = new_port
         notes.append(f"{vehicle_name}.{field} {old_port} -> {new_port}")
         if field == "TcpPort":
@@ -167,20 +231,20 @@ def main() -> int:
 
     output_settings = settings_path
     if changed:
-        stem = settings_path.stem
-        safe_label = "".join(ch if ch.isalnum() or ch in "._-" else "_" for ch in args.label)
-        output_settings = Path(args.output_dir).expanduser().resolve() / f"{stem}_{safe_label}_{os.getpid()}_{int(time.time())}.json"
-        _json_dump(output_settings, settings)
-        print("AirSim port guard rewrote settings:", file=sys.stderr)
-        for note in notes:
-            print(f"  {note}", file=sys.stderr)
-        print(f"  resolved_settings={output_settings}", file=sys.stderr)
+        output_settings = _write_rewritten_settings(
+            settings_path=settings_path,
+            settings=settings,
+            output_dir=args.output_dir,
+            label=args.label,
+            notes=notes,
+            reason="host/port",
+        )
     else:
         print("AirSim port guard: configured ports are free; using original settings.", file=sys.stderr)
 
     values = {
         "AIRSIM_SETTINGS_PATH_RESOLVED": str(output_settings),
-        "AIRSIM_RPC_HOST": DEFAULT_HOST,
+        "AIRSIM_RPC_HOST": host,
         "AIRSIM_RPC_PORT": str(rpc_port),
         "AIRSIM_PX4_TCP_PORTS": ",".join(str(port) for port in px4_tcp_ports),
         "AIRSIM_PORT_POLICY": args.policy,

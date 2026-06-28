@@ -17,6 +17,10 @@ run object detection and does not send MAVLink or flight-control commands.
 - Client code must connect using `AIRSIM_RPC_HOST` and `AIRSIM_RPC_PORT` when
   those variables are set. This is required when multiple Blocks instances run
   on the same machine.
+- This worktree defaults `AIRSIM_RPC_HOST` to `127.0.0.2`. The launcher rewrites
+  loopback AirSim settings fields such as `LocalHostIp`, `ControlIp`, and
+  `UdpIp` to the same host before each Blocks run, isolating it from other
+  worktrees that use `127.0.0.1`.
 - For deterministic single-instance experiments, set
   `AIRSIM_PORT_POLICY=strict` to fail fast on any port conflict. The default
   policy is `auto`.

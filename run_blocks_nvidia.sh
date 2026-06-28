@@ -34,6 +34,7 @@ export __GLX_VENDOR_LIBRARY_NAME="${__GLX_VENDOR_LIBRARY_NAME:-nvidia}"
 export __VK_LAYER_NV_optimus="${__VK_LAYER_NV_optimus:-NVIDIA_only}"
 export VK_ICD_FILENAMES="${VK_ICD_FILENAMES:-/usr/share/vulkan/icd.d/nvidia_icd.json}"
 export VK_DRIVER_FILES="${VK_DRIVER_FILES:-$VK_ICD_FILENAMES}"
+export AIRSIM_RPC_HOST="${AIRSIM_RPC_HOST:-127.0.0.2}"
 
 DEFAULT_ARGS=("-RenderOffscreen" "-NoSplash" "-NoVSync" "-BENCHMARK" "-FPS=20")
 if [[ "$#" -gt 0 ]]; then
@@ -79,6 +80,7 @@ if [[ -n "$SETTINGS_ARG" ]]; then
       --output-dir "$SCRIPT_DIR/.airsim_runtime/settings" \
       --env-path "$PORT_ENV_PATH" \
       --label "${AIRSIM_INSTANCE_LABEL:-blocks}" \
+      --host "$AIRSIM_RPC_HOST" \
       --policy "${AIRSIM_PORT_POLICY:-auto}"
   )"
   eval "$PORT_GUARD_OUTPUT"
@@ -88,7 +90,7 @@ if [[ -n "$SETTINGS_ARG" ]]; then
   fi
   ARGS=("-settings=$AIRSIM_SETTINGS_PATH_RESOLVED" "${ARGS[@]}")
 else
-  AIRSIM_RPC_HOST="${AIRSIM_RPC_HOST:-127.0.0.1}"
+  AIRSIM_RPC_HOST="${AIRSIM_RPC_HOST:-127.0.0.2}"
   AIRSIM_RPC_PORT="${AIRSIM_RPC_PORT:-41451}"
   export AIRSIM_RPC_HOST AIRSIM_RPC_PORT
 fi

@@ -5,6 +5,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
 STAMP="${STAMP:-yolo_sitl_ttc_vm_$(date +%Y%m%d_%H%M%S)}"
+export AIRSIM_RPC_HOST="${AIRSIM_RPC_HOST:-127.0.0.2}"
 RANGES=(${RANGES:-50 60 70 80 90 100})
 RUN_TTC="${RUN_TTC:-1}"
 RUN_VM="${RUN_VM:-1}"
@@ -327,7 +328,7 @@ start_stack() {
     source "$AIRSIM_RUNTIME_ENV"
     set +a
     CURRENT_AIRSIM_SETTINGS_PATH="${AIRSIM_SETTINGS_PATH_RESOLVED:-$SETTINGS_PATH}"
-    echo "Resolved AirSim RPC: ${AIRSIM_RPC_HOST:-127.0.0.1}:${AIRSIM_RPC_PORT:-41451}"
+    echo "Resolved AirSim RPC: ${AIRSIM_RPC_HOST:-127.0.0.2}:${AIRSIM_RPC_PORT:-41451}"
     echo "Resolved AirSim settings: $CURRENT_AIRSIM_SETTINGS_PATH"
   fi
 }
