@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import numpy as np
 
-from examples.run_airsim_truth_png import _apply_altitude_correction, _rows_until_first_hit, _world_position
+from examples.run_airsim_truth_png import _apply_altitude_correction, _geometric_hit_flags, _rows_until_first_hit, _world_position
 from vision_guidance.truth_png import compute_truth_png, integrate_velocity_command
 
 
@@ -100,6 +100,11 @@ class TruthPNGTest(unittest.TestCase):
         clipped = _rows_until_first_hit(rows)
 
         self.assertEqual([row["t"] for row in clipped], [0.0, 1.0])
+
+    def test_geometric_hit_flags_are_independent_thresholds(self):
+        self.assertEqual(_geometric_hit_flags(0.9), {"geometric_hit_1m": 1, "geometric_hit_15m": 1, "geometric_hit_2m": 1})
+        self.assertEqual(_geometric_hit_flags(1.2), {"geometric_hit_1m": 0, "geometric_hit_15m": 1, "geometric_hit_2m": 1})
+        self.assertEqual(_geometric_hit_flags(1.8), {"geometric_hit_1m": 0, "geometric_hit_15m": 0, "geometric_hit_2m": 1})
 
 
 if __name__ == "__main__":

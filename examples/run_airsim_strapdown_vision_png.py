@@ -23,6 +23,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _decode_airsim_image,
     _detection_names,
     _format_names,
+    _geometric_hit_flags,
     _guidance_velocity,
     _experiment_fields,
     _image_kf_takeover_allowed,
@@ -30,6 +31,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _load_vehicle_origins,
     _los_fallback_allowed,
     _make_display,
+    _make_multirotor_client,
     _make_preview_recorder,
     _output_paths,
     _prefer_user_mpl_toolkits,
@@ -74,7 +76,7 @@ from vision_guidance.los_filter import LOSFilterConfig, LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
 from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
 from vision_guidance.terminal_image_kf import center_from_angle_error
-from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
+from vision_guidance.terminal_extrapolation import BLIND_PUSH, TERMINAL_VISUAL, TerminalExtrapolator
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
 from vision_guidance.truth_png import integrate_velocity_command
@@ -420,12 +422,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--body-rate-max-pitch-rate-deg", type=float, default=60.0)
     parser.add_argument(
         "--body-rate-control-profile",
-        choices=("legacy", "v2"),
+        choices=("legacy", "v2", "hybrid_v2"),
         default="legacy",
         help=(
             "legacy preserves the original roll/pitch error P loop. "
             "v2 uses quaternion attitude error, body-rate slew limiting, projection thrust, "
-            "and light frame-centering acceleration scaling."
+            "and light frame-centering acceleration scaling. "
+            "hybrid_v2 uses the v2 body-rate/thrust mapping only when explicitly selected, "
+            "but keeps PNG/speed-hold authority unless a terminal frame risk is active."
         ),
     )
     parser.add_argument("--body-rate-v2-kp-roll", type=float, default=5.0)
@@ -448,6 +452,9 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--body-rate-v2-guard-png-scale", type=float, default=0.60)
     parser.add_argument("--body-rate-v2-guard-speed-hold-scale", type=float, default=0.45)
+    parser.add_argument("--body-rate-hybrid-terminal-tilt-deg", type=float, default=25.0)
+    parser.add_argument("--body-rate-hybrid-terminal-max-pq-rate-deg-s", type=float, default=100.0)
+    parser.add_argument("--body-rate-hybrid-terminal-thrust-max", type=float, default=0.85)
     parser.add_argument(
         "--vehicle-mass-kg",
         type=float,
@@ -513,6 +520,20 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--los-filter-terminal-area-ratio", type=float, default=0.01)
     parser.add_argument("--los-filter-terminal-error-ratio", type=float, default=0.55)
     parser.add_argument("--los-delay-compensation-s", type=float, default=0.18)
+    parser.add_argument(
+        "--terminal-los-reject-policy",
+        choices=("strict", "relaxed", "raw_capped"),
+        default="relaxed",
+        help=(
+            "Policy used when terminal LOS gating is active and the LOS KF rejects a measurement. "
+            "strict keeps the rejection, relaxed preserves the previous terminal innovation gate, "
+            "raw_capped uses raw image LOS with bounded LOS rate."
+        ),
+    )
+    parser.add_argument("--terminal-raw-los-max-rate-rad-s", type=float, default=4.0)
+    parser.add_argument("--terminal-raw-los-max-delta-rate-rad-s", type=float, default=3.0)
+    parser.add_argument("--terminal-vertical-accel-bias-gain", type=float, default=0.0)
+    parser.add_argument("--terminal-vertical-accel-bias-max-mps2", type=float, default=2.0)
     parser.add_argument("--allow-los-fallback", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--los-fallback-gain", type=float, default=0.5)
     parser.add_argument(
@@ -627,18 +648,31 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--vehicle-max-total-thrust-n must be positive")
     if args.body_rate_min_thrust > args.body_rate_max_thrust:
         raise SystemExit("--body-rate-min-thrust cannot exceed --body-rate-max-thrust")
-    if args.body_rate_v2_kp_roll < 0.0 or args.body_rate_v2_kp_pitch < 0.0 or args.body_rate_v2_kp_yaw < 0.0:
+    if (
+        float(getattr(args, "body_rate_v2_kp_roll", 0.0)) < 0.0
+        or float(getattr(args, "body_rate_v2_kp_pitch", 0.0)) < 0.0
+        or float(getattr(args, "body_rate_v2_kp_yaw", 0.0)) < 0.0
+    ):
         raise SystemExit("--body-rate-v2-kp-* values must be non-negative")
-    if args.body_rate_v2_max_pq_rate_deg_s < 0.0:
+    if float(getattr(args, "body_rate_v2_max_pq_rate_deg_s", 0.0)) < 0.0:
         raise SystemExit("--body-rate-v2-max-pq-rate-deg-s must be non-negative")
-    if args.body_rate_v2_slew_pq_deg_s2 < 0.0 or args.body_rate_v2_slew_r_deg_s2 < 0.0:
+    if (
+        float(getattr(args, "body_rate_v2_slew_pq_deg_s2", 0.0)) < 0.0
+        or float(getattr(args, "body_rate_v2_slew_r_deg_s2", 0.0)) < 0.0
+    ):
         raise SystemExit("--body-rate-v2-slew-* values must be non-negative")
-    if not 0.0 <= args.body_rate_v2_thrust_reserve < 1.0:
+    if not 0.0 <= float(getattr(args, "body_rate_v2_thrust_reserve", 0.0)) < 1.0:
         raise SystemExit("--body-rate-v2-thrust-reserve must be in [0, 1)")
-    if not 0.0 <= args.body_rate_v2_guard_png_scale <= 1.0:
+    if not 0.0 <= float(getattr(args, "body_rate_v2_guard_png_scale", 1.0)) <= 1.0:
         raise SystemExit("--body-rate-v2-guard-png-scale must be in [0, 1]")
-    if not 0.0 <= args.body_rate_v2_guard_speed_hold_scale <= 1.0:
+    if not 0.0 <= float(getattr(args, "body_rate_v2_guard_speed_hold_scale", 1.0)) <= 1.0:
         raise SystemExit("--body-rate-v2-guard-speed-hold-scale must be in [0, 1]")
+    if float(getattr(args, "body_rate_hybrid_terminal_tilt_deg", 0.0)) < 0.0:
+        raise SystemExit("--body-rate-hybrid-terminal-tilt-deg must be non-negative")
+    if float(getattr(args, "body_rate_hybrid_terminal_max_pq_rate_deg_s", 0.0)) < 0.0:
+        raise SystemExit("--body-rate-hybrid-terminal-max-pq-rate-deg-s must be non-negative")
+    if not 0.0 <= float(getattr(args, "body_rate_hybrid_terminal_thrust_max", 1.0)) <= 1.0:
+        raise SystemExit("--body-rate-hybrid-terminal-thrust-max must be in [0, 1]")
     if args.attitude_min_thrust > args.attitude_max_thrust:
         raise SystemExit("--attitude-min-thrust cannot exceed --attitude-max-thrust")
     if args.los_filter_process_lambda < 0.0:
@@ -657,6 +691,14 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--los-filter-terminal-error-ratio must be non-negative")
     if args.los_delay_compensation_s < 0.0:
         raise SystemExit("--los-delay-compensation-s must be non-negative")
+    if float(getattr(args, "terminal_raw_los_max_rate_rad_s", 0.0)) < 0.0:
+        raise SystemExit("--terminal-raw-los-max-rate-rad-s must be non-negative")
+    if float(getattr(args, "terminal_raw_los_max_delta_rate_rad_s", 0.0)) < 0.0:
+        raise SystemExit("--terminal-raw-los-max-delta-rate-rad-s must be non-negative")
+    if float(getattr(args, "terminal_vertical_accel_bias_gain", 0.0)) < 0.0:
+        raise SystemExit("--terminal-vertical-accel-bias-gain must be non-negative")
+    if float(getattr(args, "terminal_vertical_accel_bias_max_mps2", 0.0)) < 0.0:
+        raise SystemExit("--terminal-vertical-accel-bias-max-mps2 must be non-negative")
 
 
 def _output_paths_strapdown(args) -> tuple[Path, Path]:
@@ -1407,20 +1449,36 @@ def _body_rate_command_from_accel(
     R_BI = np.asarray(R_IB, dtype=float).T
     accel_B = R_BI @ accel_I
 
-    max_tilt = np.deg2rad(max(0.0, float(args.body_rate_max_tilt_deg)))
+    profile = str(getattr(args, "body_rate_control_profile", "legacy"))
+    if profile == "hybrid_v2":
+        effective_max_tilt_deg = float(
+            getattr(args, "_body_rate_effective_max_tilt_deg", args.body_rate_max_tilt_deg)
+        )
+    else:
+        effective_max_tilt_deg = float(args.body_rate_max_tilt_deg)
+    max_tilt = np.deg2rad(max(0.0, effective_max_tilt_deg))
     roll_sp, pitch_sp, body_z_specific_force = _tilt_from_accel_yaw_body(accel_B, max_tilt)
     roll_sp *= float(args.body_rate_roll_gain)
     pitch_sp *= float(args.body_rate_pitch_gain)
     roll_sp = float(np.clip(roll_sp, -max_tilt, max_tilt))
     pitch_sp = float(np.clip(pitch_sp, -max_tilt, max_tilt))
     max_yaw_rate = np.deg2rad(max(0.0, float(args.max_yaw_rate_deg)))
-    profile = str(getattr(args, "body_rate_control_profile", "legacy"))
 
-    if profile == "v2":
+    if profile in {"v2", "hybrid_v2"}:
         q_current = _euler_to_quaternion_wxyz(float(roll_rad), float(pitch_rad), float(yaw_rad))
         q_desired = _euler_to_quaternion_wxyz(roll_sp, pitch_sp, float(yaw_rad))
         q_error = _quaternion_error_vector_wxyz(q_desired, q_current)
-        max_pq_rate = np.deg2rad(max(0.0, float(args.body_rate_v2_max_pq_rate_deg_s)))
+        if profile == "hybrid_v2":
+            effective_max_pq_rate_deg_s = float(
+                getattr(args, "_body_rate_effective_max_pq_rate_deg_s", args.body_rate_v2_max_pq_rate_deg_s)
+            )
+            effective_max_thrust = float(
+                getattr(args, "_body_rate_effective_max_thrust", args.body_rate_max_thrust)
+            )
+        else:
+            effective_max_pq_rate_deg_s = float(args.body_rate_v2_max_pq_rate_deg_s)
+            effective_max_thrust = float(args.body_rate_max_thrust)
+        max_pq_rate = np.deg2rad(max(0.0, effective_max_pq_rate_deg_s))
         raw_cmd = np.array(
             [
                 float(args.body_rate_v2_kp_roll) * float(q_error[0]),
@@ -1464,7 +1522,7 @@ def _body_rate_command_from_accel(
         args._body_rate_v2_prev_cmd_rad_s = np.array(cmd, dtype=float)
 
         min_cmd = max(0.0, float(args.body_rate_min_thrust))
-        requested_max_cmd = min(1.0, float(args.body_rate_max_thrust))
+        requested_max_cmd = min(1.0, effective_max_thrust)
         reserved_max_cmd = max(min_cmd, min(requested_max_cmd, 1.0 - float(args.body_rate_v2_thrust_reserve)))
         thrust_axis_I = np.asarray(R_IB, dtype=float) @ np.array([0.0, 0.0, 1.0], dtype=float)
         axis_norm = float(np.linalg.norm(thrust_axis_I))
@@ -2369,6 +2427,82 @@ def _terminal_los_reject_relaxed(los, lambda_measured: Optional[np.ndarray], arg
     return bool(np.isfinite(innovation) and innovation <= max(0.0, float(args.los_filter_terminal_innovation_reject)))
 
 
+def _terminal_raw_capped_los(
+    lambda_raw: Optional[np.ndarray],
+    omega_raw: Optional[np.ndarray],
+    last_omega_los: Optional[np.ndarray],
+    args,
+) -> tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+    if lambda_raw is None:
+        return None, None
+    lam = normalize(np.asarray(lambda_raw, dtype=float))
+    if omega_raw is None or not np.all(np.isfinite(omega_raw)):
+        omega = np.zeros(3, dtype=float)
+    else:
+        omega = project_perpendicular(np.asarray(omega_raw, dtype=float), lam)
+
+    max_rate = max(0.0, float(args.terminal_raw_los_max_rate_rad_s))
+    if max_rate > 0.0:
+        omega = _clip_vector_norm(omega, max_rate)
+
+    if last_omega_los is not None and np.all(np.isfinite(last_omega_los)):
+        previous = project_perpendicular(np.asarray(last_omega_los, dtype=float), lam)
+        max_delta = max(0.0, float(args.terminal_raw_los_max_delta_rate_rad_s))
+        delta = omega - previous
+        if max_delta > 0.0:
+            delta = _clip_vector_norm(delta, max_delta)
+        omega = project_perpendicular(previous + delta, lam)
+    return lam, omega
+
+
+def _terminal_vertical_accel_bias(
+    *,
+    px_err_y: float,
+    intrinsics,
+    enabled: bool,
+    args,
+) -> float:
+    if not enabled:
+        return 0.0
+    gain = float(getattr(args, "terminal_vertical_accel_bias_gain", 0.0))
+    if gain == 0.0:
+        return 0.0
+    half_h = max(1.0, 0.5 * float(intrinsics.height))
+    normalized_error = float(px_err_y) / half_h
+    limit = max(0.0, float(getattr(args, "terminal_vertical_accel_bias_max_mps2", 0.0)))
+    # AirSim uses NED. Negative pixel error means the target is above center,
+    # so the added acceleration is also negative Z: upward.
+    return float(np.clip(gain * normalized_error, -limit, limit))
+
+
+def _hybrid_body_rate_terminal_risk(
+    *,
+    frame_centering_state: str,
+    detected: bool,
+    detection_clipped: bool,
+    pitch_measurement_rejected: bool,
+    image_error_ratio: float,
+    area_ratio: float,
+    image_kf_valid: bool,
+    terminal_state: str,
+    args,
+) -> bool:
+    state = str(frame_centering_state or "").lower()
+    if state in {"terminal_capture", "loss_hold"}:
+        return True
+    if bool(detection_clipped) or bool(pitch_measurement_rejected):
+        return True
+    if float(image_error_ratio) >= max(0.0, float(args.body_rate_v2_guard_error_ratio)):
+        return True
+    if float(area_ratio) >= max(0.0, float(args.frame_centering_area_ratio)) and float(area_ratio) > 0.0:
+        return True
+    if str(terminal_state or "") in {TERMINAL_VISUAL, BLIND_PUSH}:
+        return True
+    if not detected and image_kf_valid and state == "loss_hold":
+        return True
+    return False
+
+
 def _candidate_guidance_velocity(
     current_velocity: np.ndarray,
     lambda_I: Optional[np.ndarray],
@@ -2940,7 +3074,7 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("Install the AirSim Python package before running this example.") from exc
 
-    client = airsim.MultirotorClient()
+    client = _make_multirotor_client(airsim)
     _register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()
@@ -3069,7 +3203,9 @@ def main() -> None:
             "YOLO ByteTrack detector active: "
             f"model={args.yolo_model}, class_id={args.yolo_class_id}, tracker={args.yolo_tracker}, "
             f"device_arg={args.yolo_device or 'auto'}, runtime={yolo_device_text}, "
-            f"untracked_fallback={args.yolo_allow_untracked_fallback}"
+            f"half={args.yolo_half}, transport={args.yolo_image_transport}, "
+            f"untracked_fallback={args.yolo_allow_untracked_fallback}, "
+            f"async={args.detector_source == 'yolo_bytetrack_async'}"
         )
     _px4_keepalive(client, airsim, required_vehicles, args, duration_s=0.8)
     display = _make_display(airsim, args.show_window)
@@ -3238,6 +3374,7 @@ def main() -> None:
         body_rate_png_scale = 1.0
         body_rate_speed_hold_scale = 1.0
         body_rate_frame_guard_active = 0
+        body_rate_terminal_authority_active = 0
         attitude_command_active = 0
         attitude_control_accel = np.zeros(3)
         attitude_speed_hold_accel = np.zeros(3)
@@ -3261,6 +3398,8 @@ def main() -> None:
         los_delay_compensation_s = max(0.0, float(args.los_delay_compensation_s))
         los_terminal_gate_active = False
         los_terminal_gate_relaxed = False
+        los_terminal_raw_capped = False
+        terminal_vertical_accel_bias_mps2 = 0.0
         guidance_gain = 0.0
         bbox_area = 0.0
         guidance_mode = "invalid"
@@ -3384,13 +3523,31 @@ def main() -> None:
                         args=args,
                     )
                     if los_terminal_gate_active and _terminal_los_reject_relaxed(los, lambda_I_measured, args):
-                        los_valid = True
-                        los_lambda = lambda_raw
-                        los_omega = omega_raw
-                        los_quality = max(0.05, los.quality)
-                        los_reject_reason = None
-                        los_source = "kalman_terminal_relaxed"
-                        los_terminal_gate_relaxed = True
+                        terminal_policy = str(getattr(args, "terminal_los_reject_policy", "relaxed"))
+                        if terminal_policy == "relaxed":
+                            los_valid = True
+                            los_lambda = lambda_raw
+                            los_omega = omega_raw
+                            los_quality = max(0.05, los.quality)
+                            los_reject_reason = None
+                            los_source = "kalman_terminal_relaxed"
+                            los_terminal_gate_relaxed = True
+                        elif terminal_policy == "raw_capped":
+                            capped_lambda, capped_omega = _terminal_raw_capped_los(
+                                lambda_raw,
+                                omega_raw,
+                                last_omega_los,
+                                args,
+                            )
+                            if capped_lambda is not None and capped_omega is not None:
+                                los_valid = True
+                                los_lambda = capped_lambda
+                                los_omega = capped_omega
+                                los_quality = max(0.05, los.quality)
+                                los_reject_reason = None
+                                los_source = "raw_capped_terminal"
+                                los_terminal_gate_relaxed = True
+                                los_terminal_raw_capped = True
                 else:
                     los_source = "raw_fd"
                     los_valid = True
@@ -3834,21 +3991,69 @@ def main() -> None:
             target_body_bearing_deg = _wrap_angle_deg(target_bearing - body_yaw_deg)
         if args.enable_motion:
             if args.guidance_output_mode == "accel_body_rate":
-                body_rate_frame_guard_active = int(
-                    str(getattr(args, "body_rate_control_profile", "legacy")) == "v2"
-                    and (
+                body_rate_profile = str(getattr(args, "body_rate_control_profile", "legacy"))
+                body_rate_png_accel = np.array(a_cmd, dtype=float)
+                if body_rate_profile == "v2":
+                    body_rate_frame_guard_active = int(
                         bool(frame_centering_active)
                         or bool(detection_clipped)
                         or bool(pitch_measurement_rejected)
                         or effective_image_error_ratio >= max(0.0, float(args.body_rate_v2_guard_error_ratio))
                         or str(terminal_result.state or "").lower() not in {"", "waiting"}
                     )
-                )
-                if body_rate_frame_guard_active:
-                    body_rate_png_scale = float(args.body_rate_v2_guard_png_scale)
-                    body_rate_speed_hold_scale = float(args.body_rate_v2_guard_speed_hold_scale)
+                    if body_rate_frame_guard_active:
+                        body_rate_png_scale = float(args.body_rate_v2_guard_png_scale)
+                        body_rate_speed_hold_scale = float(args.body_rate_v2_guard_speed_hold_scale)
+                elif body_rate_profile == "hybrid_v2":
+                    body_rate_terminal_authority_active = int(
+                        _hybrid_body_rate_terminal_risk(
+                            frame_centering_state=frame_centering_state,
+                            detected=detected,
+                            detection_clipped=detection_clipped,
+                            pitch_measurement_rejected=pitch_measurement_rejected,
+                            image_error_ratio=effective_image_error_ratio,
+                            area_ratio=effective_area_ratio,
+                            image_kf_valid=bool(image_kf.valid),
+                            terminal_state=terminal_result.state,
+                            args=args,
+                        )
+                    )
+                    body_rate_frame_guard_active = body_rate_terminal_authority_active
+                    if body_rate_terminal_authority_active:
+                        body_rate_png_scale = float(args.body_rate_v2_guard_png_scale)
+                        body_rate_speed_hold_scale = float(args.body_rate_v2_guard_speed_hold_scale)
+                        terminal_vertical_accel_bias_mps2 = _terminal_vertical_accel_bias(
+                            px_err_y=frame_guard_px_err_y,
+                            intrinsics=intrinsics,
+                            enabled=detected or bool(image_kf.valid),
+                            args=args,
+                        )
+                        if terminal_vertical_accel_bias_mps2:
+                            body_rate_png_accel[2] = float(body_rate_png_accel[2] + terminal_vertical_accel_bias_mps2)
+                    args._body_rate_effective_max_tilt_deg = (
+                        float(args.body_rate_hybrid_terminal_tilt_deg)
+                        if body_rate_terminal_authority_active
+                        else float(args.body_rate_max_tilt_deg)
+                    )
+                    args._body_rate_effective_max_pq_rate_deg_s = (
+                        float(args.body_rate_hybrid_terminal_max_pq_rate_deg_s)
+                        if body_rate_terminal_authority_active
+                        else max(float(args.body_rate_max_roll_rate_deg), float(args.body_rate_max_pitch_rate_deg))
+                    )
+                    args._body_rate_effective_max_thrust = (
+                        float(args.body_rate_hybrid_terminal_thrust_max)
+                        if body_rate_terminal_authority_active
+                        else float(args.body_rate_max_thrust)
+                    )
+                else:
+                    args._body_rate_effective_max_tilt_deg = float(args.body_rate_max_tilt_deg)
+                    args._body_rate_effective_max_pq_rate_deg_s = max(
+                        float(args.body_rate_max_roll_rate_deg),
+                        float(args.body_rate_max_pitch_rate_deg),
+                    )
+                    args._body_rate_effective_max_thrust = float(args.body_rate_max_thrust)
                 body_rate_control_accel, body_rate_speed_hold_accel = _body_rate_control_acceleration(
-                    png_acceleration_I=a_cmd,
+                    png_acceleration_I=body_rate_png_accel,
                     current_velocity_I=interceptor_vel,
                     velocity_reference_I=v_cmd,
                     png_scale=body_rate_png_scale,
@@ -4025,11 +4230,33 @@ def main() -> None:
                 "yolo_runtime_device": detector_stats.get("yolo_runtime_device", ""),
                 "yolo_cuda_available": detector_stats.get("yolo_cuda_available", ""),
                 "yolo_gpu_name": detector_stats.get("yolo_gpu_name", ""),
+                "yolo_model_path": detector_stats.get("yolo_model_path", ""),
+                "yolo_half": detector_stats.get("yolo_half", ""),
+                "yolo_image_transport": detector_stats.get("yolo_image_transport", ""),
+                "image_capture_elapsed_s": detector_stats.get("image_capture_elapsed_s", ""),
+                "yolo_inference_elapsed_s": detector_stats.get("yolo_inference_elapsed_s", ""),
+                "yolo_postprocess_elapsed_s": detector_stats.get("yolo_postprocess_elapsed_s", ""),
                 "yolo_allow_untracked_fallback": detector_stats.get("yolo_allow_untracked_fallback", ""),
                 "yolo_used_untracked_fallback": detector_stats.get("yolo_used_untracked_fallback", ""),
                 "yolo_single_target_mode": detector_stats.get("yolo_single_target_mode", ""),
                 "yolo_single_target_selected": detector_stats.get("yolo_single_target_selected", ""),
                 "yolo_single_target_distance_px": detector_stats.get("yolo_single_target_distance_px", ""),
+                "async_detector_active": detector_stats.get("async_detector_active", ""),
+                "async_detection_max_age_s": detector_stats.get("async_detection_max_age_s", ""),
+                "async_detection_queue_size": detector_stats.get("async_detection_queue_size", ""),
+                "async_detection_drop_stale": detector_stats.get("async_detection_drop_stale", ""),
+                "async_detection_return_reused": detector_stats.get("async_detection_return_reused", ""),
+                "async_detection_pending_count": detector_stats.get("async_detection_pending_count", ""),
+                "async_detection_thread_alive": detector_stats.get("async_detection_thread_alive", ""),
+                "async_detection_worker_error": detector_stats.get("async_detection_worker_error", ""),
+                "async_detection_has_result": detector_stats.get("async_detection_has_result", ""),
+                "async_detection_returned": detector_stats.get("async_detection_returned", ""),
+                "async_detection_result_frame_id": detector_stats.get("async_detection_result_frame_id", ""),
+                "async_detection_age_s": detector_stats.get("async_detection_age_s", ""),
+                "async_detection_wall_age_s": detector_stats.get("async_detection_wall_age_s", ""),
+                "async_detection_latency_s": detector_stats.get("async_detection_latency_s", ""),
+                "async_detection_stale": detector_stats.get("async_detection_stale", ""),
+                "async_detection_reused_result": detector_stats.get("async_detection_reused_result", ""),
                 "kcf_state": detector_stats.get("kcf_state", ""),
                 "kcf_source": detector_stats.get("kcf_source", ""),
                 "kcf_update_ok": detector_stats.get("kcf_update_ok", ""),
@@ -4047,6 +4274,7 @@ def main() -> None:
                 "v_cmd_z_sign": float(np.sign(v_cmd[2])),
                 "vertical_command_consistent": vertical_command_consistent,
                 "hit": int(hit),
+                **_geometric_hit_flags(range_m),
                 "collision_reason": pair_collision_reason,
                 "collision_raw_hit": int(raw_collision_hit),
                 "collision_new": int(collision_new),
@@ -4139,8 +4367,12 @@ def main() -> None:
                 "los_filter_terminal_area_ratio": float(args.los_filter_terminal_area_ratio),
                 "los_filter_terminal_error_ratio": float(args.los_filter_terminal_error_ratio),
                 "los_delay_compensation_s": float(args.los_delay_compensation_s),
+                "terminal_los_reject_policy": str(args.terminal_los_reject_policy),
+                "terminal_raw_los_max_rate_rad_s": float(args.terminal_raw_los_max_rate_rad_s),
+                "terminal_raw_los_max_delta_rate_rad_s": float(args.terminal_raw_los_max_delta_rate_rad_s),
                 "los_terminal_gate_active": int(los_terminal_gate_active),
                 "los_terminal_gate_relaxed": int(los_terminal_gate_relaxed),
+                "los_terminal_raw_capped": int(los_terminal_raw_capped),
                 "los_source": los_source,
                 "lambda_measured_x": 0.0 if lambda_I_measured is None else float(lambda_I_measured[0]),
                 "lambda_measured_y": 0.0 if lambda_I_measured is None else float(lambda_I_measured[1]),
@@ -4193,6 +4425,9 @@ def main() -> None:
                 "body_rate_v2_guard_error_ratio": float(args.body_rate_v2_guard_error_ratio),
                 "body_rate_v2_guard_png_scale": float(args.body_rate_v2_guard_png_scale),
                 "body_rate_v2_guard_speed_hold_scale": float(args.body_rate_v2_guard_speed_hold_scale),
+                "body_rate_hybrid_terminal_tilt_deg": float(args.body_rate_hybrid_terminal_tilt_deg),
+                "body_rate_hybrid_terminal_max_pq_rate_deg_s": float(args.body_rate_hybrid_terminal_max_pq_rate_deg_s),
+                "body_rate_hybrid_terminal_thrust_max": float(args.body_rate_hybrid_terminal_thrust_max),
                 "body_rate_hover_thrust": float(args.body_rate_hover_thrust),
                 "body_rate_thrust_gain": float(args.body_rate_thrust_gain),
                 "body_rate_speed_hold_gain": float(args.body_rate_speed_hold_gain),
@@ -4201,6 +4436,10 @@ def main() -> None:
                 "body_rate_png_scale": float(body_rate_png_scale),
                 "body_rate_speed_hold_scale": float(body_rate_speed_hold_scale),
                 "body_rate_frame_guard_active": int(body_rate_frame_guard_active),
+                "body_rate_terminal_authority_active": int(body_rate_terminal_authority_active),
+                "terminal_vertical_accel_bias_gain": float(args.terminal_vertical_accel_bias_gain),
+                "terminal_vertical_accel_bias_max_mps2": float(args.terminal_vertical_accel_bias_max_mps2),
+                "terminal_vertical_accel_bias_mps2": float(terminal_vertical_accel_bias_mps2),
                 "roll_deg": float(np.rad2deg(roll_rad)),
                 "pitch_deg": float(np.rad2deg(pitch_rad)),
                 "a_cmd_body_x": float(body_rate_accel_B[0]),

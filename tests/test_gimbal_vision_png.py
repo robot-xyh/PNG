@@ -11,6 +11,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _camera_offset_body,
     _command_duration,
     _gimbal_from_relative_body,
+    _gimbal_body_yaw_feedback_rate,
     _gimbal_update_profile,
     _guidance_velocity,
     _image_kf_takeover_allowed,
@@ -77,6 +78,29 @@ class GimbalVisionPNGTest(unittest.TestCase):
         self.assertGreater(pitch_error, 0.0)
         self.assertAlmostEqual(yaw, 0.25)
         self.assertAlmostEqual(pitch, -0.15)
+
+    def test_gimbal_body_yaw_feedback_deadband_and_limit(self):
+        args = SimpleNamespace(
+            gimbal_body_yaw_feedback=True,
+            gimbal_body_yaw_feedback_gain=2.0,
+            gimbal_body_yaw_feedback_max_rate_deg=30.0,
+            gimbal_body_yaw_feedback_deadband_deg=2.0,
+            gimbal_body_yaw_feedback_sign=1.0,
+        )
+
+        rate, active, error = _gimbal_body_yaw_feedback_rate(np.deg2rad(1.0), active=True, args=args)
+        self.assertEqual(active, 0)
+        self.assertAlmostEqual(rate, 0.0)
+        self.assertAlmostEqual(error, 1.0)
+
+        rate, active, error = _gimbal_body_yaw_feedback_rate(np.deg2rad(20.0), active=True, args=args)
+        self.assertEqual(active, 1)
+        self.assertAlmostEqual(rate, 30.0)
+        self.assertAlmostEqual(error, 20.0)
+
+        rate, active, _ = _gimbal_body_yaw_feedback_rate(np.deg2rad(20.0), active=False, args=args)
+        self.assertEqual(active, 0)
+        self.assertAlmostEqual(rate, 0.0)
 
     def test_gimbal_terminal_profile_holds_or_scales_updates(self):
         args = SimpleNamespace(terminal_freeze_gimbal_on_blind=True, terminal_gimbal_gain_scale=0.35)

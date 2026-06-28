@@ -247,7 +247,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             30.0,
+            0.1,
             args,
         )
 
@@ -281,7 +283,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             90.0,
+            0.1,
             args,
         )
 
