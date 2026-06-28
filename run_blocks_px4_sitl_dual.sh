@@ -9,20 +9,6 @@ if [[ ! -f "$SETTINGS_PATH" ]]; then
   exit 1
 fi
 
-if command -v ss >/dev/null 2>&1; then
-  PORT_USERS="$(ss -H -ltnp 2>/dev/null | awk '$4 ~ /:4560$/ || $4 ~ /:4561$/ {print}' || true)"
-  if [[ -n "$PORT_USERS" ]]; then
-    cat >&2 <<EOF
-PX4 TCP port 4560 or 4561 is already in use, so Blocks cannot bind it.
-
-$PORT_USERS
-
-Stop existing Blocks/PX4 processes before starting another dual-SITL session.
-EOF
-    exit 1
-  fi
-fi
-
 if [[ "$#" -eq 0 ]]; then
   set -- -RenderOffscreen -NoSplash -NoVSync -BENCHMARK -FPS=20
 fi

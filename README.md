@@ -6,6 +6,35 @@ described in `拦截方案.md`.
 It intentionally stops at logged/supervised evaluation quantities. It does not
 run object detection and does not send MAVLink or flight-control commands.
 
+## Project Operating Constitution
+
+- Every script that starts AirSim Blocks must check local ports before launch.
+- Blocks must be started through `run_blocks_nvidia.sh` or one of the
+  `run_blocks_*.sh` wrappers so the AirSim port guard runs.
+- Hard-coded AirSim/PX4 ports are only defaults. If an existing Blocks/PX4
+  instance is using a default port, the launcher must allocate a conflict-free
+  settings file and report the actual RPC/PX4 ports.
+- Client code must connect using `AIRSIM_RPC_HOST` and `AIRSIM_RPC_PORT` when
+  those variables are set. This is required when multiple Blocks instances run
+  on the same machine.
+- For deterministic single-instance experiments, set
+  `AIRSIM_PORT_POLICY=strict` to fail fast on any port conflict. The default
+  policy is `auto`.
+
+Runtime port files are written under `.airsim_runtime/` by default. Batch
+scripts that launch Blocks in the background must pass a unique
+`AIRSIM_PORT_ENV_PATH`, source that file, and pass the resolved settings path to
+the Python experiment script.
+
+If the guard rewrites a PX4 `TcpPort`, start the matching PX4 SITL instance by
+using the generated env file:
+
+```bash
+source .airsim_runtime/latest.env
+PX4_SIM_TCP_PORT="$AIRSIM_PX4_TCP_PORT" ./run_px4_sitl.sh
+AIRSIM_RPC_PORT="$AIRSIM_RPC_PORT" python3 examples/run_airsim_strapdown_vision_png.py ...
+```
+
 ## Implemented
 
 - Pixel center to camera/inertial LOS conversion.
@@ -47,7 +76,8 @@ detected `box2D` into `FrameDetection`; it does not read the intruder's true
 pose, `relative_pose`, `geo_point`, or true velocity.
 
 The gimbal and strapdown validation scripts can replace AirSim detection with
-YOLOv8 + ByteTrack, or YOLOv8 with KCF tracking between sparse YOLO corrections:
+YOLOv8 + ByteTrack, asynchronous YOLOv8 + ByteTrack, or YOLOv8 with KCF tracking
+between sparse YOLO corrections:
 
 ```bash
 python3 -m pip install torch ultralytics lap opencv-contrib-python
@@ -57,6 +87,15 @@ python3 examples/run_airsim_strapdown_vision_png.py \
   --detector-source yolo_bytetrack \
   --yolo-model /path/to/uav_yolov8.pt \
   --yolo-class-id 0
+
+python3 examples/run_airsim_strapdown_vision_png.py \
+  --enable-motion \
+  --detector-source yolo_bytetrack_async \
+  --yolo-model /path/to/uav_yolov8.pt \
+  --yolo-class-id 0 \
+  --yolo-half \
+  --yolo-image-transport raw \
+  --async-detection-max-age-s 0.18
 
 python3 examples/run_airsim_strapdown_vision_png.py \
   --enable-motion \
@@ -70,9 +109,27 @@ python3 examples/run_airsim_strapdown_vision_png.py \
 YOLO mode is fail-fast: if the model path, dependencies, or `--yolo-class-id`
 are missing, the script exits instead of silently falling back to AirSim
 detection. ByteTrack `track_id` is logged and used for target continuity.
+`yolo_bytetrack_async` captures the current camera frame in the main AirSim
+thread, runs YOLO/ByteTrack in a background worker, and returns the newest
+finished result to the guidance loop. CSV logs include `async_detection_age_s`,
+`async_detection_latency_s`, and `async_detection_stale`; keep
+`--async-detection-max-age-s` tight enough that stale detections do not dominate
+terminal guidance. By default the async detector does not return the same
+finished detection twice, avoiding duplicate LOS measurements with the same
+timestamp; use `--async-detection-return-reused` only when the guidance layer
+explicitly wants sample-and-hold behavior. `--yolo-image-transport raw` avoids
+PNG encode/decode overhead by using uncompressed `simGetImages`; `--yolo-half`
+passes FP16 inference to Ultralytics when the selected backend supports it.
 `yolo_kcf` initializes or corrects from YOLO, then outputs KCF boxes on
 intermediate frames; CSV logs include `kcf_state`, `kcf_source`, `kcf_age_s`,
 and `kcf_yolo_iou`.
+
+TensorRT and detector timing helpers:
+
+```bash
+python3 tools/export_yolo_tensorrt.py --model vision_guidance/best.pt --imgsz 640 --device 0 --half
+python3 tools/benchmark_yolo_detector.py --model vision_guidance/best.engine --class-id 0 --device 0 --half
+```
 
 Expected AirSim setup:
 
