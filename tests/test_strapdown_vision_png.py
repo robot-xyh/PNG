@@ -15,6 +15,7 @@ from examples.run_airsim_strapdown_vision_png import (
     _candidate_guidance_velocity,
     _command_vehicle_velocity,
     _fixed_camera_pose,
+    _guidance_source_is_truth,
     _image_kf_takeover_allowed,
     _attitude_command_from_accel,
     _attitude_control_acceleration,
@@ -29,7 +30,9 @@ from examples.run_airsim_strapdown_vision_png import (
     _start_geometry_offsets,
     _terminal_trigger_strapdown,
     _terminal_yaw_rate_command,
+    _truth_png_guidance_state,
     _validate_runtime_args,
+    _yaw_rate_from_truth_bearing,
     _yaw_rate_from_angle_error,
     _yaw_rate_from_pixel_error,
 )
@@ -46,7 +49,9 @@ def _runtime_args(**overrides):
         "rate_hz": 8.0,
         "speed_ratio": 2.0,
         "navigation_constant": 3.0,
+        "guidance_source": "vision",
         "guidance_output_mode": "accel_body_rate",
+        "max_guidance_accel_mps2": 15.0,
         "px4_interceptor": True,
         "px4_command_mode": "mavlink_body_rate",
         "thrust_model": "airsim_generic_quad",
@@ -54,6 +59,16 @@ def _runtime_args(**overrides):
         "vehicle_max_total_thrust_n": 16.717785072,
         "body_rate_min_thrust": 0.25,
         "body_rate_max_thrust": 0.75,
+        "body_rate_control_profile": "legacy",
+        "body_rate_v2_kp_roll": 5.0,
+        "body_rate_v2_kp_pitch": 5.0,
+        "body_rate_v2_kp_yaw": 3.0,
+        "body_rate_v2_max_pq_rate_deg_s": 120.0,
+        "body_rate_v2_slew_pq_deg_s2": 720.0,
+        "body_rate_v2_slew_r_deg_s2": 540.0,
+        "body_rate_v2_thrust_reserve": 0.15,
+        "body_rate_v2_guard_png_scale": 0.60,
+        "body_rate_v2_guard_speed_hold_scale": 0.45,
         "attitude_min_thrust": 0.25,
         "attitude_max_thrust": 0.80,
         "los_filter_process_lambda": 1e-4,
@@ -64,6 +79,9 @@ def _runtime_args(**overrides):
         "los_filter_terminal_area_ratio": 0.01,
         "los_filter_terminal_error_ratio": 0.55,
         "los_delay_compensation_s": 0.18,
+        "yaw_control": True,
+        "yaw_error_gain": 2.5,
+        "max_yaw_rate_deg": 90.0,
     }
     args.update(overrides)
     return SimpleNamespace(**args)
@@ -235,6 +253,7 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             body_rate_attitude_p=4.0,
             body_rate_max_roll_rate_deg=60.0,
             body_rate_max_pitch_rate_deg=60.0,
+            body_rate_control_profile="legacy",
             max_yaw_rate_deg=90.0,
             body_rate_hover_thrust=AIRSIM_HOVER_THRUST,
             body_rate_thrust_gain=AIRSIM_HOVER_THRUST,
@@ -247,7 +266,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             30.0,
+            0.02,
             args,
         )
 
@@ -269,6 +290,7 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             body_rate_attitude_p=20.0,
             body_rate_max_roll_rate_deg=45.0,
             body_rate_max_pitch_rate_deg=40.0,
+            body_rate_control_profile="legacy",
             max_yaw_rate_deg=30.0,
             body_rate_hover_thrust=AIRSIM_HOVER_THRUST,
             body_rate_thrust_gain=AIRSIM_HOVER_THRUST,
@@ -281,7 +303,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             90.0,
+            0.02,
             args,
         )
 
@@ -417,6 +441,42 @@ class StrapdownVisionPNGTest(unittest.TestCase):
 
         with self.assertRaisesRegex(SystemExit, "requires --guidance-output-mode accel_body_rate"):
             _validate_runtime_args(args)
+
+    def test_truth_guidance_source_helper(self):
+        self.assertFalse(_guidance_source_is_truth(_runtime_args()))
+        self.assertTrue(_guidance_source_is_truth(_runtime_args(guidance_source="truth")))
+
+    def test_truth_png_guidance_state_uses_truth_png_gain(self):
+        args = _runtime_args(guidance_source="truth", navigation_constant=3.0, max_guidance_accel_mps2=15.0)
+        rel_pos = np.array([80.0, -20.0, -20.0])
+        rel_vel = np.array([0.0, 5.0, 0.0])
+
+        state = _truth_png_guidance_state(rel_pos, rel_vel, args)
+
+        self.assertTrue(state["valid"])
+        self.assertEqual(state["mode"], "truth_png")
+        self.assertEqual(state["reason"], "")
+        self.assertAlmostEqual(float(state["guidance_gain"]), args.navigation_constant * float(state["closing_speed"]))
+        self.assertAlmostEqual(float(np.linalg.norm(state["lambda_I"])), 1.0)
+        self.assertLessEqual(float(np.linalg.norm(state["g_eval"])), args.max_guidance_accel_mps2)
+
+    def test_truth_png_guidance_state_invalid_not_closing(self):
+        args = _runtime_args(guidance_source="truth")
+
+        state = _truth_png_guidance_state(np.array([100.0, 0.0, 0.0]), np.array([5.0, 0.0, 0.0]), args)
+
+        self.assertFalse(state["valid"])
+        self.assertEqual(state["mode"], "truth_png_invalid")
+        self.assertEqual(state["reason"], "not_closing")
+        self.assertEqual(float(state["guidance_gain"]), 0.0)
+        self.assertAlmostEqual(float(np.linalg.norm(state["g_eval"])), 0.0)
+
+    def test_truth_bearing_yaw_rate_tracks_target_bearing(self):
+        args = _runtime_args(yaw_error_gain=1.0, max_yaw_rate_deg=45.0)
+
+        self.assertGreater(_yaw_rate_from_truth_bearing(np.array([1.0, 1.0, 0.0]), 0.0, args), 0.0)
+        self.assertLess(_yaw_rate_from_truth_bearing(np.array([1.0, -1.0, 0.0]), 0.0, args), 0.0)
+        self.assertEqual(_yaw_rate_from_truth_bearing(np.array([0.0, 10.0, 0.0]), 0.0, args), 45.0)
 
     def test_accel_attitude_runtime_validation_requires_px4_attitude_mode(self):
         args = _runtime_args(

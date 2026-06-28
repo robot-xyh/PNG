@@ -30,6 +30,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _load_vehicle_origins,
     _los_fallback_allowed,
     _make_display,
+    _make_multirotor_client,
     _make_preview_recorder,
     _output_paths,
     _prefer_user_mpl_toolkits,
@@ -74,10 +75,10 @@ from vision_guidance.los_filter import LOSFilterConfig, LOSKalmanFilter6D
 from vision_guidance.png_eval import TTCGainSchedule
 from vision_guidance.terminal_image_kf import IMAGE_KF_PREDICT, TerminalImageKF
 from vision_guidance.terminal_image_kf import center_from_angle_error
-from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator
+from vision_guidance.terminal_extrapolation import TERMINAL_VISUAL, TerminalExtrapolator, TerminalResult
 from vision_guidance.ttc import ScaleExpansionTTC, TTCConfig
 from vision_guidance.types import AttitudeSample
-from vision_guidance.truth_png import integrate_velocity_command
+from vision_guidance.truth_png import compute_truth_png, integrate_velocity_command
 from vision_guidance.yolo_bytetrack_detector import add_detector_args, create_detection_provider
 
 
@@ -369,6 +370,15 @@ def parse_args() -> argparse.Namespace:
         help="Minimum LOS+Vm gain scale used by --ttc-soft-guidance when TTC is valid and large.",
     )
     parser.add_argument(
+        "--guidance-source",
+        choices=("vision", "truth"),
+        default="vision",
+        help=(
+            "Source for guidance state. vision uses detector bbox LOS/TTC; truth bypasses detection "
+            "and computes PNG directly from AirSim target truth for body-rate/control-chain smoke tests."
+        ),
+    )
+    parser.add_argument(
         "--guidance-law",
         choices=("ttc_png", "fixed_vm_png"),
         default="ttc_png",
@@ -607,6 +617,8 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--speed-ratio must be positive")
     if args.navigation_constant <= 0.0:
         raise SystemExit("--navigation-constant must be positive")
+    if str(getattr(args, "guidance_source", "vision")) == "truth" and args.navigation_constant <= 0.0:
+        raise SystemExit("--guidance-source truth requires a positive --navigation-constant")
     if args.guidance_output_mode == "accel_body_rate":
         if not args.px4_interceptor:
             raise SystemExit("--guidance-output-mode accel_body_rate requires --px4-interceptor")
@@ -2166,6 +2178,18 @@ def _yaw_rate_from_angle_error(theta_x_rad: float, args) -> float:
     return float(np.clip(yaw_rate, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
 
 
+def _yaw_rate_from_truth_bearing(relative_position: np.ndarray, current_yaw_rad: float, args) -> float:
+    if not args.yaw_control:
+        return 0.0
+    rel = np.asarray(relative_position, dtype=float)
+    if rel.shape != (3,) or not np.all(np.isfinite(rel[:2])) or float(np.linalg.norm(rel[:2])) <= 1.0e-6:
+        return 0.0
+    target_yaw = math.atan2(float(rel[1]), float(rel[0]))
+    yaw_error = math.atan2(math.sin(target_yaw - float(current_yaw_rad)), math.cos(target_yaw - float(current_yaw_rad)))
+    yaw_rate = float(np.rad2deg(float(args.yaw_error_gain) * yaw_error))
+    return float(np.clip(yaw_rate, -args.max_yaw_rate_deg, args.max_yaw_rate_deg))
+
+
 def _append_yaw_rate_sample(
     samples: list[tuple[float, float]],
     timestamp: float,
@@ -2407,6 +2431,98 @@ def _candidate_guidance_velocity(
         args,
     )
     return command, accel, max(1.0e-6, float(dt))
+
+
+def _guidance_source_is_truth(args) -> bool:
+    return str(getattr(args, "guidance_source", "vision") or "vision") == "truth"
+
+
+def _truth_intruder_velocity(client, args, fallback_velocity: np.ndarray) -> np.ndarray:
+    if getattr(args, "intruder_actor", False):
+        return np.asarray(fallback_velocity, dtype=float)
+    try:
+        return _vector_xyz(_guidance_kinematics(client, args.intruder, args).linear_velocity)
+    except Exception:
+        return np.asarray(fallback_velocity, dtype=float)
+
+
+def _truth_png_guidance_state(relative_position: np.ndarray, relative_velocity: np.ndarray, args) -> dict[str, object]:
+    rel_pos = np.asarray(relative_position, dtype=float)
+    rel_vel = np.asarray(relative_velocity, dtype=float)
+    zero = np.zeros(3, dtype=float)
+    if (
+        rel_pos.shape != (3,)
+        or rel_vel.shape != (3,)
+        or not np.all(np.isfinite(rel_pos))
+        or not np.all(np.isfinite(rel_vel))
+    ):
+        return {
+            "valid": False,
+            "reason": "truth_unavailable",
+            "mode": "truth_png_invalid",
+            "lambda_I": None,
+            "omega_los": None,
+            "guidance_gain": 0.0,
+            "g_eval": zero,
+            "range_m": float("nan"),
+            "closing_speed": 0.0,
+        }
+    result = compute_truth_png(
+        rel_pos,
+        rel_vel,
+        navigation_constant=float(args.navigation_constant),
+        max_accel=float(args.max_guidance_accel_mps2),
+    )
+    lambda_I: Optional[np.ndarray]
+    omega_los: Optional[np.ndarray]
+    lambda_I = (
+        np.asarray(result.los, dtype=float)
+        if np.all(np.isfinite(result.los)) and float(np.linalg.norm(result.los)) > 0.0
+        else None
+    )
+    omega_los = np.asarray(result.omega_los, dtype=float) if np.all(np.isfinite(result.omega_los)) else None
+    if not result.valid:
+        return {
+            "valid": False,
+            "reason": result.reject_reason or "truth_png_invalid",
+            "mode": "truth_png_invalid",
+            "lambda_I": lambda_I,
+            "omega_los": omega_los,
+            "guidance_gain": 0.0,
+            "g_eval": zero,
+            "range_m": result.range_m,
+            "closing_speed": result.closing_speed,
+        }
+    return {
+        "valid": True,
+        "reason": "",
+        "mode": "truth_png",
+        "lambda_I": lambda_I,
+        "omega_los": omega_los,
+        "guidance_gain": float(args.navigation_constant) * float(result.closing_speed),
+        "g_eval": np.asarray(result.acceleration, dtype=float),
+        "range_m": result.range_m,
+        "closing_speed": result.closing_speed,
+    }
+
+
+def _neutral_terminal_result(command: np.ndarray, *, state: str = "") -> TerminalResult:
+    return TerminalResult(
+        v_cmd=np.array(command, dtype=float),
+        state=state,
+        reason="",
+        area_ratio=0.0,
+        miss_count=0,
+        using_blind_push=False,
+        blind_elapsed_s=0.0,
+        blind_decay=0.0,
+        blind_sample_count=0,
+        v_cmd_base=np.zeros(3, dtype=float),
+        v_cmd_trend_bias=np.zeros(3, dtype=float),
+        v_cmd_pitch_up_bias=np.zeros(3, dtype=float),
+        terminal_arm_source="",
+        terminal_cutoff_source="",
+    )
 
 
 def _image_error_ratio(px_err_x: float, px_err_y: float, intrinsics) -> float:
@@ -2935,12 +3051,16 @@ def _collision_is_new(pair_collision, baseline_collision) -> bool:
 def main() -> None:
     args = parse_args()
     _validate_runtime_args(args)
+    truth_guidance = _guidance_source_is_truth(args)
+    if truth_guidance and not args.diagnostic_truth:
+        print("Truth guidance requires target truth; enabling diagnostic truth logging.")
+        args.diagnostic_truth = True
     try:
         import airsim
     except ImportError as exc:
         raise SystemExit("Install the AirSim Python package before running this example.") from exc
 
-    client = airsim.MultirotorClient()
+    client = _make_multirotor_client(airsim)
     _register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()
@@ -2959,7 +3079,7 @@ def main() -> None:
     print(f"AirSim vehicles: {_format_names(available)}")
     if args.list_vehicles:
         return
-    detector = create_detection_provider(args, airsim_module=airsim)
+    detector = None if truth_guidance else create_detection_provider(args, airsim_module=airsim)
 
     if args.intruder_actor:
         args.px4_intruder = False
@@ -3022,7 +3142,7 @@ def main() -> None:
         mesh_name_pattern=args.mesh,
         vehicle_name=args.interceptor,
     )
-    if args.detector_source == "airsim" or args.shadow_airsim_detect:
+    if not truth_guidance and (args.detector_source == "airsim" or args.shadow_airsim_detect):
         configure_detection_filter(client, config)
         _configure_actor_detection_aliases(client, airsim, config, args)
 
@@ -3057,7 +3177,9 @@ def main() -> None:
         intruder_velocity_cmd=intruder_velocity_cmd,
         intrinsics=intrinsics,
     )
-    if args.detector_source == "airsim":
+    if truth_guidance:
+        print("Truth guidance source active: detector LOS/TTC is bypassed; PNG uses AirSim target truth.")
+    elif args.detector_source == "airsim":
         _warmup_detection(client, config, args)
     else:
         yolo_device_text = "unknown"
@@ -3184,29 +3306,46 @@ def main() -> None:
         body_yaw_deg = _body_yaw_deg(airsim, state.kinematics_estimated.orientation)
         camera_world_pos = interceptor_pos + R_IB @ _camera_offset_body(args)
 
-        detector_start = time.monotonic()
-        detector_frame = detector.detect(
-            client=client,
-            config=config,
-            frame_id=frame_id,
-            exposure_ts=sim_t,
-            active_name=active_name,
-            active_track_id=active_track_id,
-        )
-        detector_elapsed_s = time.monotonic() - detector_start
-        detector_fps = 1.0 / max(1.0e-6, detector_elapsed_s)
-        detections = detector_frame.detections
-        detection_count = len(detections)
-        detection_names = _detection_names(detections)
-        detection = detector_frame.selected
-        detected = detection is not None
-        detector_stats = detector_frame.stats
-        detector_image = detector_frame.image_bgr
-        shadow_airsim_stats = (
-            _shadow_airsim_detection(client, config, active_name, intrinsics)
-            if args.shadow_airsim_detect
-            else _empty_shadow_airsim_stats()
-        )
+        if truth_guidance:
+            active_name = _actor_name(args) if args.intruder_actor else args.intruder
+            detector_elapsed_s = 0.0
+            detector_fps = 0.0
+            detections = []
+            detection_count = 0
+            detection_names = ""
+            detection = None
+            detected = False
+            detector_stats = {
+                "detector_source": "truth",
+                "detector_reject_reason": "truth_guidance",
+                "detector_raw_count": 0,
+            }
+            detector_image = None
+            shadow_airsim_stats = _empty_shadow_airsim_stats()
+        else:
+            detector_start = time.monotonic()
+            detector_frame = detector.detect(
+                client=client,
+                config=config,
+                frame_id=frame_id,
+                exposure_ts=sim_t,
+                active_name=active_name,
+                active_track_id=active_track_id,
+            )
+            detector_elapsed_s = time.monotonic() - detector_start
+            detector_fps = 1.0 / max(1.0e-6, detector_elapsed_s)
+            detections = detector_frame.detections
+            detection_count = len(detections)
+            detection_names = _detection_names(detections)
+            detection = detector_frame.selected
+            detected = detection is not None
+            detector_stats = detector_frame.stats
+            detector_image = detector_frame.image_bgr
+            shadow_airsim_stats = (
+                _shadow_airsim_detection(client, config, active_name, intrinsics)
+                if args.shadow_airsim_detect
+                else _empty_shadow_airsim_stats()
+            )
         px_err_x = 0.0
         px_err_y = 0.0
         yaw_rate_cmd_deg_s = 0.0
@@ -3286,7 +3425,31 @@ def main() -> None:
         los_source = "none"
         track_switched = False
 
-        if detection is None:
+        if truth_guidance:
+            intruder_vel = _truth_intruder_velocity(client, args, intruder_velocity_cmd)
+            truth_guidance_state = _truth_png_guidance_state(rel, intruder_vel - interceptor_vel, args)
+            valid = bool(truth_guidance_state["valid"])
+            reason = str(truth_guidance_state["reason"])
+            guidance_mode = str(truth_guidance_state["mode"])
+            lambda_I = truth_guidance_state["lambda_I"]  # type: ignore[assignment]
+            omega_los = truth_guidance_state["omega_los"]  # type: ignore[assignment]
+            if lambda_I is not None:
+                lambda_raw = np.asarray(lambda_I, dtype=float)
+                lambda_I_measured = np.asarray(lambda_I, dtype=float)
+                lambda_I_predicted = np.asarray(lambda_I, dtype=float)
+            if omega_los is not None:
+                omega_raw = np.asarray(omega_los, dtype=float)
+                omega_los_predicted = np.asarray(omega_los, dtype=float)
+            guidance_gain = float(truth_guidance_state["guidance_gain"])
+            g_eval = np.asarray(truth_guidance_state["g_eval"], dtype=float)
+            los_quality = 1.0 if valid else 0.0
+            los_source = "truth"
+            yaw_rate_cmd_deg_s = _yaw_rate_from_truth_bearing(rel, yaw_rad, args)
+            if valid:
+                last_valid_ts = sim_t
+                last_lambda_I = None if lambda_I is None else np.array(lambda_I, dtype=float)
+                last_omega_los = None if omega_los is None else np.array(omega_los, dtype=float)
+        elif detection is None:
             reason = str(detector_stats.get("detector_reject_reason") or "no_detection")
         else:
             active_name = getattr(detection, "name", None) or active_name
@@ -3659,24 +3822,27 @@ def main() -> None:
             state=frame_centering_state,
             args=args,
         )
-        terminal_result = terminal_extrapolator.update(
-            timestamp=sim_t,
-            detected=detected,
-            measurement_valid=valid,
-            measurement_score=detection_score,
-            bbox_area=bbox_area,
-            image_width=intrinsics.width,
-            image_height=intrinsics.height,
-            reject_reason=reason,
-            v_cmd=candidate_v_cmd,
-            lambda_I=lambda_I,
-            omega_los=omega_los if valid else None,
-            speed_cap=scheduled_speed_cap,
-            max_vertical_speed=args.max_vision_vertical_speed,
-            gimbal_at_limit=False,
-            safety_ok=_airsim_safety_ok(client, args.interceptor),
-            soft_measurement_valid=image_kf.valid,
-        )
+        if truth_guidance:
+            terminal_result = _neutral_terminal_result(candidate_v_cmd)
+        else:
+            terminal_result = terminal_extrapolator.update(
+                timestamp=sim_t,
+                detected=detected,
+                measurement_valid=valid,
+                measurement_score=detection_score,
+                bbox_area=bbox_area,
+                image_width=intrinsics.width,
+                image_height=intrinsics.height,
+                reject_reason=reason,
+                v_cmd=candidate_v_cmd,
+                lambda_I=lambda_I,
+                omega_los=omega_los if valid else None,
+                speed_cap=scheduled_speed_cap,
+                max_vertical_speed=args.max_vision_vertical_speed,
+                gimbal_at_limit=False,
+                safety_ok=_airsim_safety_ok(client, args.interceptor),
+                soft_measurement_valid=image_kf.valid,
+            )
         los_terminal_gate_active = los_terminal_gate_active or _terminal_los_gate_active(
             detected=detected,
             area_ratio=area_ratio,
@@ -3944,6 +4110,7 @@ def main() -> None:
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
                 "guidance_law": args.guidance_law,
+                "guidance_source": str(args.guidance_source),
                 "guidance_output_mode": args.guidance_output_mode,
                 "navigation_constant": float(args.navigation_constant),
                 "vm_png_gain": fixed_vm_gain,
