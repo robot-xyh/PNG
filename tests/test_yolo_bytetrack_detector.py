@@ -1,4 +1,5 @@
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -6,7 +7,7 @@ from types import SimpleNamespace
 import numpy as np
 
 from vision_guidance.airsim_adapter import AirSimDetectionConfig
-from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector, YoloKcfDetector
+from vision_guidance.yolo_bytetrack_detector import YoloAsyncByteTrackDetector, YoloByteTrackDetector, YoloKcfDetector
 
 
 class FakeBoxes:
@@ -54,10 +55,52 @@ class FakeTracker:
 class FakeCv2:
     COLOR_GRAY2BGR = 1
     COLOR_BGRA2BGR = 2
+    COLOR_RGB2BGR = 3
+    IMREAD_UNCHANGED = -1
 
     @staticmethod
-    def cvtColor(image, _code):
+    def cvtColor(image, code):
+        if code == FakeCv2.COLOR_RGB2BGR:
+            return image[:, :, ::-1].copy()
+        if code == FakeCv2.COLOR_BGRA2BGR:
+            return image[:, :, :3].copy()
         return image
+
+    @staticmethod
+    def imdecode(array, _flags):
+        return np.asarray(array, dtype=np.uint8).reshape(1, -1, 1)
+
+
+class FakeImageType:
+    Scene = 0
+
+
+class FakeAirSimModule:
+    ImageType = FakeImageType
+
+    class ImageRequest:
+        def __init__(self, camera_name, image_type, pixels_as_float=False, compress=True):
+            self.camera_name = camera_name
+            self.image_type = image_type
+            self.pixels_as_float = pixels_as_float
+            self.compress = compress
+
+
+class FakeRawImageClient:
+    def __init__(self, image_rgb):
+        self.image_rgb = np.asarray(image_rgb, dtype=np.uint8)
+        self.requests = []
+
+    def simGetImages(self, requests, vehicle_name=""):
+        self.requests.append((requests, vehicle_name))
+        height, width = self.image_rgb.shape[:2]
+        return [
+            SimpleNamespace(
+                width=width,
+                height=height,
+                image_data_uint8=self.image_rgb.tobytes(),
+            )
+        ]
 
 
 class YoloByteTrackDetectorTest(unittest.TestCase):
@@ -74,6 +117,7 @@ class YoloByteTrackDetectorTest(unittest.TestCase):
             iou=0.55,
             imgsz=512,
             device="cpu",
+            cv2_module=FakeCv2(),
             tracker="bytetrack.yaml",
             allow_untracked_fallback=allow_untracked_fallback,
             single_target_mode=single_target_mode,
@@ -115,6 +159,98 @@ class YoloByteTrackDetectorTest(unittest.TestCase):
         self.assertEqual(model.calls[0][1]["iou"], 0.55)
         self.assertEqual(model.calls[0][1]["imgsz"], 512)
         self.assertEqual(model.calls[0][1]["device"], "cpu")
+
+    def test_half_flag_is_forwarded_to_ultralytics(self):
+        result = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(10, 20, 30, 40)],
+                conf=[0.90],
+                cls=[2],
+                track_ids=[9],
+            )
+        )
+        detector, model = self.make_detector([result], class_id=2)
+        detector.half = True
+
+        self.detect_once(detector)
+
+        self.assertEqual(model.calls[0][1]["half"], True)
+        self.assertEqual(detector._base_stats()["yolo_half"], 1)
+
+    def test_raw_airsim_image_transport_reads_uncompressed_rgb_as_bgr(self):
+        tempdir = tempfile.TemporaryDirectory()
+        self.addCleanup(tempdir.cleanup)
+        model_path = Path(tempdir.name) / "target.pt"
+        model_path.write_bytes(b"fake")
+        result = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(0, 0, 1, 1)],
+                conf=[0.90],
+                cls=[2],
+                track_ids=[1],
+            )
+        )
+        model = FakeModel([result])
+        detector = YoloByteTrackDetector(
+            model_path=str(model_path),
+            class_id=2,
+            image_transport="raw",
+            model_factory=lambda _: model,
+            cv2_module=FakeCv2(),
+            airsim_module=FakeAirSimModule,
+        )
+        rgb = np.array([[[1, 2, 3], [4, 5, 6]]], dtype=np.uint8)
+        client = FakeRawImageClient(rgb)
+
+        image = detector.read_scene_image(client, AirSimDetectionConfig(camera_name="front", vehicle_name="Interceptor"))
+
+        self.assertEqual(image.shape, (1, 2, 3))
+        self.assertEqual(image.tolist(), [[[3, 2, 1], [6, 5, 4]]])
+        self.assertEqual(client.requests[0][0][0].compress, False)
+        self.assertEqual(client.requests[0][1], "Interceptor")
+
+    def test_async_detector_returns_latest_background_result(self):
+        result = SimpleNamespace(
+            boxes=FakeBoxes(
+                xyxy=[(10, 20, 30, 40)],
+                conf=[0.90],
+                cls=[2],
+                track_ids=[9],
+            )
+        )
+        detector, _model = self.make_detector([result], class_id=2)
+        async_detector = YoloAsyncByteTrackDetector(inner=detector, max_age_s=1.0, queue_size=1, drop_stale=True)
+        self.addCleanup(async_detector.close)
+
+        first = async_detector.detect(
+            client=object(),
+            config=AirSimDetectionConfig(camera_name="0", vehicle_name="Interceptor"),
+            frame_id=1,
+            exposure_ts=1.0,
+        )
+        self.assertIsNone(first.frame_detection)
+        self.assertEqual(first.stats["detector_reject_reason"], "async_detection_waiting")
+
+        deadline = time.monotonic() + 1.0
+        frame = None
+        while time.monotonic() < deadline:
+            frame = async_detector.detect(
+                client=object(),
+                config=AirSimDetectionConfig(camera_name="0", vehicle_name="Interceptor"),
+                frame_id=2,
+                exposure_ts=1.05,
+            )
+            if frame.frame_detection is not None:
+                break
+            time.sleep(0.01)
+
+        self.assertIsNotNone(frame)
+        self.assertIsNotNone(frame.frame_detection)
+        self.assertEqual(frame.frame_detection.track_id, 9)
+        self.assertEqual(frame.stats["detector_source"], "yolo_bytetrack_async")
+        self.assertEqual(frame.stats["async_detector_active"], 1)
+        self.assertEqual(frame.stats["async_detection_has_result"], 1)
+        self.assertGreaterEqual(float(frame.stats["async_detection_latency_s"]), 0.0)
 
     def test_prefers_active_track_id_over_higher_confidence(self):
         result = SimpleNamespace(

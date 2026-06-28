@@ -35,6 +35,10 @@ USER_FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY_SET="${FRAME_CENTERING_LOSS_HOLD_LA
 USER_ATTITUDE_MAX_TILT_DEG_SET="${ATTITUDE_MAX_TILT_DEG+x}"
 USER_ATTITUDE_SPEED_HOLD_MAX_ACCEL_MPS2_SET="${ATTITUDE_SPEED_HOLD_MAX_ACCEL_MPS2+x}"
 USER_ATTITUDE_TOTAL_ACCEL_LIMIT_MPS2_SET="${ATTITUDE_TOTAL_ACCEL_LIMIT_MPS2+x}"
+USER_BODY_RATE_V2_GUARD_PNG_SCALE_SET="${BODY_RATE_V2_GUARD_PNG_SCALE+x}"
+USER_BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE_SET="${BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE+x}"
+USER_TERMINAL_LOS_REJECT_POLICY_SET="${TERMINAL_LOS_REJECT_POLICY+x}"
+USER_TERMINAL_VERTICAL_ACCEL_BIAS_GAIN_SET="${TERMINAL_VERTICAL_ACCEL_BIAS_GAIN+x}"
 MAX_GUIDANCE_ACCEL_MPS2="${MAX_GUIDANCE_ACCEL_MPS2:-15.0}"
 MIN_SPEED_RATIO="${MIN_SPEED_RATIO:-0.60}"
 ACCEL_INTEGRAL_RESET_ON_INVALID="${ACCEL_INTEGRAL_RESET_ON_INVALID:-0}"
@@ -55,6 +59,9 @@ BODY_RATE_V2_THRUST_RESERVE="${BODY_RATE_V2_THRUST_RESERVE:-0.15}"
 BODY_RATE_V2_GUARD_ERROR_RATIO="${BODY_RATE_V2_GUARD_ERROR_RATIO:-0.55}"
 BODY_RATE_V2_GUARD_PNG_SCALE="${BODY_RATE_V2_GUARD_PNG_SCALE:-0.60}"
 BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE="${BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE:-0.45}"
+BODY_RATE_HYBRID_TERMINAL_TILT_DEG="${BODY_RATE_HYBRID_TERMINAL_TILT_DEG:-25}"
+BODY_RATE_HYBRID_TERMINAL_MAX_PQ_RATE_DEG_S="${BODY_RATE_HYBRID_TERMINAL_MAX_PQ_RATE_DEG_S:-100}"
+BODY_RATE_HYBRID_TERMINAL_THRUST_MAX="${BODY_RATE_HYBRID_TERMINAL_THRUST_MAX:-0.85}"
 THRUST_MODEL="${THRUST_MODEL:-airsim_generic_quad}"
 VEHICLE_MASS_KG="${VEHICLE_MASS_KG:-1.0}"
 VEHICLE_MAX_TOTAL_THRUST_N="${VEHICLE_MAX_TOTAL_THRUST_N:-16.717785072}"
@@ -91,7 +98,13 @@ YOLO_DEVICE="${YOLO_DEVICE:-0}"
 YOLO_CONF="${YOLO_CONF:-0.1}"
 YOLO_IOU="${YOLO_IOU:-0.7}"
 YOLO_IMGSZ="${YOLO_IMGSZ:-640}"
+YOLO_HALF="${YOLO_HALF:-0}"
+YOLO_IMAGE_TRANSPORT="${YOLO_IMAGE_TRANSPORT:-compressed}"
 YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX="${YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX:-260}"
+ASYNC_DETECTION_MAX_AGE_S="${ASYNC_DETECTION_MAX_AGE_S:-0.18}"
+ASYNC_DETECTION_QUEUE_SIZE="${ASYNC_DETECTION_QUEUE_SIZE:-1}"
+ASYNC_DETECTION_DROP_STALE="${ASYNC_DETECTION_DROP_STALE:-1}"
+ASYNC_DETECTION_RETURN_REUSED="${ASYNC_DETECTION_RETURN_REUSED:-0}"
 KCF_YOLO_PERIOD_N="${KCF_YOLO_PERIOD_N:-8}"
 KCF_YOLO_PERIOD_S="${KCF_YOLO_PERIOD_S:-0.5}"
 KCF_MAX_COAST_S="${KCF_MAX_COAST_S:-0.8}"
@@ -110,6 +123,11 @@ LOS_FILTER_TERMINAL_INNOVATION_REJECT="${LOS_FILTER_TERMINAL_INNOVATION_REJECT:-
 LOS_FILTER_TERMINAL_AREA_RATIO="${LOS_FILTER_TERMINAL_AREA_RATIO:-0.01}"
 LOS_FILTER_TERMINAL_ERROR_RATIO="${LOS_FILTER_TERMINAL_ERROR_RATIO:-0.55}"
 LOS_DELAY_COMPENSATION_S="${LOS_DELAY_COMPENSATION_S:-0.18}"
+TERMINAL_LOS_REJECT_POLICY="${TERMINAL_LOS_REJECT_POLICY:-relaxed}"
+TERMINAL_RAW_LOS_MAX_RATE_RAD_S="${TERMINAL_RAW_LOS_MAX_RATE_RAD_S:-4.0}"
+TERMINAL_RAW_LOS_MAX_DELTA_RATE_RAD_S="${TERMINAL_RAW_LOS_MAX_DELTA_RATE_RAD_S:-3.0}"
+TERMINAL_VERTICAL_ACCEL_BIAS_GAIN="${TERMINAL_VERTICAL_ACCEL_BIAS_GAIN:-0.0}"
+TERMINAL_VERTICAL_ACCEL_BIAS_MAX_MPS2="${TERMINAL_VERTICAL_ACCEL_BIAS_MAX_MPS2:-2.0}"
 REJECT_TOP_CLIPPED_PITCH="${REJECT_TOP_CLIPPED_PITCH:-0}"
 FRAME_CENTERING="${FRAME_CENTERING:-1}"
 FRAME_CENTERING_ENTER_ERROR_RATIO="${FRAME_CENTERING_ENTER_ERROR_RATIO:-0.52}"
@@ -169,6 +187,13 @@ if [[ "$TERMINAL_PROFILE" == "terminal_v2" ]]; then
   [[ -z "$USER_ATTITUDE_TOTAL_ACCEL_LIMIT_MPS2_SET" ]] && ATTITUDE_TOTAL_ACCEL_LIMIT_MPS2=24.0
 fi
 
+if [[ "$BODY_RATE_CONTROL_PROFILE" == "hybrid_v2" ]]; then
+  [[ -z "$USER_BODY_RATE_V2_GUARD_PNG_SCALE_SET" ]] && BODY_RATE_V2_GUARD_PNG_SCALE=0.85
+  [[ -z "$USER_BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE_SET" ]] && BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE=0.75
+  [[ -z "$USER_TERMINAL_LOS_REJECT_POLICY_SET" ]] && TERMINAL_LOS_REJECT_POLICY=raw_capped
+  [[ -z "$USER_TERMINAL_VERTICAL_ACCEL_BIAS_GAIN_SET" ]] && TERMINAL_VERTICAL_ACCEL_BIAS_GAIN=2.0
+fi
+
 mkdir -p "$LOG_DIR" "$TRAJECTORY_DIR"
 
 stop_sim() {
@@ -194,11 +219,21 @@ wait_for_px4() {
 }
 
 wait_for_airsim() {
+  local env_path="${1:-}"
   local deadline=$((SECONDS + 90))
   while (( SECONDS < deadline )); do
+    if [[ -n "$env_path" && -f "$env_path" ]]; then
+      set -a
+      # shellcheck disable=SC1090
+      source "$env_path"
+      set +a
+    fi
     if python3 - <<'PY' >/dev/null 2>&1
+import os
 import airsim
-c = airsim.MultirotorClient(timeout_value=2)
+host = os.environ.get("AIRSIM_RPC_HOST", "")
+port = int(os.environ.get("AIRSIM_RPC_PORT", "41451"))
+c = airsim.MultirotorClient(ip=host, port=port, timeout_value=2)
 c.confirmConnection()
 vehicles = c.listVehicles()
 raise SystemExit(0 if "Interceptor" in vehicles else 1)
@@ -222,6 +257,8 @@ start_stack() {
   local run_tag="${label}_r${range_m}_h${ALTITUDE_OFFSET}_${STAMP}"
   PX4_LOG="$LOG_DIR/px4_${run_tag}.log"
   BLOCKS_LOG="$LOG_DIR/blocks_${run_tag}.log"
+  AIRSIM_RUNTIME_ENV="$LOG_DIR/airsim_${run_tag}.env"
+  CURRENT_AIRSIM_SETTINGS_PATH="$SETTINGS_PATH"
 
   stop_sim
   echo "Starting PX4 SITL for ${run_tag}"
@@ -230,9 +267,18 @@ start_stack() {
   wait_for_px4 "$PX4_LOG"
 
   echo "Starting Blocks for ${run_tag}"
-  "$SCRIPT_DIR/run_blocks_px4_actor.sh" >"$BLOCKS_LOG" 2>&1 &
+  AIRSIM_PORT_ENV_PATH="$AIRSIM_RUNTIME_ENV" AIRSIM_INSTANCE_LABEL="$run_tag" SETTINGS_PATH="$SETTINGS_PATH" "$SCRIPT_DIR/run_blocks_px4_actor.sh" >"$BLOCKS_LOG" 2>&1 &
   BLOCKS_PID=$!
-  wait_for_airsim
+  wait_for_airsim "$AIRSIM_RUNTIME_ENV"
+  if [[ -f "$AIRSIM_RUNTIME_ENV" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$AIRSIM_RUNTIME_ENV"
+    set +a
+    CURRENT_AIRSIM_SETTINGS_PATH="${AIRSIM_SETTINGS_PATH_RESOLVED:-$SETTINGS_PATH}"
+    echo "Resolved AirSim RPC: ${AIRSIM_RPC_HOST:-127.0.0.1}:${AIRSIM_RPC_PORT:-41451}"
+    echo "Resolved AirSim settings: $CURRENT_AIRSIM_SETTINGS_PATH"
+  fi
 }
 
 duration_for_range() {
@@ -285,6 +331,18 @@ run_case() {
   if [[ "$KCF_RESET_ON_YOLO_DRIFT" == "1" || "$KCF_RESET_ON_YOLO_DRIFT" == "true" || "$KCF_RESET_ON_YOLO_DRIFT" == "TRUE" ]]; then
     kcf_reset_args=(--kcf-reset-on-yolo-drift)
   fi
+  local yolo_half_args=(--no-yolo-half)
+  if [[ "$YOLO_HALF" == "1" || "$YOLO_HALF" == "true" || "$YOLO_HALF" == "TRUE" ]]; then
+    yolo_half_args=(--yolo-half)
+  fi
+  local async_drop_stale_args=(--no-async-detection-drop-stale)
+  if [[ "$ASYNC_DETECTION_DROP_STALE" == "1" || "$ASYNC_DETECTION_DROP_STALE" == "true" || "$ASYNC_DETECTION_DROP_STALE" == "TRUE" ]]; then
+    async_drop_stale_args=(--async-detection-drop-stale)
+  fi
+  local async_return_reused_args=(--no-async-detection-return-reused)
+  if [[ "$ASYNC_DETECTION_RETURN_REUSED" == "1" || "$ASYNC_DETECTION_RETURN_REUSED" == "true" || "$ASYNC_DETECTION_RETURN_REUSED" == "TRUE" ]]; then
+    async_return_reused_args=(--async-detection-return-reused)
+  fi
   local frame_centering_args=(--no-frame-centering)
   if [[ "$FRAME_CENTERING" == "1" || "$FRAME_CENTERING" == "true" || "$FRAME_CENTERING" == "TRUE" ]]; then
     frame_centering_args=(
@@ -336,11 +394,14 @@ run_case() {
     --body-rate-v2-max-pq-rate-deg-s "$BODY_RATE_V2_MAX_PQ_RATE_DEG_S" \
     --body-rate-v2-slew-pq-deg-s2 "$BODY_RATE_V2_SLEW_PQ_DEG_S2" \
     --body-rate-v2-slew-r-deg-s2 "$BODY_RATE_V2_SLEW_R_DEG_S2" \
-    --body-rate-v2-thrust-reserve "$BODY_RATE_V2_THRUST_RESERVE" \
-    --body-rate-v2-guard-error-ratio "$BODY_RATE_V2_GUARD_ERROR_RATIO" \
-    --body-rate-v2-guard-png-scale "$BODY_RATE_V2_GUARD_PNG_SCALE" \
-    --body-rate-v2-guard-speed-hold-scale "$BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE" \
-    --body-rate-hover-thrust "$BODY_RATE_HOVER_THRUST" \
+	    --body-rate-v2-thrust-reserve "$BODY_RATE_V2_THRUST_RESERVE" \
+	    --body-rate-v2-guard-error-ratio "$BODY_RATE_V2_GUARD_ERROR_RATIO" \
+	    --body-rate-v2-guard-png-scale "$BODY_RATE_V2_GUARD_PNG_SCALE" \
+	    --body-rate-v2-guard-speed-hold-scale "$BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE" \
+	    --body-rate-hybrid-terminal-tilt-deg "$BODY_RATE_HYBRID_TERMINAL_TILT_DEG" \
+	    --body-rate-hybrid-terminal-max-pq-rate-deg-s "$BODY_RATE_HYBRID_TERMINAL_MAX_PQ_RATE_DEG_S" \
+	    --body-rate-hybrid-terminal-thrust-max "$BODY_RATE_HYBRID_TERMINAL_THRUST_MAX" \
+	    --body-rate-hover-thrust "$BODY_RATE_HOVER_THRUST" \
     --body-rate-thrust-gain "$BODY_RATE_THRUST_GAIN" \
     --body-rate-min-thrust "$BODY_RATE_MIN_THRUST" \
     --body-rate-max-thrust "$BODY_RATE_MAX_THRUST" \
@@ -362,7 +423,7 @@ run_case() {
     --start-lateral-offset-m -20 \
     --trajectory-dir "$TRAJECTORY_DIR" \
     --trajectory-prefix "$prefix" \
-    --settings-path "$SETTINGS_PATH" \
+    --settings-path "${CURRENT_AIRSIM_SETTINGS_PATH:-$SETTINGS_PATH}" \
     --no-show-window \
     --no-record-preview \
     --preview-max-frames 0 \
@@ -384,10 +445,16 @@ run_case() {
     --yolo-iou "$YOLO_IOU" \
     --yolo-imgsz "$YOLO_IMGSZ" \
     --yolo-device "$YOLO_DEVICE" \
+    "${yolo_half_args[@]}" \
+    --yolo-image-transport "$YOLO_IMAGE_TRANSPORT" \
     --yolo-tracker bytetrack.yaml \
     --yolo-allow-untracked-fallback \
     --yolo-single-target-mode \
     --yolo-single-target-max-center-jump-px "$YOLO_SINGLE_TARGET_MAX_CENTER_JUMP_PX" \
+    --async-detection-max-age-s "$ASYNC_DETECTION_MAX_AGE_S" \
+    --async-detection-queue-size "$ASYNC_DETECTION_QUEUE_SIZE" \
+    "${async_drop_stale_args[@]}" \
+    "${async_return_reused_args[@]}" \
     --kcf-yolo-period-n "$KCF_YOLO_PERIOD_N" \
     --kcf-yolo-period-s "$KCF_YOLO_PERIOD_S" \
     --kcf-max-coast-s "$KCF_MAX_COAST_S" \
@@ -403,10 +470,15 @@ run_case() {
     --los-filter-measurement-noise "$LOS_FILTER_MEASUREMENT_NOISE" \
     --los-filter-innovation-reject "$LOS_FILTER_INNOVATION_REJECT" \
     --los-filter-terminal-innovation-reject "$LOS_FILTER_TERMINAL_INNOVATION_REJECT" \
-    --los-filter-terminal-area-ratio "$LOS_FILTER_TERMINAL_AREA_RATIO" \
-    --los-filter-terminal-error-ratio "$LOS_FILTER_TERMINAL_ERROR_RATIO" \
-    --los-delay-compensation-s "$LOS_DELAY_COMPENSATION_S" \
-    --frame-guard \
+	    --los-filter-terminal-area-ratio "$LOS_FILTER_TERMINAL_AREA_RATIO" \
+	    --los-filter-terminal-error-ratio "$LOS_FILTER_TERMINAL_ERROR_RATIO" \
+	    --los-delay-compensation-s "$LOS_DELAY_COMPENSATION_S" \
+	    --terminal-los-reject-policy "$TERMINAL_LOS_REJECT_POLICY" \
+	    --terminal-raw-los-max-rate-rad-s "$TERMINAL_RAW_LOS_MAX_RATE_RAD_S" \
+	    --terminal-raw-los-max-delta-rate-rad-s "$TERMINAL_RAW_LOS_MAX_DELTA_RATE_RAD_S" \
+	    --terminal-vertical-accel-bias-gain "$TERMINAL_VERTICAL_ACCEL_BIAS_GAIN" \
+	    --terminal-vertical-accel-bias-max-mps2 "$TERMINAL_VERTICAL_ACCEL_BIAS_MAX_MPS2" \
+	    --frame-guard \
     "${frame_centering_args[@]}" \
     --yaw-control \
     --yaw-error-gain "$YAW_ERROR_GAIN" \
@@ -456,7 +528,8 @@ trap stop_sim EXIT
 echo "YOLO SITL TTC/Vm stamp: ${STAMP}"
 echo "Ranges: ${RANGES[*]}"
 echo "Run groups: TTC=${RUN_TTC}; VM=${RUN_VM}"
-echo "Detector: source=${DETECTOR_SOURCE}, model=${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
+echo "Detector: source=${DETECTOR_SOURCE}, model=${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, imgsz=${YOLO_IMGSZ}, half=${YOLO_HALF}, transport=${YOLO_IMAGE_TRANSPORT}, tracker=bytetrack.yaml"
+echo "Async detector: max_age=${ASYNC_DETECTION_MAX_AGE_S}s, queue=${ASYNC_DETECTION_QUEUE_SIZE}, drop_stale=${ASYNC_DETECTION_DROP_STALE}, return_reused=${ASYNC_DETECTION_RETURN_REUSED}"
 echo "KCF: period_n=${KCF_YOLO_PERIOD_N}, period_s=${KCF_YOLO_PERIOD_S}, max_coast=${KCF_MAX_COAST_S}, min_iou=${KCF_MIN_YOLO_IOU}, center_jump=${KCF_MAX_CENTER_JUMP_PX}, area_ratio=${KCF_AREA_RATIO_MIN}/${KCF_AREA_RATIO_MAX}, reset_on_drift=${KCF_RESET_ON_YOLO_DRIFT}"
 echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"
@@ -465,11 +538,13 @@ echo "Terminal profile: ${TERMINAL_PROFILE}; image_kf predict=${TERMINAL_IMAGE_K
 echo "Thrust model: ${THRUST_MODEL}; mass=${VEHICLE_MASS_KG}kg; max_total_thrust=${VEHICLE_MAX_TOTAL_THRUST_N}N"
 echo "Body-rate: profile=${BODY_RATE_CONTROL_PROFILE}; tilt=${BODY_RATE_MAX_TILT_DEG}deg rates=${BODY_RATE_MAX_ROLL_RATE_DEG}/${BODY_RATE_MAX_PITCH_RATE_DEG}deg/s thrust=${BODY_RATE_MIN_THRUST}/${BODY_RATE_HOVER_THRUST}/${BODY_RATE_MAX_THRUST}"
 echo "Body-rate v2: kp=${BODY_RATE_V2_KP_ROLL}/${BODY_RATE_V2_KP_PITCH}/${BODY_RATE_V2_KP_YAW}; max_pq=${BODY_RATE_V2_MAX_PQ_RATE_DEG_S}deg/s; slew=${BODY_RATE_V2_SLEW_PQ_DEG_S2}/${BODY_RATE_V2_SLEW_R_DEG_S2}deg/s^2; reserve=${BODY_RATE_V2_THRUST_RESERVE}; guard=${BODY_RATE_V2_GUARD_ERROR_RATIO}/${BODY_RATE_V2_GUARD_PNG_SCALE}/${BODY_RATE_V2_GUARD_SPEED_HOLD_SCALE}"
+echo "Body-rate hybrid terminal: tilt=${BODY_RATE_HYBRID_TERMINAL_TILT_DEG}deg; max_pq=${BODY_RATE_HYBRID_TERMINAL_MAX_PQ_RATE_DEG_S}deg/s; thrust_max=${BODY_RATE_HYBRID_TERMINAL_THRUST_MAX}"
 echo "Body-rate speed hold: gain=${BODY_RATE_SPEED_HOLD_GAIN}; max_accel=${BODY_RATE_SPEED_HOLD_MAX_ACCEL_MPS2}; total_limit=${BODY_RATE_TOTAL_ACCEL_LIMIT_MPS2}"
 echo "Attitude: tilt=${ATTITUDE_MAX_TILT_DEG}deg yaw_lookahead=${ATTITUDE_YAW_LOOKAHEAD_S}s thrust=${ATTITUDE_MIN_THRUST}/${ATTITUDE_HOVER_THRUST}/${ATTITUDE_MAX_THRUST}"
 echo "Attitude speed hold: gain=${ATTITUDE_SPEED_HOLD_GAIN}; max_accel=${ATTITUDE_SPEED_HOLD_MAX_ACCEL_MPS2}; total_limit=${ATTITUDE_TOTAL_ACCEL_LIMIT_MPS2}"
 echo "Camera: x=${CAMERA_X}, y=${CAMERA_Y}, z=${CAMERA_Z}, pitch=${CAMERA_PITCH_DEG}, roll=${CAMERA_ROLL_DEG}, yaw=${CAMERA_YAW_DEG}"
 echo "Shadow AirSim detect: ${SHADOW_AIRSIM_DETECT}; LOS filter: ${LOS_FILTER}; LOS KF q=${LOS_FILTER_PROCESS_LAMBDA}/${LOS_FILTER_PROCESS_LAMBDA_DOT}, r=${LOS_FILTER_MEASUREMENT_NOISE}, reject=${LOS_FILTER_INNOVATION_REJECT}, terminal_reject=${LOS_FILTER_TERMINAL_INNOVATION_REJECT}; delay=${LOS_DELAY_COMPENSATION_S}s; reject top clipped pitch: ${REJECT_TOP_CLIPPED_PITCH}; yolo-imgsz=${YOLO_IMGSZ}"
+echo "Terminal LOS policy: ${TERMINAL_LOS_REJECT_POLICY}; raw_rate=${TERMINAL_RAW_LOS_MAX_RATE_RAD_S}rad/s; raw_delta=${TERMINAL_RAW_LOS_MAX_DELTA_RATE_RAD_S}rad/s; vertical_bias_gain=${TERMINAL_VERTICAL_ACCEL_BIAS_GAIN}; vertical_bias_max=${TERMINAL_VERTICAL_ACCEL_BIAS_MAX_MPS2}m/s^2"
 echo "Frame centering: ${FRAME_CENTERING}; enter=${FRAME_CENTERING_ENTER_ERROR_RATIO}; terminal=${FRAME_CENTERING_TERMINAL_ERROR_RATIO}; loss_hold=${FRAME_CENTERING_LOSS_HOLD_S}s; speed_ratio=${FRAME_CENTERING_SPEED_RATIO}; terminal_speed_ratio=${TERMINAL_CAPTURE_SPEED_RATIO}; lateral=${FRAME_CENTERING_MAX_LATERAL_SPEED}/${TERMINAL_CAPTURE_MAX_LATERAL_SPEED}"
 echo "Frame centering loss hold last velocity: ${FRAME_CENTERING_LOSS_HOLD_LAST_VELOCITY}"
 echo "Case timeout: ${CASE_TIMEOUT_S}s"

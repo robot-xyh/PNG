@@ -376,6 +376,8 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|YOLO model|`{cfg('yolo_model')}`|",
             f"|YOLO device|`{cfg('yolo_device')}` runtime `{sample.get('yolo_runtime_device', '')}`|",
             f"|YOLO conf / iou / imgsz|`{cfg('yolo_conf')}` / `{cfg('yolo_iou')}` / `{cfg('yolo_imgsz')}`|",
+            f"|YOLO half / transport|`{cfg('yolo_half')}` / `{cfg('yolo_image_transport')}`|",
+            f"|async detector|active `{cfg('async_detector_active')}`，max_age `{cfg('async_detection_max_age_s')} s`，drop_stale `{cfg('async_detection_drop_stale')}`，return_reused `{cfg('async_detection_return_reused')}`|",
             f"|tracker|`{cfg('yolo_tracker')}`，single target `{cfg('yolo_single_target_mode')}`|",
             f"|相机外参|`x={cfg('camera_x')}, y={cfg('camera_y')}, z={cfg('camera_z')}`|",
             f"|FOV / resolution|`{cfg('fov_deg')} deg`, `{sample.get('image_width_runtime', sample.get('width', ''))}x{sample.get('image_height_runtime', sample.get('height', ''))}`|",
@@ -392,6 +394,7 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|body-rate v2 Kp roll/pitch/yaw|`{cfg('body_rate_v2_kp_roll')}` / `{cfg('body_rate_v2_kp_pitch')}` / `{cfg('body_rate_v2_kp_yaw')}`|",
             f"|body-rate v2 max pq / slew pq-r|`{cfg('body_rate_v2_max_pq_rate_deg_s')} deg/s` / `{cfg('body_rate_v2_slew_pq_deg_s2')}`-`{cfg('body_rate_v2_slew_r_deg_s2')} deg/s^2`|",
             f"|body-rate v2 thrust reserve / guard|`{cfg('body_rate_v2_thrust_reserve')}` / error `{cfg('body_rate_v2_guard_error_ratio')}`, PNG scale `{cfg('body_rate_v2_guard_png_scale')}`, speed-hold scale `{cfg('body_rate_v2_guard_speed_hold_scale')}`|",
+            f"|body-rate hybrid terminal|tilt `{cfg('body_rate_hybrid_terminal_tilt_deg')} deg`, max pq `{cfg('body_rate_hybrid_terminal_max_pq_rate_deg_s')} deg/s`, thrust max `{cfg('body_rate_hybrid_terminal_thrust_max')}`|",
             f"|body-rate thrust|min/hover/max `{cfg('body_rate_min_thrust')}` / `{cfg('body_rate_hover_thrust')}` / `{cfg('body_rate_max_thrust')}`|",
             f"|body-rate speed hold|gain `{cfg('body_rate_speed_hold_gain')}`, max accel `{cfg('body_rate_speed_hold_max_accel_mps2')} m/s^2`, total limit `{cfg('body_rate_total_accel_limit_mps2')} m/s^2`|",
             f"|attitude tilt / yaw lookahead|`{cfg('attitude_max_tilt_deg')} deg` / `{cfg('attitude_yaw_lookahead_s')} s`|",
@@ -401,6 +404,8 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|LOS KF q lambda / lambda_dot|`{cfg('los_filter_process_lambda')}` / `{cfg('los_filter_process_lambda_dot')}`|",
             f"|LOS KF r / innovation gate|`{cfg('los_filter_measurement_noise')}` / `{cfg('los_filter_innovation_reject')}`|",
             f"|LOS terminal gate / delay|`{cfg('los_filter_terminal_innovation_reject')}` / `{cfg('los_delay_compensation_s')} s`|",
+            f"|terminal LOS policy|`{cfg('terminal_los_reject_policy')}`, raw cap `{cfg('terminal_raw_los_max_rate_rad_s')} rad/s`, delta cap `{cfg('terminal_raw_los_max_delta_rate_rad_s')} rad/s`|",
+            f"|terminal vertical accel bias|gain `{cfg('terminal_vertical_accel_bias_gain')}`, max `{cfg('terminal_vertical_accel_bias_max_mps2')} m/s^2`|",
             f"|terminal image KF|predict `{cfg('terminal_image_kf_max_predict_s')} s`, reject `{cfg('terminal_image_kf_innovation_reject_rad')} rad`, soft reject `{cfg('terminal_image_kf_soft_reject_predict', False)}`|",
             f"|terminal image KF dynamics|accel noise `{cfg('terminal_image_kf_accel_noise_rad_s2')} rad/s^2`, max rate `{cfg('terminal_image_kf_max_rate_rad_s')} rad/s`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
@@ -698,12 +703,13 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
 
 def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
     sample = _first_sample(rows)
-    if sample.get("guidance_output_mode") != "accel_body_rate" and sample.get("body_rate_control_profile") != "v2":
-        return "本轮不是 `accel_body_rate + body-rate-control-profile=v2`，不生成 body-rate v2 专属诊断。"
+    body_profile = str(sample.get("body_rate_control_profile", ""))
+    if sample.get("guidance_output_mode") != "accel_body_rate" or body_profile not in {"v2", "hybrid_v2"}:
+        return "本轮不是 `accel_body_rate + body-rate-control-profile=v2/hybrid_v2`，不生成 body-rate v2/hybrid 专属诊断。"
 
     lines = [
-        "|组别|距离m|最近距离m|guard激活|p/q/r斜率限制|推力饱和|p/q/r峰值deg/s|姿态误差峰值|",
-        "|---|---:|---:|---:|---|---:|---|---|",
+        "|组别|距离m|最近距离m|guard激活|terminal权限|raw-capped LOS|垂直偏置峰值m/s^2|p/q/r斜率限制|推力饱和|p/q/r峰值deg/s|姿态误差峰值|",
+        "|---|---:|---:|---:|---:|---:|---:|---|---:|---|---|",
     ]
     for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
         samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
@@ -724,6 +730,9 @@ def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
             return max((abs(value) for value in vals), default=math.nan)
 
         guard = active_ratio("body_rate_frame_guard_active")
+        terminal_authority = active_ratio("body_rate_terminal_authority_active")
+        raw_capped = active_ratio("los_terminal_raw_capped")
+        vertical_bias_peak = peak_abs("terminal_vertical_accel_bias_mps2")
         slew_p = active_ratio("body_rate_p_slew_limited")
         slew_q = active_ratio("body_rate_q_slew_limited")
         slew_r = active_ratio("body_rate_r_slew_limited")
@@ -736,6 +745,7 @@ def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
         ez_peak = peak_abs("body_rate_q_error_z")
         lines.append(
             f"|{row.label}|{row.start_range_m:.0f}|{row.min_range_m:.3f}|{guard:.1f}%|"
+            f"{terminal_authority:.1f}%|{raw_capped:.1f}%|{vertical_bias_peak:.2f}|"
             f"{slew_p:.1f}%/{slew_q:.1f}%/{slew_r:.1f}%|{thrust_sat:.1f}%|"
             f"{p_peak:.1f}/{q_peak:.1f}/{r_peak:.1f}|{ex_peak:.3f}/{ey_peak:.3f}/{ez_peak:.3f}|"
         )
@@ -743,9 +753,11 @@ def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
     lines.extend(
         [
             "",
-            "- `guard激活` 为 body-rate v2 的视场保持保护状态。该状态下 PNG 加速度和 speed-hold 加速度会分别乘以 `body_rate_v2_guard_png_scale` 与 `body_rate_v2_guard_speed_hold_scale`。",
-            "- 本轮所有工况 guard 均长期激活，说明固定相机始终处于“视场保持优先”区域；这能减少甩出画面，但也会显著削弱末端机动。",
-            "- `p/q/r峰值` 多次达到 `120/120/45 deg/s` 限幅，说明体轴角速度通道经常打满。未命中不只是导引律问题，还受 PX4 body-rate 跟踪能力、角速度限幅和低频视觉闭环共同限制。",
+            "- `guard激活` 为 body-rate v2/hybrid 的视场保持保护状态。原 `v2` 中该状态会按 `body_rate_v2_guard_png_scale` 与 `body_rate_v2_guard_speed_hold_scale` 降权；`hybrid_v2` 只在终端视场风险触发时使用这组降权。",
+            "- `terminal权限` 是 `hybrid_v2` 的终端权限窗口。它应明显低于全程 100%；如果长期 100%，说明仍然在复现旧 v2 的欠机动问题。",
+            "- `raw-capped LOS` 表示末端 LOS KF 拒绝测量时，算法改用限幅后的原始像面 LOS/LOS rate 继续导引。",
+            "- `垂直偏置峰值` 是固定相机末端目标偏上时给 body-rate 加速度链路叠加的 NED-Z 加速度偏置，负值方向对应向上。",
+            "- `p/q/r峰值` 多次达到当前 profile 的限幅，说明体轴角速度通道经常打满。未命中不只是导引律问题，还受 PX4 body-rate 跟踪能力、角速度限幅和低频视觉闭环共同限制。",
             "- 推力饱和比例整体不高，当前主要瓶颈更像是角速度/姿态响应与 frame guard 长期降权，而不是总推力常态触顶。",
         ]
     )

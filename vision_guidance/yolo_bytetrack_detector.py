@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import importlib
 import argparse
+import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -48,15 +50,34 @@ class DetectorFrame:
     image_bgr: Optional[np.ndarray] = None
 
 
+@dataclass
+class _AsyncDetectionJob:
+    image_bgr: np.ndarray
+    frame_id: int
+    exposure_ts: float
+    active_track_id: Optional[int]
+    stats: dict[str, Any]
+    submitted_wall_ts: float
+
+
+@dataclass
+class _AsyncDetectionResult:
+    frame: DetectorFrame
+    exposure_ts: float
+    submitted_wall_ts: float
+    completed_wall_ts: float
+
+
 def add_detector_args(parser: Any) -> None:
     parser.add_argument(
         "--detector-source",
-        choices=("airsim", "yolo_bytetrack", "yolo_kcf"),
+        choices=("airsim", "yolo_bytetrack", "yolo_bytetrack_async", "yolo_kcf"),
         default="airsim",
         help=(
             "Detection source. AirSim detect remains the default; YOLO modes fail fast on "
-            "missing model/dependencies. yolo_kcf uses YOLO for init/correction and KCF "
-            "for frame-to-frame tracking."
+            "missing model/dependencies. yolo_bytetrack_async keeps the control loop from "
+            "blocking on inference by returning the latest finished YOLO frame. yolo_kcf "
+            "uses YOLO for init/correction and KCF for frame-to-frame tracking."
         ),
     )
     parser.add_argument("--yolo-model", default="", help="YOLOv8 model path used when --detector-source yolo_bytetrack.")
@@ -66,6 +87,18 @@ def add_detector_args(parser: Any) -> None:
     parser.add_argument("--yolo-imgsz", type=int, default=640)
     parser.add_argument("--yolo-device", default="", help="Ultralytics device string, for example '0', 'cpu', or empty for auto.")
     parser.add_argument("--yolo-tracker", default="bytetrack.yaml")
+    parser.add_argument(
+        "--yolo-half",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Request FP16 inference from Ultralytics. This is useful on CUDA/TensorRT and is ignored by CPU backends.",
+    )
+    parser.add_argument(
+        "--yolo-image-transport",
+        choices=("compressed", "raw"),
+        default="compressed",
+        help="AirSim image transport used by YOLO detectors. compressed uses simGetImage PNG; raw uses simGetImages uncompressed RGB/BGRA.",
+    )
     parser.add_argument(
         "--yolo-allow-untracked-fallback",
         action="store_true",
@@ -101,14 +134,28 @@ def add_detector_args(parser: Any) -> None:
         default=True,
         help="When YOLO and KCF disagree, reset/reinitialize KCF from the YOLO box instead of coasting.",
     )
+    parser.add_argument("--async-detection-max-age-s", type=float, default=0.18, help="Maximum age of a cached async YOLO result before it is marked stale.")
+    parser.add_argument("--async-detection-queue-size", type=int, default=1, help="Number of pending async YOLO requests retained; 1 keeps only the newest request.")
+    parser.add_argument(
+        "--async-detection-drop-stale",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Drop stale async YOLO results instead of returning an old detection frame to guidance.",
+    )
+    parser.add_argument(
+        "--async-detection-return-reused",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Return the same finished async YOLO result on multiple control frames. Off by default to avoid duplicate LOS measurements.",
+    )
 
 
 def create_detection_provider(args: Any, airsim_module: Any = None):
     source = str(getattr(args, "detector_source", "airsim") or "airsim")
     if source == "airsim":
         return AirSimBuiltinDetector()
-    if source == "yolo_bytetrack":
-        return YoloByteTrackDetector(
+    if source in {"yolo_bytetrack", "yolo_bytetrack_async"}:
+        detector = YoloByteTrackDetector(
             model_path=str(getattr(args, "yolo_model", "") or ""),
             class_id=getattr(args, "yolo_class_id", None),
             conf=float(getattr(args, "yolo_conf", 0.25)),
@@ -116,10 +163,21 @@ def create_detection_provider(args: Any, airsim_module: Any = None):
             imgsz=int(getattr(args, "yolo_imgsz", 640)),
             device=str(getattr(args, "yolo_device", "") or ""),
             tracker=str(getattr(args, "yolo_tracker", "bytetrack.yaml") or "bytetrack.yaml"),
+            half=bool(getattr(args, "yolo_half", False)),
+            image_transport=str(getattr(args, "yolo_image_transport", "compressed") or "compressed"),
             allow_untracked_fallback=bool(getattr(args, "yolo_allow_untracked_fallback", False)),
             single_target_mode=bool(getattr(args, "yolo_single_target_mode", False)),
             single_target_max_center_jump_px=float(getattr(args, "yolo_single_target_max_center_jump_px", 220.0)),
             airsim_module=airsim_module,
+        )
+        if source == "yolo_bytetrack":
+            return detector
+        return YoloAsyncByteTrackDetector(
+            inner=detector,
+            max_age_s=float(getattr(args, "async_detection_max_age_s", 0.18)),
+            queue_size=int(getattr(args, "async_detection_queue_size", 1)),
+            drop_stale=bool(getattr(args, "async_detection_drop_stale", True)),
+            return_reused=bool(getattr(args, "async_detection_return_reused", False)),
         )
     if source == "yolo_kcf":
         return YoloKcfDetector(
@@ -129,6 +187,8 @@ def create_detection_provider(args: Any, airsim_module: Any = None):
             iou=float(getattr(args, "yolo_iou", 0.70)),
             imgsz=int(getattr(args, "yolo_imgsz", 640)),
             device=str(getattr(args, "yolo_device", "") or ""),
+            half=bool(getattr(args, "yolo_half", False)),
+            image_transport=str(getattr(args, "yolo_image_transport", "compressed") or "compressed"),
             single_target_mode=bool(getattr(args, "yolo_single_target_mode", False)),
             single_target_max_center_jump_px=float(getattr(args, "yolo_single_target_max_center_jump_px", 220.0)),
             yolo_period_n=int(getattr(args, "kcf_yolo_period_n", 8)),
@@ -191,11 +251,33 @@ class AirSimBuiltinDetector:
                 "yolo_runtime_device": "",
                 "yolo_cuda_available": "",
                 "yolo_gpu_name": "",
+                "yolo_model_path": "",
+                "yolo_half": "",
+                "yolo_image_transport": "",
+                "image_capture_elapsed_s": "",
+                "yolo_inference_elapsed_s": "",
+                "yolo_postprocess_elapsed_s": "",
                 "yolo_allow_untracked_fallback": "",
                 "yolo_used_untracked_fallback": "",
                 "yolo_single_target_mode": "",
                 "yolo_single_target_selected": "",
                 "yolo_single_target_distance_px": "",
+                "async_detector_active": "",
+                "async_detection_max_age_s": "",
+                "async_detection_queue_size": "",
+                "async_detection_drop_stale": "",
+                "async_detection_return_reused": "",
+                "async_detection_pending_count": "",
+                "async_detection_thread_alive": "",
+                "async_detection_worker_error": "",
+                "async_detection_has_result": "",
+                "async_detection_returned": "",
+                "async_detection_result_frame_id": "",
+                "async_detection_age_s": "",
+                "async_detection_wall_age_s": "",
+                "async_detection_latency_s": "",
+                "async_detection_stale": "",
+                "async_detection_reused_result": "",
             },
         )
 
@@ -213,6 +295,8 @@ class YoloByteTrackDetector:
         imgsz: int = 640,
         device: str = "",
         tracker: str = "bytetrack.yaml",
+        half: bool = False,
+        image_transport: str = "compressed",
         allow_untracked_fallback: bool = False,
         single_target_mode: bool = False,
         single_target_max_center_jump_px: float = 220.0,
@@ -229,6 +313,8 @@ class YoloByteTrackDetector:
         self.imgsz = max(1, int(imgsz))
         self.device = str(device or "")
         self.tracker = str(tracker or "bytetrack.yaml")
+        self.half = bool(half)
+        self.image_transport = _normalize_image_transport(image_transport)
         self.allow_untracked_fallback = bool(allow_untracked_fallback)
         self.single_target_mode = bool(single_target_mode)
         self.single_target_max_center_jump_px = max(0.0, float(single_target_max_center_jump_px))
@@ -263,34 +349,32 @@ class YoloByteTrackDetector:
         active_track_id: Optional[int] = None,
     ) -> DetectorFrame:
         del active_name
-        stats: dict[str, Any] = {
-            "detector_source": self.source,
-            "detector_reject_reason": "",
-            "detector_raw_count": 0,
-            "detector_class_filtered_count": 0,
-            "detector_track_filtered_count": 0,
-            "yolo_raw_count": 0,
-            "yolo_class_filtered_count": 0,
-            "yolo_track_filtered_count": 0,
-            "yolo_track_missing_count": 0,
-            "yolo_selected_track_id": "",
-            "yolo_selected_class_id": "",
-            "yolo_selected_score": "",
-            "yolo_selected_source": "",
-            "yolo_requested_device": self.device or "auto",
-            "yolo_runtime_device": self._runtime_device(),
-            "yolo_cuda_available": int(bool(self.runtime_info.get("cuda_available", False))),
-            "yolo_gpu_name": str(self.runtime_info.get("gpu_name", "")),
-            "yolo_allow_untracked_fallback": int(self.allow_untracked_fallback),
-            "yolo_used_untracked_fallback": 0,
-            "yolo_single_target_mode": int(self.single_target_mode),
-            "yolo_single_target_selected": 0,
-            "yolo_single_target_distance_px": "",
-        }
-        image_bgr = self._read_scene_image(client, config)
+        image_start = time.monotonic()
+        image_bgr = self.read_scene_image(client, config)
+        image_elapsed_s = time.monotonic() - image_start
+        stats = self._base_stats()
+        stats["image_capture_elapsed_s"] = image_elapsed_s
         if image_bgr is None:
             stats["detector_reject_reason"] = "yolo_image_unavailable"
             return DetectorFrame([], None, None, stats, image_bgr=None)
+        return self.detect_image(
+            image_bgr=image_bgr,
+            frame_id=frame_id,
+            exposure_ts=exposure_ts,
+            active_track_id=active_track_id,
+            stats=stats,
+        )
+
+    def detect_image(
+        self,
+        *,
+        image_bgr: np.ndarray,
+        frame_id: int,
+        exposure_ts: float,
+        active_track_id: Optional[int] = None,
+        stats: Optional[dict[str, Any]] = None,
+    ) -> DetectorFrame:
+        stats = self._base_stats() if stats is None else dict(stats)
 
         kwargs: dict[str, Any] = {
             "persist": True,
@@ -302,8 +386,14 @@ class YoloByteTrackDetector:
         }
         if self.device:
             kwargs["device"] = self.device
+        if self.half:
+            kwargs["half"] = True
+        inference_start = time.monotonic()
         results = self.model.track(image_bgr, **kwargs)
+        stats["yolo_inference_elapsed_s"] = time.monotonic() - inference_start
+        postprocess_start = time.monotonic()
         detections, parse_stats = self._detections_from_results(results, image_bgr.shape)
+        stats["yolo_postprocess_elapsed_s"] = time.monotonic() - postprocess_start
         stats.update(parse_stats)
         stats["detector_raw_count"] = stats["yolo_raw_count"]
         stats["detector_class_filtered_count"] = stats["yolo_class_filtered_count"]
@@ -349,6 +439,19 @@ class YoloByteTrackDetector:
 
         return DetectorFrame(detections, selected, frame_detection, stats, image_bgr=image_bgr)
 
+    def _base_stats(self) -> dict[str, Any]:
+        return _base_yolo_stats(
+            source=self.source,
+            device=self.device,
+            runtime_device=self._runtime_device(),
+            runtime_info=self.runtime_info,
+            allow_untracked_fallback=self.allow_untracked_fallback,
+            single_target_mode=self.single_target_mode,
+            half=self.half,
+            image_transport=self.image_transport,
+            model_path=self.model_path,
+        )
+
     def _runtime_device(self) -> str:
         try:
             model = getattr(self.model, "model", None)
@@ -362,28 +465,232 @@ class YoloByteTrackDetector:
             pass
         return str(self.device or "auto")
 
-    def _read_scene_image(self, client: Any, config: AirSimDetectionConfig) -> Optional[np.ndarray]:
+    def read_scene_image(self, client: Any, config: AirSimDetectionConfig) -> Optional[np.ndarray]:
         if self.image_reader is not None:
             image = self.image_reader(client, config)
             return None if image is None else _ensure_bgr(image, self.cv2)
-        if self.airsim_module is None:
-            raise RuntimeError("airsim_module is required for YOLO image capture.")
-        raw_image = client.simGetImage(
-            config.camera_name,
-            getattr(self.airsim_module.ImageType, config.image_type_name),
-            vehicle_name=config.vehicle_name,
+        return _read_scene_image_from_airsim(
+            client=client,
+            config=config,
+            airsim_module=self.airsim_module,
+            cv2=self.cv2,
+            image_transport=self.image_transport,
         )
-        if raw_image is None:
-            return None
-        if isinstance(raw_image, str):
-            raw_image = raw_image.encode("latin1")
-        image = self.cv2.imdecode(np.frombuffer(raw_image, dtype=np.uint8), self.cv2.IMREAD_UNCHANGED)
-        if image is None:
-            return None
-        return _ensure_bgr(image, self.cv2)
+
+    def _read_scene_image(self, client: Any, config: AirSimDetectionConfig) -> Optional[np.ndarray]:
+        return self.read_scene_image(client, config)
 
     def _detections_from_results(self, results: Any, image_shape: tuple[int, ...]) -> tuple[list[TrackedBoxDetection], dict[str, Any]]:
         return _detections_from_yolo_results(results, image_shape, self.class_id, self.source)
+
+
+class YoloAsyncByteTrackDetector:
+    source = "yolo_bytetrack_async"
+
+    def __init__(
+        self,
+        *,
+        inner: YoloByteTrackDetector,
+        max_age_s: float = 0.18,
+        queue_size: int = 1,
+        drop_stale: bool = True,
+        return_reused: bool = False,
+    ) -> None:
+        self.inner = inner
+        self.max_age_s = max(0.0, float(max_age_s))
+        self.queue_size = max(1, int(queue_size))
+        self.drop_stale = bool(drop_stale)
+        self.return_reused = bool(return_reused)
+        self.runtime_info = inner.runtime_info
+        self._condition = threading.Condition()
+        self._pending: list[_AsyncDetectionJob] = []
+        self._latest_result: Optional[_AsyncDetectionResult] = None
+        self._last_returned_frame_id: Optional[int] = None
+        self._worker_error: str = ""
+        self._closed = False
+        self._worker = threading.Thread(target=self._worker_loop, name="yolo-bytetrack-async", daemon=True)
+        self._worker.start()
+
+    def close(self) -> None:
+        with self._condition:
+            self._closed = True
+            self._condition.notify_all()
+        if self._worker.is_alive():
+            self._worker.join(timeout=1.0)
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def detect(
+        self,
+        *,
+        client: Any,
+        config: AirSimDetectionConfig,
+        frame_id: int,
+        exposure_ts: float,
+        active_name: Optional[str] = None,
+        active_track_id: Optional[int] = None,
+    ) -> DetectorFrame:
+        del active_name
+        wall_now = time.monotonic()
+        image_start = wall_now
+        image_bgr = self.inner.read_scene_image(client, config)
+        image_elapsed_s = time.monotonic() - image_start
+        base_stats = self.inner._base_stats()
+        base_stats.update(
+            {
+                "detector_source": self.source,
+                "image_capture_elapsed_s": image_elapsed_s,
+                "async_detector_active": 1,
+                "async_detection_max_age_s": self.max_age_s,
+                "async_detection_queue_size": self.queue_size,
+                "async_detection_drop_stale": int(self.drop_stale),
+                "async_detection_return_reused": int(self.return_reused),
+                "async_detection_thread_alive": int(self._worker.is_alive()),
+                "async_detection_worker_error": self._worker_error,
+            }
+        )
+        if image_bgr is None:
+            base_stats["detector_reject_reason"] = "yolo_image_unavailable"
+            return DetectorFrame([], None, None, self._async_stats(base_stats, None, returned=False), image_bgr=None)
+
+        self._submit_job(
+            _AsyncDetectionJob(
+                image_bgr=np.asarray(image_bgr).copy(),
+                frame_id=frame_id,
+                exposure_ts=exposure_ts,
+                active_track_id=active_track_id,
+                stats=base_stats,
+                submitted_wall_ts=wall_now,
+            )
+        )
+
+        result = self._latest()
+        if result is None:
+            stats = self._async_stats(base_stats, None, returned=False)
+            stats["detector_reject_reason"] = "async_detection_waiting"
+            return DetectorFrame([], None, None, stats, image_bgr=image_bgr)
+
+        age_s = max(0.0, float(exposure_ts - result.exposure_ts))
+        stale = bool(self.max_age_s > 0.0 and age_s > self.max_age_s)
+        if stale and self.drop_stale:
+            stats = self._async_stats(base_stats, result, returned=False, current_exposure_ts=exposure_ts)
+            stats["detector_reject_reason"] = "async_detection_stale"
+            return DetectorFrame([], None, None, stats, image_bgr=image_bgr)
+
+        result_frame_id = _detector_frame_id(result.frame)
+        reused_result = result_frame_id is not None and result_frame_id == self._last_returned_frame_id
+        if reused_result and not self.return_reused:
+            stats = self._async_stats(base_stats, result, returned=False, current_exposure_ts=exposure_ts)
+            stats["detector_reject_reason"] = "async_detection_no_new_result"
+            stats["async_detection_reused_result"] = 1
+            return DetectorFrame([], None, None, stats, image_bgr=image_bgr)
+        returned = result.frame.frame_detection is not None
+        frame = _clone_detector_frame(result.frame)
+        frame.stats = self._async_stats(frame.stats, result, returned=returned, current_exposure_ts=exposure_ts)
+        frame.stats["detector_source"] = self.source
+        frame.stats["image_capture_elapsed_s"] = image_elapsed_s
+        frame.stats["async_detection_stale"] = int(stale)
+        frame.stats["async_detection_reused_result"] = int(reused_result)
+        if frame.image_bgr is None:
+            frame.image_bgr = image_bgr
+        self._last_returned_frame_id = result_frame_id
+        return frame
+
+    def _submit_job(self, job: _AsyncDetectionJob) -> None:
+        with self._condition:
+            if self._closed:
+                return
+            self._pending.append(job)
+            if len(self._pending) > self.queue_size:
+                self._pending = self._pending[-self.queue_size :]
+            self._condition.notify()
+
+    def _latest(self) -> Optional[_AsyncDetectionResult]:
+        with self._condition:
+            return self._latest_result
+
+    def _worker_loop(self) -> None:
+        while True:
+            with self._condition:
+                while not self._closed and not self._pending:
+                    self._condition.wait(timeout=0.25)
+                if self._closed:
+                    return
+                job = self._pending.pop()
+                self._pending.clear()
+            try:
+                frame = self.inner.detect_image(
+                    image_bgr=job.image_bgr,
+                    frame_id=job.frame_id,
+                    exposure_ts=job.exposure_ts,
+                    active_track_id=job.active_track_id,
+                    stats=job.stats,
+                )
+                result = _AsyncDetectionResult(
+                    frame=frame,
+                    exposure_ts=job.exposure_ts,
+                    submitted_wall_ts=job.submitted_wall_ts,
+                    completed_wall_ts=time.monotonic(),
+                )
+                with self._condition:
+                    self._latest_result = result
+                    self._worker_error = ""
+                    self._condition.notify_all()
+            except Exception as exc:
+                with self._condition:
+                    self._worker_error = str(exc)
+                    self._condition.notify_all()
+
+    def _async_stats(
+        self,
+        stats: dict[str, Any],
+        result: Optional[_AsyncDetectionResult],
+        *,
+        returned: bool,
+        current_exposure_ts: Optional[float] = None,
+    ) -> dict[str, Any]:
+        merged = dict(stats)
+        with self._condition:
+            pending_count = len(self._pending)
+            thread_alive = self._worker.is_alive()
+            worker_error = self._worker_error
+        merged.update(
+            {
+                "async_detector_active": 1,
+                "async_detection_max_age_s": self.max_age_s,
+                "async_detection_queue_size": self.queue_size,
+                "async_detection_drop_stale": int(self.drop_stale),
+                "async_detection_return_reused": int(self.return_reused),
+                "async_detection_pending_count": pending_count,
+                "async_detection_thread_alive": int(thread_alive),
+                "async_detection_worker_error": worker_error,
+                "async_detection_has_result": int(result is not None),
+                "async_detection_returned": int(returned),
+                "async_detection_result_frame_id": "",
+                "async_detection_age_s": "",
+                "async_detection_wall_age_s": "",
+                "async_detection_latency_s": "",
+                "async_detection_stale": 0,
+                "async_detection_reused_result": 0,
+            }
+        )
+        if result is not None:
+            now = time.monotonic()
+            result_frame_id = _detector_frame_id(result.frame)
+            merged["async_detection_result_frame_id"] = result_frame_id
+            age_ref = result.exposure_ts if current_exposure_ts is None else float(current_exposure_ts)
+            merged["async_detection_age_s"] = max(0.0, age_ref - result.exposure_ts)
+            merged["async_detection_wall_age_s"] = max(0.0, now - result.completed_wall_ts)
+            merged["async_detection_latency_s"] = max(0.0, result.completed_wall_ts - result.submitted_wall_ts)
+            if self.max_age_s > 0.0:
+                age_value = merged["async_detection_age_s"]
+                if isinstance(age_value, (int, float)):
+                    merged["async_detection_stale"] = int(float(age_value) > self.max_age_s)
+        return merged
 
 
 class YoloKcfDetector:
@@ -398,6 +705,8 @@ class YoloKcfDetector:
         iou: float = 0.70,
         imgsz: int = 640,
         device: str = "",
+        half: bool = False,
+        image_transport: str = "compressed",
         single_target_mode: bool = False,
         single_target_max_center_jump_px: float = 220.0,
         yolo_period_n: int = 8,
@@ -421,6 +730,8 @@ class YoloKcfDetector:
         self.iou = max(0.0, float(iou))
         self.imgsz = max(1, int(imgsz))
         self.device = str(device or "")
+        self.half = bool(half)
+        self.image_transport = _normalize_image_transport(image_transport)
         self.single_target_mode = bool(single_target_mode)
         self.single_target_max_center_jump_px = max(0.0, float(single_target_max_center_jump_px))
         self.yolo_period_n = max(1, int(yolo_period_n))
@@ -477,6 +788,9 @@ class YoloKcfDetector:
             runtime_info=self.runtime_info,
             allow_untracked_fallback=True,
             single_target_mode=self.single_target_mode,
+            half=self.half,
+            image_transport=self.image_transport,
+            model_path=self.model_path,
         )
         stats.update(
             {
@@ -497,7 +811,9 @@ class YoloKcfDetector:
                 "kcf_reset_on_yolo_drift": int(self.reset_on_yolo_drift),
             }
         )
+        image_start = time.monotonic()
         image_bgr = self._read_scene_image(client, config)
+        stats["image_capture_elapsed_s"] = time.monotonic() - image_start
         if image_bgr is None:
             stats["detector_reject_reason"] = "yolo_image_unavailable"
             self._reset_tracker()
@@ -607,21 +923,13 @@ class YoloKcfDetector:
         if self.image_reader is not None:
             image = self.image_reader(client, config)
             return None if image is None else _ensure_bgr(image, self.cv2)
-        if self.airsim_module is None:
-            raise RuntimeError("airsim_module is required for YOLO image capture.")
-        raw_image = client.simGetImage(
-            config.camera_name,
-            getattr(self.airsim_module.ImageType, config.image_type_name),
-            vehicle_name=config.vehicle_name,
+        return _read_scene_image_from_airsim(
+            client=client,
+            config=config,
+            airsim_module=self.airsim_module,
+            cv2=self.cv2,
+            image_transport=self.image_transport,
         )
-        if raw_image is None:
-            return None
-        if isinstance(raw_image, str):
-            raw_image = raw_image.encode("latin1")
-        image = self.cv2.imdecode(np.frombuffer(raw_image, dtype=np.uint8), self.cv2.IMREAD_UNCHANGED)
-        if image is None:
-            return None
-        return _ensure_bgr(image, self.cv2)
 
     def _run_yolo(self, image_bgr: np.ndarray) -> tuple[list[TrackedBoxDetection], dict[str, Any]]:
         kwargs: dict[str, Any] = {
@@ -632,12 +940,20 @@ class YoloKcfDetector:
         }
         if self.device:
             kwargs["device"] = self.device
+        if self.half:
+            kwargs["half"] = True
+        inference_start = time.monotonic()
         predict = getattr(self.model, "predict", None)
         if callable(predict):
             results = predict(image_bgr, **kwargs)
         else:
             results = self.model(image_bgr, **kwargs)
-        return _detections_from_yolo_results(results, image_bgr.shape, self.class_id, self.source)
+        inference_elapsed_s = time.monotonic() - inference_start
+        postprocess_start = time.monotonic()
+        detections, stats = _detections_from_yolo_results(results, image_bgr.shape, self.class_id, self.source)
+        stats["yolo_inference_elapsed_s"] = inference_elapsed_s
+        stats["yolo_postprocess_elapsed_s"] = time.monotonic() - postprocess_start
+        return detections, stats
 
     def _should_run_yolo(self, frame_id: int, exposure_ts: float) -> bool:
         if self._tracker is None or self._tracker_bbox_xyxy is None:
@@ -806,6 +1122,9 @@ def _base_yolo_stats(
     runtime_info: dict[str, Any],
     allow_untracked_fallback: bool,
     single_target_mode: bool,
+    half: bool = False,
+    image_transport: str = "compressed",
+    model_path: Optional[Path] = None,
 ) -> dict[str, Any]:
     return {
         "detector_source": source,
@@ -825,11 +1144,33 @@ def _base_yolo_stats(
         "yolo_runtime_device": runtime_device,
         "yolo_cuda_available": int(bool(runtime_info.get("cuda_available", False))),
         "yolo_gpu_name": str(runtime_info.get("gpu_name", "")),
+        "yolo_model_path": "" if model_path is None else str(model_path),
+        "yolo_half": int(bool(half)),
+        "yolo_image_transport": _normalize_image_transport(image_transport),
+        "image_capture_elapsed_s": "",
+        "yolo_inference_elapsed_s": "",
+        "yolo_postprocess_elapsed_s": "",
         "yolo_allow_untracked_fallback": int(allow_untracked_fallback),
         "yolo_used_untracked_fallback": 0,
         "yolo_single_target_mode": int(single_target_mode),
         "yolo_single_target_selected": 0,
         "yolo_single_target_distance_px": "",
+        "async_detector_active": 0,
+        "async_detection_max_age_s": "",
+        "async_detection_queue_size": "",
+        "async_detection_drop_stale": "",
+        "async_detection_return_reused": "",
+        "async_detection_pending_count": "",
+        "async_detection_thread_alive": "",
+        "async_detection_worker_error": "",
+        "async_detection_has_result": "",
+        "async_detection_returned": "",
+        "async_detection_result_frame_id": "",
+        "async_detection_age_s": "",
+        "async_detection_wall_age_s": "",
+        "async_detection_latency_s": "",
+        "async_detection_stale": "",
+        "async_detection_reused_result": "",
     }
 
 
@@ -1062,6 +1403,112 @@ def _ensure_bgr(image: np.ndarray, cv2: Any) -> np.ndarray:
     if image.ndim == 3 and image.shape[2] == 4:
         return cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
     return np.asarray(image)
+
+
+def _normalize_image_transport(value: str) -> str:
+    transport = str(value or "compressed").strip().lower()
+    if transport not in {"compressed", "raw"}:
+        raise ValueError(f"unsupported YOLO image transport: {value}")
+    return transport
+
+
+def _read_scene_image_from_airsim(
+    *,
+    client: Any,
+    config: AirSimDetectionConfig,
+    airsim_module: Any,
+    cv2: Any,
+    image_transport: str,
+) -> Optional[np.ndarray]:
+    if airsim_module is None:
+        raise RuntimeError("airsim_module is required for YOLO image capture.")
+    transport = _normalize_image_transport(image_transport)
+    image_type = getattr(airsim_module.ImageType, config.image_type_name)
+    if transport == "raw":
+        return _read_scene_image_raw(client, config, airsim_module, cv2, image_type)
+    return _read_scene_image_compressed(client, config, cv2, image_type)
+
+
+def _read_scene_image_compressed(
+    client: Any,
+    config: AirSimDetectionConfig,
+    cv2: Any,
+    image_type: Any,
+) -> Optional[np.ndarray]:
+    raw_image = client.simGetImage(
+        config.camera_name,
+        image_type,
+        vehicle_name=config.vehicle_name,
+    )
+    if raw_image is None:
+        return None
+    if isinstance(raw_image, str):
+        raw_image = raw_image.encode("latin1")
+    image = cv2.imdecode(np.frombuffer(raw_image, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        return None
+    return _ensure_bgr(image, cv2)
+
+
+def _read_scene_image_raw(
+    client: Any,
+    config: AirSimDetectionConfig,
+    airsim_module: Any,
+    cv2: Any,
+    image_type: Any,
+) -> Optional[np.ndarray]:
+    request = airsim_module.ImageRequest(config.camera_name, image_type, pixels_as_float=False, compress=False)
+    responses = client.simGetImages([request], vehicle_name=config.vehicle_name)
+    if not responses:
+        return None
+    response = responses[0]
+    width = int(getattr(response, "width", 0) or 0)
+    height = int(getattr(response, "height", 0) or 0)
+    data = getattr(response, "image_data_uint8", None)
+    if data is None or width <= 0 or height <= 0:
+        return None
+    if isinstance(data, str):
+        data = data.encode("latin1")
+    array = _as_uint8_image_buffer(data)
+    expected3 = width * height * 3
+    expected4 = width * height * 4
+    if array.size == expected4:
+        image = array.reshape(height, width, 4)
+        return _ensure_bgr(image, cv2)
+    if array.size == expected3:
+        image = array.reshape(height, width, 3)
+        rgb_to_bgr = getattr(cv2, "COLOR_RGB2BGR", None)
+        if rgb_to_bgr is not None:
+            return cv2.cvtColor(image, rgb_to_bgr)
+        return image[:, :, ::-1].copy()
+    return None
+
+
+def _as_uint8_image_buffer(data: Any) -> np.ndarray:
+    if isinstance(data, np.ndarray):
+        return np.asarray(data, dtype=np.uint8).ravel()
+    if isinstance(data, (bytes, bytearray, memoryview)):
+        return np.frombuffer(data, dtype=np.uint8)
+    return np.asarray(list(data), dtype=np.uint8).ravel()
+
+
+def _clone_detector_frame(frame: DetectorFrame) -> DetectorFrame:
+    return DetectorFrame(
+        detections=list(frame.detections),
+        selected=frame.selected,
+        frame_detection=frame.frame_detection,
+        stats=dict(frame.stats),
+        image_bgr=frame.image_bgr,
+    )
+
+
+def _detector_frame_id(frame: DetectorFrame) -> Optional[int]:
+    if frame.frame_detection is None:
+        return None
+    try:
+        return int(frame.frame_detection.frame_id)
+    except Exception:
+        return None
 
 
 def _require_cv2() -> Any:
