@@ -6,6 +6,35 @@ described in `拦截方案.md`.
 It intentionally stops at logged/supervised evaluation quantities. It does not
 run object detection and does not send MAVLink or flight-control commands.
 
+## Project Operating Constitution
+
+- Every script that starts AirSim Blocks must check local ports before launch.
+- Blocks must be started through `run_blocks_nvidia.sh` or one of the
+  `run_blocks_*.sh` wrappers so the AirSim port guard runs.
+- Hard-coded AirSim/PX4 ports are only defaults. If an existing Blocks/PX4
+  instance is using a default port, the launcher must allocate a conflict-free
+  settings file and report the actual RPC/PX4 ports.
+- Client code must connect using `AIRSIM_RPC_HOST` and `AIRSIM_RPC_PORT` when
+  those variables are set. This is required when multiple Blocks instances run
+  on the same machine.
+- For deterministic single-instance experiments, set
+  `AIRSIM_PORT_POLICY=strict` to fail fast on any port conflict. The default
+  policy is `auto`.
+
+Runtime port files are written under `.airsim_runtime/` by default. Batch
+scripts that launch Blocks in the background must pass a unique
+`AIRSIM_PORT_ENV_PATH`, source that file, and pass the resolved settings path to
+the Python experiment script.
+
+If the guard rewrites a PX4 `TcpPort`, start the matching PX4 SITL instance by
+using the generated env file:
+
+```bash
+source .airsim_runtime/latest.env
+PX4_SIM_TCP_PORT="$AIRSIM_PX4_TCP_PORT" ./run_px4_sitl.sh
+AIRSIM_RPC_PORT="$AIRSIM_RPC_PORT" python3 examples/run_airsim_strapdown_vision_png.py ...
+```
+
 ## Implemented
 
 - Pixel center to camera/inertial LOS conversion.

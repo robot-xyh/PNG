@@ -65,6 +65,7 @@ def _csv_summary(csv_path: Path) -> dict:
     detected = sum(row.get("detected") == "1" for row in rows)
     valid = sum(row.get("valid") == "1" for row in rows)
     hit_rows = [row for row in rows if row.get("hit") == "1"]
+    near_hit_rows = [row for row in rows if row.get("near_hit") == "1"]
     terminal_states: dict[str, int] = {}
     guidance_modes: dict[str, int] = {}
     for row in rows:
@@ -76,6 +77,9 @@ def _csv_summary(csv_path: Path) -> dict:
         "valid_frames": valid,
         "hit": bool(hit_rows),
         "hit_t_s": _finite_float(hit_rows[0].get("t")) if hit_rows else None,
+        "near_hit": bool(near_hit_rows),
+        "near_hit_t_s": _finite_float(near_hit_rows[0].get("t")) if near_hit_rows else None,
+        "near_hit_range_m": _finite_float(near_hit_rows[0].get("range")) if near_hit_rows else None,
         "min_range_m": min(ranges) if ranges else None,
         "final_range_m": ranges[-1] if ranges else None,
         "avg_wall_fps": sum(wall_fps) / len(wall_fps) if wall_fps else None,
@@ -146,6 +150,9 @@ def _write_summary(rows: Iterable[dict], path: Path) -> None:
         "lateral_offset_m",
         "hit",
         "hit_t_s",
+        "near_hit",
+        "near_hit_t_s",
+        "near_hit_range_m",
         "min_range_m",
         "final_range_m",
         "frames",
@@ -224,6 +231,9 @@ def main() -> None:
                 "lateral_offset_m": args.lateral_offset_m,
                 "hit": False,
                 "hit_t_s": None,
+                "near_hit": False,
+                "near_hit_t_s": None,
+                "near_hit_range_m": None,
                 "min_range_m": None,
                 "final_range_m": None,
                 "frames": 0,
@@ -248,6 +258,7 @@ def main() -> None:
                 summary.update(
                     {
                         "hit": bool(derived.get("hit", False)),
+                        "near_hit": bool(derived.get("near_hit", False)),
                         "min_range_m": derived.get("min_range_m"),
                         "final_range_m": derived.get("final_range_m"),
                         "frames": derived.get("frame_count", 0),
@@ -256,7 +267,8 @@ def main() -> None:
             summary_rows.append(summary)
             print(
                 "case_result="
-                f"hit={int(bool(summary['hit']))}, min_range={summary['min_range_m']}, "
+                f"hit={int(bool(summary['hit']))}, near_hit={int(bool(summary.get('near_hit')))}, "
+                f"min_range={summary['min_range_m']}, "
                 f"final_range={summary['final_range_m']}, frames={summary['frames']}, "
                 f"avg_sim_fps={summary.get('avg_sim_sample_fps')}, "
                 f"max_load_g={summary.get('max_load_factor_g')}, "

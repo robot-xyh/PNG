@@ -66,6 +66,23 @@ SETTINGS_EXAMPLE_PATH = PROJECT_ROOT / "config" / "airsim_blocks_settings.json"
 GRAVITY_MPS2 = 9.80665
 
 
+def _airsim_rpc_endpoint() -> tuple[str, int]:
+    host = os.environ.get("AIRSIM_RPC_HOST", "")
+    raw_port = os.environ.get("AIRSIM_RPC_PORT", "41451")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        raise SystemExit(f"Invalid AIRSIM_RPC_PORT={raw_port!r}; expected an integer.")
+    return host, port
+
+
+def _make_multirotor_client(airsim_module):
+    host, port = _airsim_rpc_endpoint()
+    if host or port != 41451:
+        print(f"Connecting to AirSim RPC at {host or '127.0.0.1'}:{port}")
+    return airsim_module.MultirotorClient(ip=host, port=port)
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run AirSim gimbal-camera pure-vision PNG validation.")
     parser.add_argument("--interceptor", default="Interceptor")
@@ -1938,7 +1955,7 @@ def main() -> None:
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
 
-    client = airsim.MultirotorClient()
+    client = _make_multirotor_client(airsim)
     _register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()

@@ -24,6 +24,7 @@ from examples.run_airsim_gimbal_vision_png import (  # noqa: E402
     _guidance_kinematics as _sim_guidance_kinematics,
     _intruder_truth_position as _sim_intruder_truth_position,
     _is_px4_vehicle as _sim_is_px4_vehicle,
+    _make_multirotor_client as _sim_make_multirotor_client,
     _move_intruder_actor as _sim_move_intruder_actor,
     _prepare_intercept_altitude as _sim_prepare_intercept_altitude,
     _px4_keepalive as _sim_px4_keepalive,
@@ -836,7 +837,7 @@ def main() -> None:
         raise SystemExit("--rate-hz must be positive")
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
-    client = airsim.MultirotorClient()
+    client = _sim_make_multirotor_client(airsim)
     _sim_register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()

@@ -30,6 +30,7 @@ from examples.run_airsim_gimbal_vision_png import (
     _load_vehicle_origins,
     _los_fallback_allowed,
     _make_display,
+    _make_multirotor_client,
     _make_preview_recorder,
     _output_paths,
     _prefer_user_mpl_toolkits,
@@ -134,6 +135,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--camera-pitch-deg", type=float, default=0.0)
     parser.add_argument("--camera-roll-deg", type=float, default=0.0)
     parser.add_argument("--camera-yaw-deg", type=float, default=0.0)
+    parser.add_argument(
+        "--upward-centering",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Add a body-X/Y acceleration correction from LOS error for fixed upward camera tests.",
+    )
+    parser.add_argument("--upward-centering-gain", type=float, default=8.0)
+    parser.add_argument("--upward-centering-max-accel-mps2", type=float, default=4.0)
     parser.add_argument("--intruder-speed", type=float, default=5.0)
     parser.add_argument("--intruder-vx", type=float, default=0.0)
     parser.add_argument("--intruder-vy", type=float, default=None)
@@ -271,6 +280,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--settle-speed", type=float, default=0.5)
     parser.add_argument("--settle-timeout-s", type=float, default=8.0)
     parser.add_argument("--hit-radius-m", type=float, default=1.0, help="Deprecated; AirSim collision is the success criterion.")
+    parser.add_argument(
+        "--near-hit-radius-m",
+        type=float,
+        default=1.5,
+        help="Diagnostic success radius from truth range; logged separately from AirSim collision.",
+    )
     parser.add_argument("--max-vision-lateral-speed", type=float, default=4.0)
     parser.add_argument("--max-vision-vertical-speed", type=float, default=3.0)
     parser.add_argument("--coast-timeout-s", type=float, default=0.5)
@@ -288,6 +303,32 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminal-blind-duration-s", type=float, default=0.30)
     parser.add_argument("--terminal-command-average-window-s", type=float, default=0.10)
     parser.add_argument("--terminal-command-decay-tau-s", type=float, default=0.18)
+    parser.add_argument(
+        "--terminal-velocity-blind-push",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Allow TerminalExtrapolator to replace velocity reference during blind push. "
+            "Defaults off for fixed upward camera acceleration-output tests and on otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--terminal-accel-hold",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "During terminal blind push, command a decaying average of recent PNG acceleration. "
+            "Defaults on for fixed upward camera acceleration-output tests and off otherwise."
+        ),
+    )
+    parser.add_argument("--terminal-accel-hold-window-s", type=float, default=0.35)
+    parser.add_argument("--terminal-accel-decay-tau-s", type=float, default=0.60)
+    parser.add_argument(
+        "--terminal-accel-hold-max-mps2",
+        type=float,
+        default=0.0,
+        help="Acceleration hold norm limit. Non-positive reuses --max-guidance-accel-mps2.",
+    )
     parser.add_argument("--terminal-trend-bias-gain", type=float, default=0.10)
     parser.add_argument("--terminal-trend-bias-max-mps", type=float, default=1.5)
     parser.add_argument("--terminal-pitch-up-bias-mps", type=float, default=0.8)
@@ -600,6 +641,29 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def _is_fixed_upward_camera(args) -> bool:
+    try:
+        return float(getattr(args, "camera_pitch_deg", 0.0)) <= -75.0
+    except (TypeError, ValueError):
+        return False
+
+
+def _uses_acceleration_output_mode(args) -> bool:
+    return str(getattr(args, "guidance_output_mode", "velocity_bias")) in {"accel_body_rate", "accel_attitude"}
+
+
+def _uses_upward_terminal_accel_strategy(args) -> bool:
+    return _is_fixed_upward_camera(args) and _uses_acceleration_output_mode(args)
+
+
+def _resolve_terminal_strategy_defaults(args) -> None:
+    upward_accel_terminal = _uses_upward_terminal_accel_strategy(args)
+    if getattr(args, "terminal_velocity_blind_push", None) is None:
+        args.terminal_velocity_blind_push = not upward_accel_terminal
+    if getattr(args, "terminal_accel_hold", None) is None:
+        args.terminal_accel_hold = upward_accel_terminal
+
+
 def _validate_runtime_args(args) -> None:
     if args.rate_hz <= 0.0:
         raise SystemExit("--rate-hz must be positive")
@@ -621,6 +685,7 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--px4-command-mode mavlink_body_rate requires --guidance-output-mode accel_body_rate")
     if args.px4_command_mode == "mavlink_attitude" and args.guidance_output_mode != "accel_attitude":
         raise SystemExit("--px4-command-mode mavlink_attitude requires --guidance-output-mode accel_attitude")
+    _resolve_terminal_strategy_defaults(args)
     if float(getattr(args, "vehicle_mass_kg", AIRSIM_GENERIC_QUAD_MASS_KG)) <= 0.0:
         raise SystemExit("--vehicle-mass-kg must be positive")
     if float(getattr(args, "vehicle_max_total_thrust_n", AIRSIM_GENERIC_QUAD_MAX_TOTAL_THRUST_N)) <= 0.0:
@@ -657,6 +722,18 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--los-filter-terminal-error-ratio must be non-negative")
     if args.los_delay_compensation_s < 0.0:
         raise SystemExit("--los-delay-compensation-s must be non-negative")
+    if args.terminal_accel_hold_window_s < 0.0:
+        raise SystemExit("--terminal-accel-hold-window-s must be non-negative")
+    if args.terminal_accel_decay_tau_s < 0.0:
+        raise SystemExit("--terminal-accel-decay-tau-s must be non-negative")
+    if args.terminal_accel_hold_max_mps2 < 0.0:
+        raise SystemExit("--terminal-accel-hold-max-mps2 must be non-negative")
+    if args.near_hit_radius_m < 0.0:
+        raise SystemExit("--near-hit-radius-m must be non-negative")
+    if args.upward_centering_gain < 0.0:
+        raise SystemExit("--upward-centering-gain must be non-negative")
+    if args.upward_centering_max_accel_mps2 < 0.0:
+        raise SystemExit("--upward-centering-max-accel-mps2 must be non-negative")
 
 
 def _output_paths_strapdown(args) -> tuple[Path, Path]:
@@ -2179,6 +2256,53 @@ def _append_yaw_rate_sample(
     samples[:] = [(ts, value) for ts, value in samples if timestamp - ts <= keep_s]
 
 
+def _append_terminal_accel_sample(
+    samples: list[tuple[float, np.ndarray]],
+    timestamp: float,
+    acceleration_I: np.ndarray,
+    valid: bool,
+    args,
+) -> None:
+    accel = np.asarray(acceleration_I, dtype=float)
+    if valid and accel.shape == (3,) and np.all(np.isfinite(accel)):
+        samples.append((float(timestamp), np.array(accel, dtype=float)))
+    keep_s = max(
+        1.0,
+        4.0 * max(0.01, float(args.terminal_accel_hold_window_s)),
+        max(0.0, float(args.terminal_blind_duration_s)),
+    )
+    samples[:] = [(ts, value) for ts, value in samples if timestamp - ts <= keep_s]
+
+
+def _terminal_accel_hold_command(
+    *,
+    current_accel_I: np.ndarray,
+    samples: list[tuple[float, np.ndarray]],
+    timestamp: float,
+    using_blind_push: bool,
+    blind_elapsed_s: float,
+    args,
+) -> tuple[np.ndarray, np.ndarray, int, float, int]:
+    current = np.asarray(current_accel_I, dtype=float)
+    if not bool(args.terminal_accel_hold) or not using_blind_push:
+        return np.array(current, dtype=float), np.zeros(3, dtype=float), 0, 0.0, 0
+    window = max(0.01, float(args.terminal_accel_hold_window_s))
+    recent = [value for ts, value in samples if timestamp - ts <= window]
+    if not recent and samples:
+        recent = [samples[-1][1]]
+    if not recent:
+        return np.array(current, dtype=float), np.zeros(3, dtype=float), 0, 0.0, 0
+    base = np.mean(recent, axis=0)
+    tau = max(1.0e-6, float(args.terminal_accel_decay_tau_s))
+    decay = float(np.exp(-max(0.0, float(blind_elapsed_s)) / tau))
+    held = decay * base
+    limit = float(args.terminal_accel_hold_max_mps2)
+    if limit <= 0.0:
+        limit = float(args.max_guidance_accel_mps2)
+    held = _clip_vector_norm(held, limit)
+    return held, np.array(base, dtype=float), len(recent), decay, 1
+
+
 def _terminal_yaw_rate_command(
     *,
     current_yaw_rate_deg_s: float,
@@ -2261,6 +2385,33 @@ def _png_acceleration_command(
     if not np.all(np.isfinite(accel)):
         return np.zeros(3, dtype=float)
     return _clip_vector_norm(accel, float(args.max_guidance_accel_mps2))
+
+
+def _upward_centering_acceleration(
+    lambda_I: Optional[np.ndarray],
+    R_IB: np.ndarray,
+    args,
+) -> tuple[np.ndarray, np.ndarray, int]:
+    if not bool(getattr(args, "upward_centering", False)) or float(args.camera_pitch_deg) > -75.0:
+        return np.zeros(3, dtype=float), np.zeros(2, dtype=float), 0
+    direction_I = _fallback_direction(lambda_I)
+    R = np.asarray(R_IB, dtype=float)
+    if direction_I is None or R.shape != (3, 3) or not np.all(np.isfinite(R)):
+        return np.zeros(3, dtype=float), np.zeros(2, dtype=float), 0
+    lambda_B = R.T @ direction_I
+    if not np.all(np.isfinite(lambda_B)):
+        return np.zeros(3, dtype=float), np.zeros(2, dtype=float), 0
+    err_B = np.asarray(lambda_B[:2], dtype=float)
+    accel_B = np.array(
+        [
+            float(args.upward_centering_gain) * err_B[0],
+            float(args.upward_centering_gain) * err_B[1],
+            0.0,
+        ],
+        dtype=float,
+    )
+    accel_B = _clip_vector_norm(accel_B, float(args.upward_centering_max_accel_mps2))
+    return R @ accel_B, err_B, 1
 
 
 def _fallback_direction(lambda_I: Optional[np.ndarray]) -> Optional[np.ndarray]:
@@ -2940,7 +3091,7 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("Install the AirSim Python package before running this example.") from exc
 
-    client = airsim.MultirotorClient()
+    client = _make_multirotor_client(airsim)
     _register_px4_shutdown_stop(client, args)
     try:
         client.confirmConnection()
@@ -3086,6 +3237,7 @@ def main() -> None:
     last_kin_t: Optional[float] = None
     last_interceptor_vel: Optional[np.ndarray] = None
     yaw_rate_samples: list[tuple[float, float]] = []
+    terminal_accel_samples: list[tuple[float, np.ndarray]] = []
     rows: list[dict[str, float | int | str]] = []
     csv_path, plot_path = _output_paths_strapdown(args)
     preview_recorder = _make_preview_recorder(airsim, args, csv_path.with_name(f"{csv_path.stem}_preview"))
@@ -3094,6 +3246,7 @@ def main() -> None:
     sim_start_t: Optional[float] = None
     frame_id = 0
     hit = False
+    near_hit = False
     bbox_noise_rng = np.random.default_rng(int(args.bbox_noise_seed))
     last_frame_guard_ts: Optional[float] = None
     last_frame_guard_error_ratio = 0.0
@@ -3103,7 +3256,7 @@ def main() -> None:
 
     print(
         "frame,t,loop_dt,command_duration,detection_count,detected,range,px_err_x,px_err_y,bbox_area,"
-        "ttc,valid,guidance_mode,reason,yaw_rate,body_yaw,cmd_yaw,v_cmd,hit"
+        "ttc,valid,guidance_mode,reason,yaw_rate,body_yaw,cmd_yaw,v_cmd,hit,near_hit"
     )
     baseline_collision = _collision_snapshot(client, args)
     while True:
@@ -3171,6 +3324,8 @@ def main() -> None:
             or range_m <= collision_range_gate_m
         )
         hit = raw_collision_hit and collision_new and collision_range_ok
+        near_hit_radius_m = max(0.0, float(args.near_hit_radius_m))
+        near_hit = bool(args.diagnostic_truth and np.isfinite(range_m) and range_m <= near_hit_radius_m)
         if raw_collision_hit and not collision_new:
             pair_collision_reason = f"{pair_collision.reason}:stale_time_reject"
         elif raw_collision_hit and not collision_range_ok:
@@ -3215,7 +3370,18 @@ def main() -> None:
         valid = False
         g_eval = np.zeros(3)
         a_cmd = np.zeros(3)
+        a_cmd_png = np.zeros(3)
+        a_cmd_pre_terminal = np.zeros(3)
         accel_integral_dt = 0.0
+        terminal_accel_hold_base = np.zeros(3)
+        terminal_accel_hold_sample_count = 0
+        terminal_accel_hold_decay = 0.0
+        terminal_accel_hold_active = 0
+        terminal_velocity_blind_push_used = 0
+        upward_centering_accel_I = np.zeros(3)
+        upward_centering_err_B = np.zeros(2)
+        upward_centering_active = 0
+        upward_centering_enabled = int(bool(args.upward_centering) and float(args.camera_pitch_deg) <= -75.0)
         v_cmd_pre_guard = np.zeros(3)
         v_cmd_integrated = np.zeros(3)
         body_rate_command_active = 0
@@ -3616,6 +3782,19 @@ def main() -> None:
             valid,
             args,
         )
+        a_cmd_png = np.array(a_cmd, dtype=float)
+        if valid or image_kf_guidance_used:
+            upward_centering_accel_I, upward_centering_err_B, upward_centering_active = _upward_centering_acceleration(
+                lambda_I,
+                R_IB,
+                args,
+            )
+            a_cmd = _clip_vector_norm(
+                a_cmd_png + upward_centering_accel_I,
+                float(args.max_guidance_accel_mps2),
+            )
+        a_cmd_pre_terminal = np.array(a_cmd, dtype=float)
+        _append_terminal_accel_sample(terminal_accel_samples, sim_t, a_cmd_pre_terminal, valid, args)
         v_cmd_integrated = np.array(candidate_v_cmd, dtype=float)
         v_cmd_pre_guard = np.array(candidate_v_cmd, dtype=float)
         frame_centering_used_last_v_cmd = 0
@@ -3686,7 +3865,8 @@ def main() -> None:
             image_kf_valid=bool(image_kf.valid),
             args=args,
         )
-        v_cmd = terminal_result.v_cmd
+        terminal_velocity_blind_push_used = int(bool(args.terminal_velocity_blind_push) and terminal_result.using_blind_push)
+        v_cmd = terminal_result.v_cmd if terminal_velocity_blind_push_used else np.array(candidate_v_cmd, dtype=float)
         if frame_centering_state == "loss_hold" and frame_centering_used_last_v_cmd:
             v_cmd = np.array(last_v_cmd, dtype=float)
             frame_centering_loss_hold_velocity_source = "last_v_cmd_final"
@@ -3717,6 +3897,20 @@ def main() -> None:
             reason = terminal_result.reason
         elif valid:
             last_v_cmd = np.array(v_cmd, dtype=float)
+        (
+            a_cmd,
+            terminal_accel_hold_base,
+            terminal_accel_hold_sample_count,
+            terminal_accel_hold_decay,
+            terminal_accel_hold_active,
+        ) = _terminal_accel_hold_command(
+            current_accel_I=a_cmd,
+            samples=terminal_accel_samples,
+            timestamp=sim_t,
+            using_blind_push=terminal_result.using_blind_push,
+            blind_elapsed_s=terminal_result.blind_elapsed_s,
+            args=args,
+        )
         (
             yaw_rate_cmd_deg_s,
             yaw_rate_blind_base_deg_s,
@@ -4047,6 +4241,8 @@ def main() -> None:
                 "v_cmd_z_sign": float(np.sign(v_cmd[2])),
                 "vertical_command_consistent": vertical_command_consistent,
                 "hit": int(hit),
+                "near_hit": int(near_hit),
+                "near_hit_radius_m": near_hit_radius_m,
                 "collision_reason": pair_collision_reason,
                 "collision_raw_hit": int(raw_collision_hit),
                 "collision_new": int(collision_new),
@@ -4127,6 +4323,15 @@ def main() -> None:
                 "terminal_area_ratio": terminal_result.area_ratio,
                 "terminal_miss_count": terminal_result.miss_count,
                 "terminal_profile": "strapdown",
+                "terminal_velocity_blind_push_enabled": int(args.terminal_velocity_blind_push),
+                "terminal_velocity_blind_push_used": int(terminal_velocity_blind_push_used),
+                "terminal_accel_hold_enabled": int(args.terminal_accel_hold),
+                "terminal_accel_hold_active": int(terminal_accel_hold_active),
+                "terminal_accel_hold_window_s": float(args.terminal_accel_hold_window_s),
+                "terminal_accel_decay_tau_s": float(args.terminal_accel_decay_tau_s),
+                "terminal_accel_hold_max_mps2": float(args.terminal_accel_hold_max_mps2),
+                "terminal_accel_hold_sample_count": int(terminal_accel_hold_sample_count),
+                "terminal_accel_hold_decay": float(terminal_accel_hold_decay),
                 "blind_elapsed_s": terminal_result.blind_elapsed_s,
                 "blind_decay": terminal_result.blind_decay,
                 "blind_sample_count": terminal_result.blind_sample_count,
@@ -4170,6 +4375,28 @@ def main() -> None:
                 "g_eval_x": float(g_eval[0]),
                 "g_eval_y": float(g_eval[1]),
                 "g_eval_z": float(g_eval[2]),
+                "a_cmd_png_x": float(a_cmd_png[0]),
+                "a_cmd_png_y": float(a_cmd_png[1]),
+                "a_cmd_png_z": float(a_cmd_png[2]),
+                "a_cmd_png_norm_mps2": float(np.linalg.norm(a_cmd_png)),
+                "a_cmd_pre_terminal_x": float(a_cmd_pre_terminal[0]),
+                "a_cmd_pre_terminal_y": float(a_cmd_pre_terminal[1]),
+                "a_cmd_pre_terminal_z": float(a_cmd_pre_terminal[2]),
+                "a_cmd_pre_terminal_norm_mps2": float(np.linalg.norm(a_cmd_pre_terminal)),
+                "terminal_accel_hold_base_x": float(terminal_accel_hold_base[0]),
+                "terminal_accel_hold_base_y": float(terminal_accel_hold_base[1]),
+                "terminal_accel_hold_base_z": float(terminal_accel_hold_base[2]),
+                "terminal_accel_hold_base_norm_mps2": float(np.linalg.norm(terminal_accel_hold_base)),
+                "upward_centering_enabled": int(upward_centering_enabled),
+                "upward_centering_active": int(upward_centering_active),
+                "upward_centering_gain": float(args.upward_centering_gain),
+                "upward_centering_max_accel_mps2": float(args.upward_centering_max_accel_mps2),
+                "upward_centering_err_x": float(upward_centering_err_B[0]),
+                "upward_centering_err_y": float(upward_centering_err_B[1]),
+                "upward_centering_accel_x": float(upward_centering_accel_I[0]),
+                "upward_centering_accel_y": float(upward_centering_accel_I[1]),
+                "upward_centering_accel_z": float(upward_centering_accel_I[2]),
+                "upward_centering_accel_norm_mps2": float(np.linalg.norm(upward_centering_accel_I)),
                 "a_cmd_x": float(a_cmd[0]),
                 "a_cmd_y": float(a_cmd[1]),
                 "a_cmd_z": float(a_cmd[2]),
@@ -4328,11 +4555,17 @@ def main() -> None:
                 f"{px_err_x:.1f},{px_err_y:.1f},{bbox_area:.2f},"
                 f"{ttc_value},{valid},{guidance_mode},{reason},"
                 f"{yaw_rate_cmd_deg_s:.1f},{body_yaw_deg:.1f},{cmd_yaw_deg:.1f},"
-                f"{np.array2string(v_cmd, precision=2)},{int(hit)}"
+                f"{np.array2string(v_cmd, precision=2)},{int(hit)},{int(near_hit)}"
             )
         if hit:
             print(
                 f"hit=True collision=True reason={pair_collision_reason} "
+                f"range={range_m:.3f}m t={sim_t:.3f}s"
+            )
+            break
+        if near_hit:
+            print(
+                f"near_hit=True collision=False radius={near_hit_radius_m:.3f}m "
                 f"range={range_m:.3f}m t={sim_t:.3f}s"
             )
             break

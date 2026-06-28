@@ -4,6 +4,7 @@ import argparse
 import fnmatch
 import json
 import math
+import os
 import random
 import sys
 import time
@@ -18,6 +19,16 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "datasets" / "airsim_cv_intruder_yolo"
+
+
+def _airsim_rpc_endpoint() -> tuple[str, int]:
+    host = os.environ.get("AIRSIM_RPC_HOST", "")
+    raw_port = os.environ.get("AIRSIM_RPC_PORT", "41451")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        raise SystemExit(f"Invalid AIRSIM_RPC_PORT={raw_port!r}; expected an integer.")
+    return host, port
 
 
 @dataclass(frozen=True)
@@ -499,7 +510,10 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("Install OpenCV before running this script: python3 -m pip install opencv-python") from exc
 
-    client = airsim.VehicleClient()
+    rpc_host, rpc_port = _airsim_rpc_endpoint()
+    if rpc_host or rpc_port != 41451:
+        print(f"Connecting to AirSim RPC at {rpc_host or '127.0.0.1'}:{rpc_port}")
+    client = airsim.VehicleClient(ip=rpc_host, port=rpc_port)
     try:
         client.confirmConnection()
     except Exception as exc:

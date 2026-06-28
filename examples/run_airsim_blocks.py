@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import os
 import sys
 import time
 from pathlib import Path
@@ -31,6 +32,16 @@ from vision_guidance.types import AttitudeSample  # noqa: E402
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 AIRSIM_SETTINGS_PATH = Path.home() / "Documents" / "AirSim" / "settings.json"
 SETTINGS_EXAMPLE_PATH = PROJECT_ROOT / "config" / "airsim_blocks_settings.json"
+
+
+def _airsim_rpc_endpoint() -> tuple[str, int]:
+    host = os.environ.get("AIRSIM_RPC_HOST", "")
+    raw_port = os.environ.get("AIRSIM_RPC_PORT", "41451")
+    try:
+        port = int(raw_port)
+    except ValueError:
+        raise SystemExit(f"Invalid AIRSIM_RPC_PORT={raw_port!r}; expected an integer.")
+    return host, port
 
 
 def parse_args() -> argparse.Namespace:
@@ -302,7 +313,10 @@ def main() -> None:
     except ImportError as exc:
         raise SystemExit("Install the AirSim Python package before running this example.") from exc
 
-    client = airsim.MultirotorClient()
+    rpc_host, rpc_port = _airsim_rpc_endpoint()
+    if rpc_host or rpc_port != 41451:
+        print(f"Connecting to AirSim RPC at {rpc_host or '127.0.0.1'}:{rpc_port}")
+    client = airsim.MultirotorClient(ip=rpc_host, port=rpc_port)
     client.confirmConnection()
 
     available_vehicles = list(client.listVehicles())

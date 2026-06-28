@@ -40,6 +40,9 @@ class CaseRow:
     start_range_m: float
     hit: bool
     hit_t_s: float
+    near_hit: bool
+    near_hit_t_s: float
+    near_hit_range_m: float
     min_range_m: float
     final_range_m: float
     frames: int
@@ -269,6 +272,9 @@ def _load_summary(path: Path, label: str) -> list[CaseRow]:
                 start_range_m=_float(item.get("start_horizontal_range_m")),
                 hit=_bool(item.get("hit")),
                 hit_t_s=_float(item.get("hit_t_s")),
+                near_hit=_bool(item.get("near_hit")),
+                near_hit_t_s=_float(item.get("near_hit_t_s")),
+                near_hit_range_m=_float(item.get("near_hit_range_m")),
                 min_range_m=_float(item.get("min_range_m")),
                 final_range_m=_float(item.get("final_range_m")),
                 frames=_int(item.get("frames")),
@@ -311,22 +317,24 @@ def _first_meta(rows: list[CaseRow]) -> dict:
 
 def _summary_table(rows: list[CaseRow]) -> str:
     lines = [
-        "|组别|命中数|命中距离m|未命中距离m|最小中心距离m|检测帧/总帧|有效帧/总帧|平均检测FPS|",
-        "|---|---:|---|---|---:|---:|---:|---:|",
+        "|组别|碰撞命中|近距命中|碰撞距离m|近距距离m|未命中距离m|最小中心距离m|检测帧/总帧|有效帧/总帧|平均检测FPS|",
+        "|---|---:|---:|---|---|---|---:|---:|---:|---:|",
     ]
     for label in ("TTC", "VM"):
         group = [row for row in rows if row.label == label]
         if not group:
             continue
         hit_ranges = ", ".join(f"{row.start_range_m:.0f}" for row in group if row.hit) or "-"
-        miss_ranges = ", ".join(f"{row.start_range_m:.0f}" for row in group if not row.hit) or "-"
+        near_hit_ranges = ", ".join(f"{row.start_range_m:.0f}" for row in group if row.near_hit) or "-"
+        miss_ranges = ", ".join(f"{row.start_range_m:.0f}" for row in group if not row.hit and not row.near_hit) or "-"
         min_range = min([row.min_range_m for row in group if math.isfinite(row.min_range_m)] or [math.nan])
         frames = sum(row.frames for row in group)
         detected = sum(row.detected_frames for row in group)
         valid = sum(row.valid_frames for row in group)
         fps = [row.avg_detector_fps for row in group if math.isfinite(row.avg_detector_fps)]
         lines.append(
-            f"|{label}|{sum(row.hit for row in group)}/{len(group)}|{hit_ranges}|{miss_ranges}|"
+            f"|{label}|{sum(row.hit for row in group)}/{len(group)}|{sum(row.near_hit for row in group)}/{len(group)}|"
+            f"{hit_ranges}|{near_hit_ranges}|{miss_ranges}|"
             f"{min_range:.3f}|{detected}/{frames}|{valid}/{frames}|"
             f"{(sum(fps) / len(fps) if fps else math.nan):.2f}|"
         )
@@ -335,16 +343,18 @@ def _summary_table(rows: list[CaseRow]) -> str:
 
 def _detail_table(rows: list[CaseRow]) -> str:
     lines = [
-        "|组别|距离m|碰撞|碰撞时间s|最小距离m|终点距离m|检测帧率|有效帧率|YOLO FPS|sim FPS|实际过载max g|速度指令差分P95 g|需用过载P95 g|",
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "|组别|距离m|碰撞|近距|碰撞时间s|近距时间s|近距距离m|最小距离m|终点距离m|检测帧率|有效帧率|YOLO FPS|sim FPS|实际过载max g|速度指令差分P95 g|需用过载P95 g|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
         samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
         det_ratio = 100.0 * row.detected_frames / max(1, row.frames)
         valid_ratio = 100.0 * row.valid_frames / max(1, row.frames)
         lines.append(
-            f"|{row.label}|{row.start_range_m:.0f}|{1 if row.hit else 0}|"
+            f"|{row.label}|{row.start_range_m:.0f}|{1 if row.hit else 0}|{1 if row.near_hit else 0}|"
             f"{'-' if not math.isfinite(row.hit_t_s) else f'{row.hit_t_s:.2f}'}|"
+            f"{'-' if not math.isfinite(row.near_hit_t_s) else f'{row.near_hit_t_s:.2f}'}|"
+            f"{'-' if not math.isfinite(row.near_hit_range_m) else f'{row.near_hit_range_m:.3f}'}|"
             f"{row.min_range_m:.3f}|{row.final_range_m:.3f}|{det_ratio:.1f}%|{valid_ratio:.1f}%|"
             f"{row.avg_detector_fps:.2f}|{row.avg_sim_sample_fps:.2f}|{row.max_load_factor_fd_g:.2f}|"
             f"{_percentile(_required_load(samples), 0.95):.2f}|{_percentile(_guidance_load(samples), 0.95):.2f}|"
@@ -378,6 +388,8 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|YOLO conf / iou / imgsz|`{cfg('yolo_conf')}` / `{cfg('yolo_iou')}` / `{cfg('yolo_imgsz')}`|",
             f"|tracker|`{cfg('yolo_tracker')}`，single target `{cfg('yolo_single_target_mode')}`|",
             f"|相机外参|`x={cfg('camera_x')}, y={cfg('camera_y')}, z={cfg('camera_z')}`|",
+            f"|upward centering|`{cfg('upward_centering')}`, gain `{cfg('upward_centering_gain')}`, max accel `{cfg('upward_centering_max_accel_mps2')} m/s^2`|",
+            f"|near-hit radius|`{cfg('near_hit_radius_m')} m`|",
             f"|FOV / resolution|`{cfg('fov_deg')} deg`, `{sample.get('image_width_runtime', sample.get('width', ''))}x{sample.get('image_height_runtime', sample.get('height', ''))}`|",
             f"|高度差|`{cfg('intruder_altitude_offset_m')} m`|",
             f"|目标速度 / speed ratio|`{cfg('intruder_speed')} m/s` / `{cfg('speed_ratio')}`|",
@@ -403,6 +415,8 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|LOS terminal gate / delay|`{cfg('los_filter_terminal_innovation_reject')}` / `{cfg('los_delay_compensation_s')} s`|",
             f"|terminal image KF|predict `{cfg('terminal_image_kf_max_predict_s')} s`, reject `{cfg('terminal_image_kf_innovation_reject_rad')} rad`, soft reject `{cfg('terminal_image_kf_soft_reject_predict', False)}`|",
             f"|terminal image KF dynamics|accel noise `{cfg('terminal_image_kf_accel_noise_rad_s2')} rad/s^2`, max rate `{cfg('terminal_image_kf_max_rate_rad_s')} rad/s`|",
+            f"|terminal velocity blind-push|`{cfg('terminal_velocity_blind_push')}`|",
+            f"|terminal accel hold|`{cfg('terminal_accel_hold')}`, window `{cfg('terminal_accel_hold_window_s')} s`, decay `{cfg('terminal_accel_decay_tau_s')} s`, max `{cfg('terminal_accel_hold_max_mps2')} m/s^2`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
             f"|bbox noise|`{cfg('bbox_noise_enabled', meta.get('bbox_noise', ''))}`|",
         ]
@@ -418,13 +432,14 @@ def plot_summary(rows: list[CaseRow], output: Path) -> None:
             continue
         x = [row.start_range_m for row in group]
         ax_min.plot(x, [row.min_range_m for row in group], marker="o", label=LABELS[label])
-        ax_hit.plot(x, [1 if row.hit else 0 for row in group], marker="o", label=LABELS[label])
+        ax_hit.plot(x, [1 if row.hit else 0 for row in group], marker="o", label=f"{LABELS[label]} collision")
+        ax_hit.plot(x, [1 if row.near_hit else 0 for row in group], marker="x", linestyle="--", label=f"{LABELS[label]} near-hit")
         ax_detect.plot(x, [100.0 * row.detected_frames / max(1, row.frames) for row in group], marker="o", label=LABELS[label])
         ax_fps.plot(x, [row.avg_detector_fps for row in group], marker="o", label=LABELS[label])
     ax_min.set_title("Minimum true center range")
     ax_min.set_ylabel("m")
-    ax_hit.set_title("Collision accepted")
-    ax_hit.set_ylabel("hit")
+    ax_hit.set_title("Collision and near-hit")
+    ax_hit.set_ylabel("success")
     ax_detect.set_title("YOLO detection frame ratio")
     ax_detect.set_ylabel("%")
     ax_fps.set_title("Detector FPS")
@@ -448,7 +463,8 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
             samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
             t = _series(samples, "t")
             label = LABELS[row.label]
-            ax_range.plot(t, _series(samples, "range"), linewidth=1.1, label=f"{label} {'hit' if row.hit else 'miss'}")
+            outcome = "collision" if row.hit else ("near-hit" if row.near_hit else "miss")
+            ax_range.plot(t, _series(samples, "range"), linewidth=1.1, label=f"{label} {outcome}")
             ax_bbox.plot(t, _series(samples, "bbox_area"), linewidth=1.0, label=label)
             ax_ttc.plot(t, _series(samples, "ttc"), linewidth=1.0, label=label)
             ax_load.plot(t, _series(samples, "load_factor_fd_g"), linewidth=1.0, label=f"{label} actual")

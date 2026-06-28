@@ -14,6 +14,7 @@ from examples.run_airsim_strapdown_vision_png import (
     _body_rate_neutral_thrust,
     _candidate_guidance_velocity,
     _command_vehicle_velocity,
+    _fixed_camera_R_BC,
     _fixed_camera_pose,
     _image_kf_takeover_allowed,
     _attitude_command_from_accel,
@@ -26,9 +27,12 @@ from examples.run_airsim_strapdown_vision_png import (
     _png_acceleration_command,
     _plot_strapdown,
     _rows_until_first_hit,
+    _append_terminal_accel_sample,
+    _terminal_accel_hold_command,
     _start_geometry_offsets,
     _terminal_trigger_strapdown,
     _terminal_yaw_rate_command,
+    _upward_centering_acceleration,
     _validate_runtime_args,
     _yaw_rate_from_angle_error,
     _yaw_rate_from_pixel_error,
@@ -54,6 +58,15 @@ def _runtime_args(**overrides):
         "vehicle_max_total_thrust_n": 16.717785072,
         "body_rate_min_thrust": 0.25,
         "body_rate_max_thrust": 0.75,
+        "body_rate_v2_kp_roll": 5.0,
+        "body_rate_v2_kp_pitch": 5.0,
+        "body_rate_v2_kp_yaw": 3.0,
+        "body_rate_v2_max_pq_rate_deg_s": 120.0,
+        "body_rate_v2_slew_pq_deg_s2": 720.0,
+        "body_rate_v2_slew_r_deg_s2": 540.0,
+        "body_rate_v2_thrust_reserve": 0.15,
+        "body_rate_v2_guard_png_scale": 0.60,
+        "body_rate_v2_guard_speed_hold_scale": 0.45,
         "attitude_min_thrust": 0.25,
         "attitude_max_thrust": 0.80,
         "los_filter_process_lambda": 1e-4,
@@ -64,6 +77,17 @@ def _runtime_args(**overrides):
         "los_filter_terminal_area_ratio": 0.01,
         "los_filter_terminal_error_ratio": 0.55,
         "los_delay_compensation_s": 0.18,
+        "terminal_accel_hold_window_s": 0.35,
+        "terminal_accel_decay_tau_s": 0.60,
+        "terminal_accel_hold_max_mps2": 0.0,
+        "terminal_velocity_blind_push": True,
+        "terminal_accel_hold": False,
+        "terminal_blind_duration_s": 1.0,
+        "near_hit_radius_m": 1.5,
+        "upward_centering": False,
+        "upward_centering_gain": 8.0,
+        "upward_centering_max_accel_mps2": 4.0,
+        "camera_pitch_deg": 0.0,
     }
     args.update(overrides)
     return SimpleNamespace(**args)
@@ -158,6 +182,107 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(np.linalg.norm(accel), 2.0)
         self.assertAlmostEqual(accel[1], 2.0)
 
+    def test_upward_centering_acceleration_uses_body_xy_los_error(self):
+        args = SimpleNamespace(
+            upward_centering=True,
+            camera_pitch_deg=-90.0,
+            upward_centering_gain=8.0,
+            upward_centering_max_accel_mps2=10.0,
+        )
+        lambda_i = np.array([0.5, -0.25, -1.0])
+
+        accel, err, active = _upward_centering_acceleration(lambda_i, np.eye(3), args)
+
+        self.assertEqual(active, 1)
+        expected_err = lambda_i[:2] / np.linalg.norm(lambda_i)
+        np.testing.assert_allclose(err, expected_err)
+        np.testing.assert_allclose(accel, np.array([8.0 * expected_err[0], 8.0 * expected_err[1], 0.0]))
+
+    def test_upward_centering_acceleration_requires_upward_camera_and_clips(self):
+        args = SimpleNamespace(
+            upward_centering=True,
+            camera_pitch_deg=-90.0,
+            upward_centering_gain=10.0,
+            upward_centering_max_accel_mps2=2.0,
+        )
+
+        accel, _, active = _upward_centering_acceleration(np.array([1.0, 0.0, -1.0]), np.eye(3), args)
+
+        self.assertEqual(active, 1)
+        self.assertAlmostEqual(np.linalg.norm(accel), 2.0)
+        self.assertGreater(accel[0], 0.0)
+
+        args.camera_pitch_deg = -60.0
+        accel, err, active = _upward_centering_acceleration(np.array([1.0, 0.0, -1.0]), np.eye(3), args)
+
+        self.assertEqual(active, 0)
+        np.testing.assert_allclose(accel, np.zeros(3))
+        np.testing.assert_allclose(err, np.zeros(2))
+
+    def test_terminal_accel_hold_uses_recent_decaying_average(self):
+        args = SimpleNamespace(
+            terminal_accel_hold=True,
+            terminal_accel_hold_window_s=0.30,
+            terminal_accel_decay_tau_s=0.60,
+            terminal_accel_hold_max_mps2=10.0,
+            max_guidance_accel_mps2=20.0,
+            terminal_blind_duration_s=1.0,
+        )
+        samples: list[tuple[float, np.ndarray]] = []
+        _append_terminal_accel_sample(samples, 0.00, np.array([4.0, 0.0, 0.0]), True, args)
+        _append_terminal_accel_sample(samples, 0.20, np.array([2.0, 2.0, 0.0]), True, args)
+
+        command, base, count, decay, active = _terminal_accel_hold_command(
+            current_accel_I=np.zeros(3),
+            samples=samples,
+            timestamp=0.31,
+            using_blind_push=True,
+            blind_elapsed_s=0.30,
+            args=args,
+        )
+
+        self.assertEqual(active, 1)
+        self.assertEqual(count, 1)
+        np.testing.assert_allclose(base, np.array([2.0, 2.0, 0.0]))
+        self.assertAlmostEqual(decay, np.exp(-0.5))
+        np.testing.assert_allclose(command, decay * base)
+
+    def test_terminal_accel_hold_respects_disable_and_limit(self):
+        args = SimpleNamespace(
+            terminal_accel_hold=True,
+            terminal_accel_hold_window_s=1.0,
+            terminal_accel_decay_tau_s=1.0,
+            terminal_accel_hold_max_mps2=3.0,
+            max_guidance_accel_mps2=20.0,
+            terminal_blind_duration_s=1.0,
+        )
+        samples = [(0.0, np.array([10.0, 0.0, 0.0]))]
+
+        command, _, _, _, active = _terminal_accel_hold_command(
+            current_accel_I=np.array([1.0, 2.0, 3.0]),
+            samples=samples,
+            timestamp=0.0,
+            using_blind_push=True,
+            blind_elapsed_s=0.0,
+            args=args,
+        )
+
+        self.assertEqual(active, 1)
+        self.assertAlmostEqual(np.linalg.norm(command), 3.0)
+
+        args.terminal_accel_hold = False
+        command, _, _, _, active = _terminal_accel_hold_command(
+            current_accel_I=np.array([1.0, 2.0, 3.0]),
+            samples=samples,
+            timestamp=0.0,
+            using_blind_push=True,
+            blind_elapsed_s=0.0,
+            args=args,
+        )
+
+        self.assertEqual(active, 0)
+        np.testing.assert_allclose(command, np.array([1.0, 2.0, 3.0]))
+
     def test_accel_integrated_velocity_uses_dt_and_speed_cap(self):
         args = SimpleNamespace(min_speed_ratio=0.0)
         current = np.array([5.0, 0.0, 0.0])
@@ -247,7 +372,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             30.0,
+            0.1,
             args,
         )
 
@@ -281,7 +408,9 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             np.eye(3),
             0.0,
             0.0,
+            0.0,
             90.0,
+            0.1,
             args,
         )
 
@@ -409,6 +538,41 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         args.px4_command_mode = "mavlink_body_rate"
         _validate_runtime_args(args)
 
+    def test_terminal_strategy_defaults_split_upward_accel_from_forward_camera(self):
+        args = _runtime_args(
+            camera_pitch_deg=-90.0,
+            terminal_velocity_blind_push=None,
+            terminal_accel_hold=None,
+        )
+
+        _validate_runtime_args(args)
+
+        self.assertFalse(args.terminal_velocity_blind_push)
+        self.assertTrue(args.terminal_accel_hold)
+
+        args = _runtime_args(
+            camera_pitch_deg=0.0,
+            terminal_velocity_blind_push=None,
+            terminal_accel_hold=None,
+        )
+
+        _validate_runtime_args(args)
+
+        self.assertTrue(args.terminal_velocity_blind_push)
+        self.assertFalse(args.terminal_accel_hold)
+
+    def test_terminal_strategy_explicit_overrides_are_preserved(self):
+        args = _runtime_args(
+            camera_pitch_deg=-90.0,
+            terminal_velocity_blind_push=True,
+            terminal_accel_hold=False,
+        )
+
+        _validate_runtime_args(args)
+
+        self.assertTrue(args.terminal_velocity_blind_push)
+        self.assertFalse(args.terminal_accel_hold)
+
     def test_mavlink_body_rate_runtime_validation_rejects_other_output_modes(self):
         args = _runtime_args(
             guidance_output_mode="accel_integral",
@@ -474,6 +638,12 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             ("los_filter_terminal_area_ratio", -0.1, "terminal-area-ratio must be non-negative"),
             ("los_filter_terminal_error_ratio", -0.1, "terminal-error-ratio must be non-negative"),
             ("los_delay_compensation_s", -0.1, "delay-compensation-s must be non-negative"),
+            ("terminal_accel_hold_window_s", -0.1, "terminal-accel-hold-window-s must be non-negative"),
+            ("terminal_accel_decay_tau_s", -0.1, "terminal-accel-decay-tau-s must be non-negative"),
+            ("terminal_accel_hold_max_mps2", -0.1, "terminal-accel-hold-max-mps2 must be non-negative"),
+            ("near_hit_radius_m", -0.1, "near-hit-radius-m must be non-negative"),
+            ("upward_centering_gain", -0.1, "upward-centering-gain must be non-negative"),
+            ("upward_centering_max_accel_mps2", -0.1, "upward-centering-max-accel-mps2 must be non-negative"),
         ):
             args = _runtime_args(**{key: value})
             with self.subTest(key=key), self.assertRaisesRegex(SystemExit, message):
@@ -745,6 +915,17 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         _, orientation = _fixed_camera_pose(FakeAirSim, args)
 
         self.assertAlmostEqual(orientation[0], np.deg2rad(15.0))
+
+    def test_fixed_camera_rotation_points_center_ray_upward_for_vertical_mount(self):
+        args = SimpleNamespace(
+            camera_pitch_deg=-90.0,
+            camera_roll_deg=0.0,
+            camera_yaw_deg=0.0,
+        )
+
+        forward_body = _fixed_camera_R_BC(args) @ np.array([0.0, 0.0, 1.0])
+
+        np.testing.assert_allclose(forward_body, np.array([0.0, 0.0, -1.0]), atol=1.0e-9)
 
     def test_default_output_prefix_is_strapdown(self):
         args = SimpleNamespace(trajectory_prefix="", trajectory_dir="/tmp")
