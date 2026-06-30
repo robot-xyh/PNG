@@ -244,6 +244,12 @@ visual/KF loss reaches the miss threshold. It
 writes `strapdown_vision_png_*.csv`, `strapdown_vision_png_*_meta.json`, and
 `strapdown_vision_png_*.png` to `logs/`.
 
+Current fixed upward-camera baseline: YOLO+ByteTrack closed-loop tests at
+25/30/35/40/45/50 m are fixed in
+`完整方案/upward_camera_yolo_bytetrack_baseline_README.md`. That baseline uses
+AirSim collision as the success criterion; `SHADOW_AIRSIM_DETECT=1` is only a
+diagnostic comparison path.
+
 ## Safety Boundary
 
 `GuidanceEval.g_eval` is an evaluation/logging quantity for replay, simulation,
