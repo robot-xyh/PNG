@@ -141,6 +141,15 @@ def main() -> int:
     parser.add_argument("--policy", default=os.environ.get("AIRSIM_PORT_POLICY", "auto"), choices=("auto", "strict", "off"))
     parser.add_argument("--label", default=os.environ.get("AIRSIM_INSTANCE_LABEL", "blocks"))
     parser.add_argument("--host", default=os.environ.get("AIRSIM_RPC_HOST", DEFAULT_HOST))
+    parser.add_argument(
+        "--rewrite-host-ips",
+        action="store_true",
+        default=str(os.environ.get("AIRSIM_REWRITE_HOST_IPS", "0")).strip().lower() in {"1", "true", "yes", "on"},
+        help=(
+            "Rewrite PX4 vehicle loopback host fields to --host. Disabled by default because "
+            "PX4 SITL normally connects to AirSim on 127.0.0.1 even when RPC clients use 127.0.0.2."
+        ),
+    )
     parser.add_argument("--rpc-base", type=int, default=int(os.environ.get("AIRSIM_RPC_PORT_BASE", DEFAULT_API_PORT)))
     parser.add_argument("--px4-base", type=int, default=int(os.environ.get("AIRSIM_PX4_PORT_BASE", 4560)))
     args = parser.parse_args()
@@ -162,7 +171,7 @@ def main() -> int:
 
     if args.policy == "off":
         notes: list[str] = []
-        changed = _normalize_loopback_host_ips(settings, host, notes)
+        changed = _normalize_loopback_host_ips(settings, host, notes) if args.rewrite_host_ips else False
         output_settings = settings_path
         if changed:
             output_settings = _write_rewritten_settings(
@@ -191,7 +200,8 @@ def main() -> int:
     reserved: set[int] = set()
     changed = False
     notes: list[str] = []
-    changed = _normalize_loopback_host_ips(settings, host, notes) or changed
+    if args.rewrite_host_ips:
+        changed = _normalize_loopback_host_ips(settings, host, notes) or changed
 
     rpc_port = int(settings.get("ApiServerPort", DEFAULT_API_PORT) or DEFAULT_API_PORT)
     rpc_free = _port_usable(rpc_port, "tcp", reserved, host)

@@ -8,3 +8,4 @@ __pycache__/
 Blocks/
 logs/
 datasets/
+.airsim_runtime/
