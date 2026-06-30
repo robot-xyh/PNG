@@ -256,6 +256,28 @@ def _camera_shadow_metrics(samples: list[dict[str, str]]) -> list[dict[str, floa
     return metrics
 
 
+def _truth_los_components(samples: list[dict[str, str]]) -> dict[str, list[float]]:
+    components = {"x": [], "y": [], "z": []}
+    for row in samples:
+        camera_pos = _np_vector(row, ("camera_world_x", "camera_world_y", "camera_world_z"))
+        intruder_pos = _np_vector(row, ("intruder_x", "intruder_y", "intruder_z"))
+        los = None if camera_pos is None or intruder_pos is None else _unit(intruder_pos - camera_pos)
+        for index, key in enumerate(("x", "y", "z")):
+            components[key].append(math.nan if los is None else float(los[index]))
+    return components
+
+
+def _measured_los_components(samples: list[dict[str, str]]) -> dict[str, list[float]]:
+    components = {"x": [], "y": [], "z": []}
+    for row in samples:
+        detected = _bool(row.get("detected"))
+        vector = _np_vector(row, ("lambda_measured_x", "lambda_measured_y", "lambda_measured_z")) if detected else None
+        los = _unit(vector) if vector is not None else None
+        for index, key in enumerate(("x", "y", "z")):
+            components[key].append(math.nan if los is None else float(los[index]))
+    return components
+
+
 def _load_summary(path: Path, label: str) -> list[CaseRow]:
     if not path.exists():
         return []
@@ -343,7 +365,7 @@ def _summary_table(rows: list[CaseRow]) -> str:
 
 def _detail_table(rows: list[CaseRow]) -> str:
     lines = [
-        "|组别|距离m|碰撞|近距|碰撞时间s|近距时间s|近距距离m|最小距离m|终点距离m|检测帧率|有效帧率|YOLO FPS|sim FPS|实际过载max g|速度指令差分P95 g|需用过载P95 g|",
+        "|组别|距离m|碰撞|近距|碰撞时间s|近距时间s|近距距离m|最小距离m|终点距离m|检测帧率|有效帧率|检测FPS|sim FPS|实际过载max g|速度指令差分P95 g|需用过载P95 g|",
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for row in rows:
@@ -372,6 +394,19 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             return value
         return meta.get(key, default)
 
+    detector_source = str(cfg("detector_source") or "").strip()
+    if detector_source == "airsim":
+        detector_rows = [
+            "|YOLO链路|未使用；本轮由 AirSim detect 函数直接提供理想 bbox|",
+        ]
+    else:
+        detector_rows = [
+            f"|YOLO model|`{cfg('yolo_model')}`|",
+            f"|YOLO device|`{cfg('yolo_device')}` runtime `{sample.get('yolo_runtime_device', '')}`|",
+            f"|YOLO conf / iou / imgsz|`{cfg('yolo_conf')}` / `{cfg('yolo_iou')}` / `{cfg('yolo_imgsz')}`|",
+            f"|tracker|`{cfg('yolo_tracker')}`，single target `{cfg('yolo_single_target_mode')}`|",
+        ]
+
     return "\n".join(
         [
             "|参数|值|",
@@ -383,10 +418,7 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|actor asset|`{cfg('intruder_actor_asset')}`|",
             f"|actor scale|`{cfg('intruder_actor_scale')}`|",
             f"|检测源|`{cfg('detector_source')}`|",
-            f"|YOLO model|`{cfg('yolo_model')}`|",
-            f"|YOLO device|`{cfg('yolo_device')}` runtime `{sample.get('yolo_runtime_device', '')}`|",
-            f"|YOLO conf / iou / imgsz|`{cfg('yolo_conf')}` / `{cfg('yolo_iou')}` / `{cfg('yolo_imgsz')}`|",
-            f"|tracker|`{cfg('yolo_tracker')}`，single target `{cfg('yolo_single_target_mode')}`|",
+            *detector_rows,
             f"|相机外参|`x={cfg('camera_x')}, y={cfg('camera_y')}, z={cfg('camera_z')}`|",
             f"|upward centering|`{cfg('upward_centering')}`, gain `{cfg('upward_centering_gain')}`, max accel `{cfg('upward_centering_max_accel_mps2')} m/s^2`|",
             f"|near-hit radius|`{cfg('near_hit_radius_m')} m`|",
@@ -441,7 +473,7 @@ def plot_summary(rows: list[CaseRow], output: Path) -> None:
     ax_min.set_ylabel("m")
     ax_hit.set_title("Collision and near-hit")
     ax_hit.set_ylabel("success")
-    ax_detect.set_title("YOLO detection frame ratio")
+    ax_detect.set_title("Detection frame ratio")
     ax_detect.set_ylabel("%")
     ax_fps.set_title("Detector FPS")
     ax_fps.set_ylabel("FPS")
@@ -458,14 +490,37 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
     images: dict[float, Path] = {}
     for range_m in sorted({row.start_range_m for row in rows if math.isfinite(row.start_range_m)}):
         group = [row for row in rows if row.start_range_m == range_m]
-        fig, axes = plt.subplots(5, 1, figsize=(12, 14), sharex=False)
-        ax_range, ax_bbox, ax_ttc, ax_load, ax_fps = axes
+        fig, axes = plt.subplots(6, 1, figsize=(12, 17), sharex=False)
+        ax_range, ax_los, ax_bbox, ax_ttc, ax_load, ax_fps = axes
+        component_colors = {"x": "tab:blue", "y": "tab:orange", "z": "tab:green"}
         for row in group:
             samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
             t = _series(samples, "t")
             label = LABELS[row.label]
             outcome = "collision" if row.hit else ("near-hit" if row.near_hit else "miss")
             ax_range.plot(t, _series(samples, "range"), linewidth=1.1, label=f"{label} {outcome}")
+            truth_los = _truth_los_components(samples)
+            measured_los = _measured_los_components(samples)
+            group_alpha = 0.95 if row.label == "TTC" else 0.55
+            for component in ("x", "y", "z"):
+                color = component_colors[component]
+                ax_los.plot(
+                    t,
+                    truth_los[component],
+                    linewidth=1.1,
+                    color=color,
+                    alpha=group_alpha,
+                    label=f"{row.label} truth {component}",
+                )
+                ax_los.plot(
+                    t,
+                    measured_los[component],
+                    linewidth=0.95,
+                    linestyle="--",
+                    color=color,
+                    alpha=group_alpha,
+                    label=f"{row.label} YOLO {component}",
+                )
             ax_bbox.plot(t, _series(samples, "bbox_area"), linewidth=1.0, label=label)
             ax_ttc.plot(t, _series(samples, "ttc"), linewidth=1.0, label=label)
             ax_load.plot(t, _series(samples, "load_factor_fd_g"), linewidth=1.0, label=f"{label} actual")
@@ -473,6 +528,9 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
             ax_fps.plot(t, _series(samples, "detector_fps"), linewidth=1.0, label=label)
         ax_range.set_title(f"{range_m:.0f}m true center range")
         ax_range.set_ylabel("m")
+        ax_los.set_title("Actual LOS and YOLO measured LOS components")
+        ax_los.set_ylabel("unit LOS")
+        ax_los.set_ylim(-1.05, 1.05)
         ax_bbox.set_title("BBox area ratio")
         ax_bbox.set_ylabel("area")
         ax_ttc.set_title("TTC estimate")
@@ -485,6 +543,7 @@ def plot_per_distance(rows: list[CaseRow], output_dir: Path) -> dict[float, Path
         for ax in axes:
             ax.grid(True, alpha=0.3)
             ax.legend(fontsize=6, ncol=2)
+        ax_los.legend(fontsize=6, ncol=4)
         fig.tight_layout()
         path = output_dir / f"yolo_sitl_ttc_vm_{int(round(range_m)):03d}m.png"
         fig.savefig(path, dpi=170)
@@ -612,9 +671,20 @@ def _case_notes(rows: list[CaseRow]) -> str:
             f"未命中 `{miss_ranges}`，检测帧比例 `{100.0 * det:.1f}%`，有效导引帧比例 `{100.0 * valid:.1f}%`，"
             f"平均检测 FPS `{(sum(fps) / len(fps) if fps else math.nan):.2f}`。"
         )
-    lines.append(
-        "- 本轮使用真实 YOLOv8 + ByteTrack，因此检测连续性和 GPU 推理速度会直接进入闭环；结果不能和 AirSim detect 函数的理想 bbox 直接等价比较。"
-    )
+    sample = _first_sample(rows)
+    detector_source = str(sample.get("detector_source") or "").strip()
+    if detector_source == "airsim":
+        lines.append(
+            "- 本轮闭环检测源为 AirSim detect 函数，检测框为仿真理想 bbox；不能把本结果等同于真实 YOLO 视觉链路。"
+        )
+    elif detector_source == "yolo_kcf":
+        lines.append(
+            "- 本轮使用 YOLO+KCF 闭环，因此检测连续性、KCF 重初始化和 GPU 推理速度会直接进入闭环；结果不能和 AirSim detect 函数的理想 bbox 直接等价比较。"
+        )
+    else:
+        lines.append(
+            "- 本轮使用真实 YOLOv8 + ByteTrack，因此检测连续性和 GPU 推理速度会直接进入闭环；结果不能和 AirSim detect 函数的理想 bbox 直接等价比较。"
+        )
     lines.append(
         "- `accel_integral` 模式的 `n_cmd_g` 来自导引层 `a_cmd`，底层仍通过 PX4/AirSim 速度 setpoint 闭环；实际过载由真实速度差分估计，因此会同时受 PX4 响应、速度限幅和视觉帧率影响。"
     )
@@ -654,6 +724,7 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
             f"`{_reason(nearest)}`|{common}|{det_ratio:.1f}%|{valid_ratio:.1f}%|"
         )
     sample = _first_sample(rows)
+    detector_source = str(sample.get("detector_source") or "").strip()
     near_misses = [row for row in rows if not row.hit and math.isfinite(row.min_range_m) and row.min_range_m <= 3.0]
     low_detection = [row for row in rows if row.frames > 0 and row.detected_frames / max(1, row.frames) < 0.6]
     nearest_rejects: list[str] = []
@@ -694,7 +765,11 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
                 f"{row.label} {row.start_range_m:.0f}m({100.0 * row.detected_frames / max(1, row.frames):.1f}%)"
                 for row in low_detection
             )
-            + "。这类失败优先归因于 YOLO/ByteTrack 连续性和固定相机视场保持，而不是导引律公式本身。"
+            + (
+                "。这类失败优先归因于 AirSim detect 可见性/视场保持，而不是导引律公式本身。"
+                if detector_source == "airsim"
+                else "。这类失败优先归因于 YOLO/ByteTrack 连续性和固定相机视场保持，而不是导引律公式本身。"
+            )
         )
     if nearest_rejects:
         dynamic_lines.append(
@@ -707,7 +782,11 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
         required_mean = sum(value for value in required_p95 if math.isfinite(value)) / max(1, len([value for value in required_p95 if math.isfinite(value)]))
         dynamic_lines.append(
             f"- 本轮平均实际过载峰值约 `{actual_mean:.2f} g`，平均需用过载 P95 约 `{required_mean:.2f} g`。"
-            "两者不是同一个量：`n_cmd_g` 是导引层需求，实际过载还受 PX4 姿态/推力限制、YOLO 约 9 FPS 采样和 frame centering 限速影响。"
+            + (
+                "两者不是同一个量：`n_cmd_g` 是导引层需求，实际过载还受 PX4 姿态/推力限制、约 8Hz 控制循环和 frame centering 限速影响。"
+                if detector_source == "airsim"
+                else "两者不是同一个量：`n_cmd_g` 是导引层需求，实际过载还受 PX4 姿态/推力限制、YOLO 约 9 FPS 采样和 frame centering 限速影响。"
+            )
         )
     lines.extend(dynamic_lines)
     return "\n".join(lines)
@@ -833,11 +912,19 @@ def _png_control_flow_markdown(rows: list[CaseRow]) -> str:
             "因此控制链路保留为速度指令/航向率指令形式。"
         )
 
+    detector_source = str(sample.get("detector_source") or "").strip()
+    if detector_source == "airsim":
+        los_input_text = "AirSim detect 函数输出目标 `box2D`，bbox 中心先通过相机内参转换成相机坐标系单位射线："
+    elif detector_source == "yolo_kcf":
+        los_input_text = "YOLO+KCF 输出 `bbox center=(u,v)`、`bbox area` 和跟踪状态。bbox 中心先通过相机内参转换成相机坐标系单位射线："
+    else:
+        los_input_text = "YOLOv8 + ByteTrack 输出 `bbox center=(u,v)`、`bbox area`、`track_id` 和置信度。bbox 中心先通过相机内参转换成相机坐标系单位射线："
+
     return f"""{intro}
 
 ### 10.1 视觉量到 6D LOS
 
-YOLOv8 + ByteTrack 输出 `bbox center=(u,v)`、`bbox area`、`track_id` 和置信度。bbox 中心先通过相机内参转换成相机坐标系单位射线：
+{los_input_text}
 
 ```text
 x_n = (u - cx) / fx
@@ -1116,11 +1203,18 @@ def write_report(
 ) -> None:
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     image_lines = "\n".join(f"![{int(range_m)}m]({_rel(path)})" for range_m, path in sorted(per_distance.items()))
+    sample = _first_sample(rows)
+    detector_source = str(sample.get("detector_source") or "").strip()
+    if detector_source == "airsim":
+        purpose_intro = "在真正 PX4 SITL actor 场景中使用 AirSim detect 理想 bbox 作为闭环检测源，比较两种捷联视觉比例导引。本报告优先使用 `n_cmd_g` 作为需用过载；旧日志没有该字段时才回退到 `g_eval` 等效过载。"
+    else:
+        purpose_intro = "按照此前已命中的 YOLO 案例配置，改用真正 PX4 SITL actor 场景，比较两种捷联视觉比例导引。本报告优先使用 `n_cmd_g` 作为需用过载；旧日志没有该字段时才回退到 `g_eval` 等效过载。"
+
     report = f"""# {title}
 
 ## 1. 实验目的
 
-按照此前已命中的 YOLO 案例配置，改用真正 PX4 SITL actor 场景，比较两种捷联视觉比例导引。本报告优先使用 `n_cmd_g` 作为需用过载；旧日志没有该字段时才回退到 `g_eval` 等效过载。
+{purpose_intro}
 
 - `TTC` 组：`ttc_png`，TTC 只参与增益调度，并保留 LOS/Vm soft guidance。
 - `VM` 组：`fixed_vm_png`，不使用 TTC，固定 `N * V_m` 导引增益。
@@ -1148,7 +1242,7 @@ def write_report(
 
 ## 6. 分距离曲线
 
-每个距离一张图，包含真实中心距离、bbox 面积、TTC 估计、实际过载/需用过载和 YOLO 检测 FPS。
+每个距离一张图，包含真实中心距离、真实 LOS 与 YOLO 检测 LOS 分量、bbox 面积、TTC 估计、实际过载/需用过载和检测 FPS。
 
 {image_lines}
 
