@@ -286,6 +286,12 @@ def parse_args() -> argparse.Namespace:
         default=1.5,
         help="Diagnostic success radius from truth range; logged separately from AirSim collision.",
     )
+    parser.add_argument(
+        "--stop-on-near-hit",
+        action=argparse.BooleanOptionalAction,
+        default=False,
+        help="Stop the run at diagnostic near-hit range. Disabled by default because AirSim collision is the hit criterion.",
+    )
     parser.add_argument("--max-vision-lateral-speed", type=float, default=4.0)
     parser.add_argument("--max-vision-vertical-speed", type=float, default=3.0)
     parser.add_argument("--coast-timeout-s", type=float, default=0.5)
@@ -333,6 +339,25 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminal-trend-bias-max-mps", type=float, default=1.5)
     parser.add_argument("--terminal-pitch-up-bias-mps", type=float, default=0.8)
     parser.add_argument("--terminal-abort-on-tilt-hardcap", action=argparse.BooleanOptionalAction, default=True)
+    parser.add_argument(
+        "--terminal-blind-requires-visual-loss",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "Only enter terminal BlindPush after visual/KF loss; large or clipped boxes remain visual terminal capture. "
+            "Defaults on for fixed upward camera acceleration-output tests and off otherwise."
+        ),
+    )
+    parser.add_argument(
+        "--terminal-clipped-los-kf-predict",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help=(
+            "For fixed upward camera terminal capture, do not feed clipped bbox centers into the strapdown LOS filter; "
+            "use terminal image-KF prediction for LOS guidance instead. Defaults on for fixed upward camera "
+            "acceleration-output tests and off otherwise."
+        ),
+    )
     parser.add_argument("--terminal-image-kf", action=argparse.BooleanOptionalAction, default=True)
     parser.add_argument("--terminal-image-kf-max-predict-s", type=float, default=0.35)
     parser.add_argument("--terminal-image-kf-meas-noise-rad", type=float, default=0.006)
@@ -656,12 +681,35 @@ def _uses_upward_terminal_accel_strategy(args) -> bool:
     return _is_fixed_upward_camera(args) and _uses_acceleration_output_mode(args)
 
 
+def _clipped_los_uses_image_kf_predict(detection_clipped: bool, args) -> bool:
+    return bool(
+        detection_clipped
+        and getattr(args, "terminal_clipped_los_kf_predict", False)
+        and getattr(args, "terminal_image_kf", True)
+        and getattr(args, "terminal_image_kf_guidance", True)
+    )
+
+
+def _should_update_last_velocity(valid: bool, detected: bool, image_kf_guidance_used: bool, args) -> bool:
+    if not valid:
+        return False
+    return not (
+        image_kf_guidance_used
+        and not detected
+        and _uses_upward_terminal_accel_strategy(args)
+    )
+
+
 def _resolve_terminal_strategy_defaults(args) -> None:
     upward_accel_terminal = _uses_upward_terminal_accel_strategy(args)
     if getattr(args, "terminal_velocity_blind_push", None) is None:
         args.terminal_velocity_blind_push = not upward_accel_terminal
     if getattr(args, "terminal_accel_hold", None) is None:
         args.terminal_accel_hold = upward_accel_terminal
+    if getattr(args, "terminal_blind_requires_visual_loss", None) is None:
+        args.terminal_blind_requires_visual_loss = upward_accel_terminal
+    if getattr(args, "terminal_clipped_los_kf_predict", None) is None:
+        args.terminal_clipped_los_kf_predict = upward_accel_terminal
 
 
 def _validate_runtime_args(args) -> None:
@@ -2808,6 +2856,9 @@ def _frame_centering_yaw_rate(
     if not bool(args.frame_centering) or state not in {"frame_centering", "terminal_capture", "loss_hold"}:
         return yaw_rate_deg_s, yaw_rate_source, 0.0, 0
 
+    if state == "loss_hold" and yaw_rate_source == "terminal_yaw_hold":
+        return yaw_rate_deg_s, yaw_rate_source, 1.0, 0
+
     if state == "terminal_capture":
         gain_scale = max(0.0, float(args.terminal_capture_yaw_gain_scale))
         limit = max(0.0, min(float(args.max_yaw_rate_deg), float(args.terminal_capture_max_yaw_rate_deg)))
@@ -2849,6 +2900,18 @@ def _terminal_trigger_strapdown(reason: str, detected: bool, bbox_area: float, i
     if detected and _terminal_area(bbox_area, intrinsics, args):
         return "bbox_area_large"
     return ""
+
+
+def _bbox_clipped_reason(*, top: bool, bottom: bool, left: bool, right: bool) -> str:
+    if bottom:
+        return "bbox_bottom_clipped"
+    if top:
+        return "bbox_top_clipped"
+    if left:
+        return "bbox_left_clipped"
+    if right:
+        return "bbox_right_clipped"
+    return "bbox_clipped"
 
 
 def _is_short_visual_loss_reason(reason: str) -> bool:
@@ -3247,6 +3310,7 @@ def main() -> None:
     frame_id = 0
     hit = False
     near_hit = False
+    near_hit_reported = False
     bbox_noise_rng = np.random.default_rng(int(args.bbox_noise_seed))
     last_frame_guard_ts: Optional[float] = None
     last_frame_guard_error_ratio = 0.0
@@ -3444,6 +3508,8 @@ def main() -> None:
         bbox_top_clipped = False
         bbox_bottom_clipped = False
         pitch_measurement_rejected = False
+        clipped_los_kf_predict_active = False
+        clipped_los_kf_predict_used = False
         lambda_I_measured: Optional[np.ndarray] = None
         lambda_raw: Optional[np.ndarray] = None
         omega_raw: Optional[np.ndarray] = None
@@ -3509,6 +3575,7 @@ def main() -> None:
             bbox_bottom_clipped = bool(clip_flags["bottom"])
             detection_clipped = any(clip_flags.values())
             pitch_measurement_rejected = bool(args.reject_top_clipped_pitch and bbox_top_clipped)
+            clipped_los_kf_predict_active = _clipped_los_uses_image_kf_predict(detection_clipped, args)
             yaw_rate_cmd_deg_s = _yaw_rate_from_pixel_error(px_err_x, intrinsics, args)
 
             lookup = attitude_buffer.lookup(frame_detection.exposure_ts)
@@ -3520,115 +3587,126 @@ def main() -> None:
                 los_C = camera_ray_from_pixel(*center, intrinsics)
                 lambda_I_measured = los_camera_to_inertial(los_C, R_BC, lookup.sample.R_IB)
                 lambda_raw = normalize(lambda_I_measured)
-                if last_raw_lambda_I is not None and last_raw_lambda_ts is not None:
-                    raw_dt = max(1.0e-3, frame_detection.exposure_ts - last_raw_lambda_ts)
-                    los_dt_s = raw_dt
-                    raw_delta = project_perpendicular((lambda_raw - last_raw_lambda_I) / raw_dt, lambda_raw)
-                    omega_raw = np.cross(lambda_raw, raw_delta)
-                    dot_raw = float(np.clip(np.dot(last_raw_lambda_I, lambda_raw), -1.0, 1.0))
-                    los_angle_step_deg = float(np.degrees(np.arccos(dot_raw)))
-                else:
-                    omega_raw = np.zeros(3, dtype=float)
-                last_raw_lambda_I = np.array(lambda_raw, dtype=float)
-                last_raw_lambda_ts = frame_detection.exposure_ts
-
-                if args.los_filter:
-                    los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
-                    los_source = "kalman"
-                    los_valid = los.valid
-                    los_lambda = los.lambda_I
-                    los_omega = los.omega_los
-                    los_quality = los.quality
-                    los_reject_reason = los.reject_reason
-                    los_terminal_gate_active = _terminal_los_gate_active(
-                        detected=True,
-                        area_ratio=detected_area_ratio,
-                        image_error_ratio=detected_error_ratio,
-                        detection_clipped=detection_clipped or pitch_measurement_rejected,
-                        terminal_state="",
-                        image_kf_valid=False,
-                        args=args,
+                if clipped_los_kf_predict_active:
+                    reason = _bbox_clipped_reason(
+                        top=bbox_top_clipped,
+                        bottom=bbox_bottom_clipped,
+                        left=bbox_left_clipped,
+                        right=bbox_right_clipped,
                     )
-                    if los_terminal_gate_active and _terminal_los_reject_relaxed(los, lambda_I_measured, args):
+                    los_source = "clipped_bbox_kf_pending"
+                    los_quality = 0.0
+                    los_reject_reason = reason
+                else:
+                    if last_raw_lambda_I is not None and last_raw_lambda_ts is not None:
+                        raw_dt = max(1.0e-3, frame_detection.exposure_ts - last_raw_lambda_ts)
+                        los_dt_s = raw_dt
+                        raw_delta = project_perpendicular((lambda_raw - last_raw_lambda_I) / raw_dt, lambda_raw)
+                        omega_raw = np.cross(lambda_raw, raw_delta)
+                        dot_raw = float(np.clip(np.dot(last_raw_lambda_I, lambda_raw), -1.0, 1.0))
+                        los_angle_step_deg = float(np.degrees(np.arccos(dot_raw)))
+                    else:
+                        omega_raw = np.zeros(3, dtype=float)
+                    last_raw_lambda_I = np.array(lambda_raw, dtype=float)
+                    last_raw_lambda_ts = frame_detection.exposure_ts
+
+                    if args.los_filter:
+                        los = los_filter.update(frame_detection.exposure_ts, lambda_I_measured)
+                        los_source = "kalman"
+                        los_valid = los.valid
+                        los_lambda = los.lambda_I
+                        los_omega = los.omega_los
+                        los_quality = los.quality
+                        los_reject_reason = los.reject_reason
+                        los_terminal_gate_active = _terminal_los_gate_active(
+                            detected=True,
+                            area_ratio=detected_area_ratio,
+                            image_error_ratio=detected_error_ratio,
+                            detection_clipped=detection_clipped or pitch_measurement_rejected,
+                            terminal_state="",
+                            image_kf_valid=False,
+                            args=args,
+                        )
+                        if los_terminal_gate_active and _terminal_los_reject_relaxed(los, lambda_I_measured, args):
+                            los_valid = True
+                            los_lambda = lambda_raw
+                            los_omega = omega_raw
+                            los_quality = max(0.05, los.quality)
+                            los_reject_reason = None
+                            los_source = "kalman_terminal_relaxed"
+                            los_terminal_gate_relaxed = True
+                    else:
+                        los_source = "raw_fd"
                         los_valid = True
                         los_lambda = lambda_raw
                         los_omega = omega_raw
-                        los_quality = max(0.05, los.quality)
+                        los_quality = 1.0
                         los_reject_reason = None
-                        los_source = "kalman_terminal_relaxed"
-                        los_terminal_gate_relaxed = True
-                else:
-                    los_source = "raw_fd"
-                    los_valid = True
-                    los_lambda = lambda_raw
-                    los_omega = omega_raw
-                    los_quality = 1.0
-                    los_reject_reason = None
-                if args.guidance_law == "ttc_png":
-                    ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
-                    ttc_quality = ttc.quality
-                    ttc_area = ttc.area_filtered
-                    ttc_area_dot = ttc.area_dot_filtered
-                    if ttc.ttc is not None:
-                        ttc_value = f"{ttc.ttc:.3f}"
-                if not los_valid:
-                    reason = los_reject_reason or "los_invalid"
-                elif args.guidance_law == "fixed_vm_png":
-                    guidance_gain = fixed_vm_gain
-                    lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
-                    lambda_I = lambda_eff
-                    omega_los = omega_eff
-                    lambda_I_predicted = lambda_eff
-                    omega_los_predicted = omega_eff
-                    g_eval = guidance_gain * np.cross(omega_los, lambda_I)
-                    valid = True
-                    guidance_mode = "fixed_vm_png"
-                    last_valid_ts = sim_t
-                    last_lambda_I = lambda_I
-                    last_omega_los = omega_los
-                elif not ttc.valid or ttc.ttc is None:
-                    lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
-                    lambda_I = lambda_eff
-                    omega_los = omega_eff
-                    lambda_I_predicted = lambda_eff
-                    omega_los_predicted = omega_eff
-                    reason = ttc.reject_reason or "ttc_invalid"
-                    if bool(args.ttc_soft_guidance):
+                    if args.guidance_law == "ttc_png":
+                        ttc = ttc_filter.update(frame_detection, intrinsics.width, intrinsics.height)
+                        ttc_quality = ttc.quality
+                        ttc_area = ttc.area_filtered
+                        ttc_area_dot = ttc.area_dot_filtered
+                        if ttc.ttc is not None:
+                            ttc_value = f"{ttc.ttc:.3f}"
+                    if not los_valid:
+                        reason = los_reject_reason or "los_invalid"
+                    elif args.guidance_law == "fixed_vm_png":
                         guidance_gain = fixed_vm_gain
+                        lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
+                        lambda_I = lambda_eff
+                        omega_los = omega_eff
+                        lambda_I_predicted = lambda_eff
+                        omega_los_predicted = omega_eff
                         g_eval = guidance_gain * np.cross(omega_los, lambda_I)
                         valid = True
-                        guidance_mode = "ttc_soft_vm"
+                        guidance_mode = "fixed_vm_png"
                         last_valid_ts = sim_t
                         last_lambda_I = lambda_I
                         last_omega_los = omega_los
-                    elif _los_fallback_allowed(reason, args):
-                        guidance_gain = max(0.0, args.los_fallback_gain)
-                        g_eval = guidance_gain * omega_los
-                        valid = True
-                        guidance_mode = "los_fallback"
-                        last_valid_ts = sim_t
-                        last_lambda_I = lambda_I
-                        last_omega_los = omega_los
-                else:
-                    gain = gain_schedule.gain(ttc.ttc)
-                    lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
-                    lambda_I = lambda_eff
-                    omega_los = omega_eff
-                    lambda_I_predicted = lambda_eff
-                    omega_los_predicted = omega_eff
-                    if bool(args.ttc_soft_guidance):
-                        gain_scale = gain / max(1.0e-6, float(gain_schedule.max_gain))
-                        min_scale = float(np.clip(float(args.ttc_soft_min_gain_scale), 0.0, 1.0))
-                        guidance_gain = fixed_vm_gain * float(np.clip(gain_scale, min_scale, 1.0))
-                        g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                    elif not ttc.valid or ttc.ttc is None:
+                        lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
+                        lambda_I = lambda_eff
+                        omega_los = omega_eff
+                        lambda_I_predicted = lambda_eff
+                        omega_los_predicted = omega_eff
+                        reason = ttc.reject_reason or "ttc_invalid"
+                        if bool(args.ttc_soft_guidance):
+                            guidance_gain = fixed_vm_gain
+                            g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                            valid = True
+                            guidance_mode = "ttc_soft_vm"
+                            last_valid_ts = sim_t
+                            last_lambda_I = lambda_I
+                            last_omega_los = omega_los
+                        elif _los_fallback_allowed(reason, args):
+                            guidance_gain = max(0.0, args.los_fallback_gain)
+                            g_eval = guidance_gain * omega_los
+                            valid = True
+                            guidance_mode = "los_fallback"
+                            last_valid_ts = sim_t
+                            last_lambda_I = lambda_I
+                            last_omega_los = omega_los
                     else:
-                        guidance_gain = gain
-                        g_eval = gain * omega_los
-                    valid = True
-                    guidance_mode = "ttc_png"
-                    last_valid_ts = sim_t
-                    last_lambda_I = lambda_I
-                    last_omega_los = omega_los
+                        gain = gain_schedule.gain(ttc.ttc)
+                        lambda_eff, omega_eff = _predict_los_delay(los_lambda, los_omega, los_delay_compensation_s)
+                        lambda_I = lambda_eff
+                        omega_los = omega_eff
+                        lambda_I_predicted = lambda_eff
+                        omega_los_predicted = omega_eff
+                        if bool(args.ttc_soft_guidance):
+                            gain_scale = gain / max(1.0e-6, float(gain_schedule.max_gain))
+                            min_scale = float(np.clip(float(args.ttc_soft_min_gain_scale), 0.0, 1.0))
+                            guidance_gain = fixed_vm_gain * float(np.clip(gain_scale, min_scale, 1.0))
+                            g_eval = guidance_gain * np.cross(omega_los, lambda_I)
+                        else:
+                            guidance_gain = gain
+                            g_eval = gain * omega_los
+                        valid = True
+                        guidance_mode = "ttc_png"
+                        last_valid_ts = sim_t
+                        last_lambda_I = lambda_I
+                        last_omega_los = omega_los
 
         image_kf = terminal_image_kf.update(
             timestamp=sim_t,
@@ -3654,7 +3732,7 @@ def main() -> None:
             and bool(args.terminal_image_kf_guidance)
             and image_kf.valid
             and image_kf.mode == IMAGE_KF_PREDICT
-            and _is_short_visual_loss_reason(reason)
+            and (_is_short_visual_loss_reason(reason) or clipped_los_kf_predict_active)
         ):
             predicted_lambda_I, predicted_omega_los = _image_kf_los_guidance_estimate(image_kf, intrinsics, R_BC, R_IB)
             if predicted_lambda_I is not None and predicted_omega_los is not None:
@@ -3674,12 +3752,16 @@ def main() -> None:
                     guidance_mode = "ttc_png_kf_predict"
                 valid = True
                 los_source = "image_kf_predict"
+                if clipped_los_kf_predict_active:
+                    los_source = "image_kf_predict_clipped"
                 los_quality = image_kf.quality
-                reason = "image_kf_predict"
+                if not clipped_los_kf_predict_active:
+                    reason = "image_kf_predict"
                 last_valid_ts = sim_t
                 last_lambda_I = lambda_I
                 last_omega_los = omega_los
                 image_kf_guidance_used = True
+                clipped_los_kf_predict_used = bool(clipped_los_kf_predict_active)
 
         if not valid and last_valid_ts is not None and sim_t - last_valid_ts <= args.coast_timeout_s:
             lambda_I = last_lambda_I
@@ -3895,7 +3977,7 @@ def main() -> None:
         if terminal_result.using_blind_push:
             guidance_mode = "blind_push"
             reason = terminal_result.reason
-        elif valid:
+        elif _should_update_last_velocity(valid, detected, image_kf_guidance_used, args):
             last_v_cmd = np.array(v_cmd, dtype=float)
         (
             a_cmd,
@@ -3925,7 +4007,11 @@ def main() -> None:
             blind_elapsed_s=terminal_result.blind_elapsed_s,
             args=args,
         )
-        yaw_rate_source = "measurement" if detected else "none"
+        terminal_yaw_hold_sample_count = yaw_rate_blind_sample_count if terminal_result.using_blind_push else 0
+        terminal_yaw_hold_active = int(terminal_yaw_hold_sample_count > 0)
+        terminal_yaw_hold_base_deg_s = yaw_rate_blind_base_deg_s if terminal_yaw_hold_active else 0.0
+        terminal_yaw_hold_decay = yaw_rate_blind_decay if terminal_yaw_hold_active else 0.0
+        yaw_rate_source = "terminal_yaw_hold" if terminal_yaw_hold_active else ("measurement" if detected else "none")
         image_kf_takeover_allowed, image_kf_takeover_reason = _image_kf_takeover_allowed(
             image_kf,
             terminal_result,
@@ -3940,13 +4026,17 @@ def main() -> None:
             yaw_rate_blind_base_deg_s = yaw_rate_cmd_deg_s
             yaw_rate_blind_sample_count = 0
             yaw_rate_blind_decay = image_kf.quality
+            terminal_yaw_hold_active = 0
+            terminal_yaw_hold_base_deg_s = 0.0
+            terminal_yaw_hold_decay = 0.0
+            terminal_yaw_hold_sample_count = 0
             yaw_rate_source = "kf"
-        if image_kf_guidance_used and yaw_rate_source == "none":
+        if image_kf_guidance_used and (yaw_rate_source == "none" or clipped_los_kf_predict_used):
             yaw_rate_cmd_deg_s = _kf_yaw_rate_command(image_kf, args)
             yaw_rate_source = "kf_guidance"
-        elif terminal_result.using_blind_push:
-            yaw_rate_source = "window_hold"
-        elif terminal_result.state == TERMINAL_VISUAL:
+        elif terminal_result.using_blind_push and yaw_rate_source not in {"kf", "kf_guidance"}:
+            yaw_rate_source = "terminal_yaw_hold" if terminal_yaw_hold_active else "window_hold"
+        elif terminal_result.state == TERMINAL_VISUAL and yaw_rate_source not in {"kf", "kf_guidance"}:
             yaw_rate_source = "measurement_scaled"
         yaw_rate_cmd_deg_s, frame_guard_yaw_active = _frame_guard_yaw_rate(
             yaw_rate_cmd_deg_s,
@@ -3972,6 +4062,8 @@ def main() -> None:
             yaw_rate_source=yaw_rate_source,
             args=args,
         )
+        if yaw_rate_source != "terminal_yaw_hold":
+            terminal_yaw_hold_active = 0
 
         stop_requested = _draw_detection_window_strapdown(
             display,
@@ -4290,6 +4382,10 @@ def main() -> None:
                 "yaw_rate_blind_base_deg_s": yaw_rate_blind_base_deg_s,
                 "yaw_rate_blind_sample_count": yaw_rate_blind_sample_count,
                 "yaw_rate_blind_decay": yaw_rate_blind_decay,
+                "terminal_yaw_hold_active": int(terminal_yaw_hold_active),
+                "terminal_yaw_hold_base_deg_s": terminal_yaw_hold_base_deg_s,
+                "terminal_yaw_hold_decay": terminal_yaw_hold_decay,
+                "terminal_yaw_hold_sample_count": terminal_yaw_hold_sample_count,
                 "image_kf_takeover_allowed": int(image_kf_takeover_allowed),
                 "image_kf_takeover_reason": image_kf_takeover_reason,
                 "image_kf_valid": int(image_kf.valid),
@@ -4302,6 +4398,9 @@ def main() -> None:
                 "image_kf_quality": image_kf.quality,
                 "image_kf_reject_reason": image_kf.reject_reason,
                 "image_kf_guidance_used": int(image_kf_guidance_used),
+                "terminal_clipped_los_kf_predict": int(args.terminal_clipped_los_kf_predict),
+                "clipped_los_kf_predict_active": int(clipped_los_kf_predict_active),
+                "clipped_los_kf_predict_used": int(clipped_los_kf_predict_used),
                 "body_yaw_deg": body_yaw_deg,
                 "cmd_yaw_deg": cmd_yaw_deg,
                 "yaw_error_deg": yaw_error_deg,
@@ -4323,6 +4422,7 @@ def main() -> None:
                 "terminal_area_ratio": terminal_result.area_ratio,
                 "terminal_miss_count": terminal_result.miss_count,
                 "terminal_profile": "strapdown",
+                "terminal_blind_requires_visual_loss": int(args.terminal_blind_requires_visual_loss),
                 "terminal_velocity_blind_push_enabled": int(args.terminal_velocity_blind_push),
                 "terminal_velocity_blind_push_used": int(terminal_velocity_blind_push_used),
                 "terminal_accel_hold_enabled": int(args.terminal_accel_hold),
@@ -4564,11 +4664,14 @@ def main() -> None:
             )
             break
         if near_hit:
-            print(
-                f"near_hit=True collision=False radius={near_hit_radius_m:.3f}m "
-                f"range={range_m:.3f}m t={sim_t:.3f}s"
-            )
-            break
+            if not near_hit_reported:
+                print(
+                    f"near_hit=True collision=False radius={near_hit_radius_m:.3f}m "
+                    f"range={range_m:.3f}m t={sim_t:.3f}s"
+                )
+                near_hit_reported = True
+            if args.stop_on_near_hit:
+                break
         if stop_requested:
             print("preview_window_quit=True")
             break

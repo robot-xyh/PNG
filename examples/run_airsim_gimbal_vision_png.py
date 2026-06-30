@@ -1209,6 +1209,7 @@ def _terminal_config_from_args(args) -> TerminalConfig:
         trend_bias_max_mps=max(0.0, float(args.terminal_trend_bias_max_mps)),
         pitch_up_bias_mps=max(0.0, float(args.terminal_pitch_up_bias_mps)),
         abort_on_tilt_hardcap=bool(args.terminal_abort_on_tilt_hardcap),
+        blind_push_requires_visual_loss=bool(getattr(args, "terminal_blind_requires_visual_loss", False)),
     )
 
 
@@ -1262,6 +1263,7 @@ def _experiment_fields(
         "terminal_blind_duration_s": float(args.terminal_blind_duration_s),
         "terminal_command_average_window_s": float(args.terminal_command_average_window_s),
         "terminal_pitch_up_bias_mps": float(args.terminal_pitch_up_bias_mps),
+        "terminal_blind_requires_visual_loss": int(bool(getattr(args, "terminal_blind_requires_visual_loss", False))),
         "reject_top_clipped_pitch": int(bool(getattr(args, "reject_top_clipped_pitch", False))),
         "intruder_actor": int(bool(getattr(args, "intruder_actor", False))),
         "intruder_actor_name": str(getattr(args, "intruder_actor_name", "")),

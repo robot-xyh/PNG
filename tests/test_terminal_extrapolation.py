@@ -142,6 +142,234 @@ class TerminalExtrapolationTest(unittest.TestCase):
         self.assertTrue(result.using_blind_push)
         self.assertEqual(result.terminal_cutoff_source, "bbox_top_clipped")
 
+    def test_visual_loss_policy_keeps_valid_large_clipped_bbox_visual(self):
+        extrapolator = TerminalExtrapolator(
+            TerminalConfig(
+                terminal_enter_area_ratio=0.10,
+                cutoff_area_ratio=0.60,
+                min_tracking_time_s=0.0,
+                max_measurement_age_s=0.20,
+                command_average_window_s=0.10,
+                blind_push_requires_visual_loss=True,
+            )
+        )
+        extrapolator.update(
+            timestamp=0.0,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        result = extrapolator.update(
+            timestamp=0.05,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=6500.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="bbox_bottom_clipped",
+            v_cmd=np.array([7.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        self.assertEqual(result.state, TERMINAL_VISUAL)
+        self.assertFalse(result.using_blind_push)
+        self.assertEqual(result.terminal_cutoff_source, "")
+        self.assertTrue(np.allclose(result.v_cmd, np.array([7.0, 0.0, 0.0])))
+
+    def test_visual_loss_policy_waits_for_loss_miss_count(self):
+        extrapolator = TerminalExtrapolator(
+            TerminalConfig(
+                terminal_enter_area_ratio=0.10,
+                cutoff_miss_count=2,
+                min_tracking_time_s=0.0,
+                max_measurement_age_s=0.20,
+                command_average_window_s=0.20,
+                blind_push_requires_visual_loss=True,
+            )
+        )
+        extrapolator.update(
+            timestamp=0.0,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        result = extrapolator.update(
+            timestamp=0.05,
+            detected=True,
+            measurement_valid=False,
+            measurement_score=1.0,
+            bbox_area=7000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="bbox_top_clipped",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=None,
+            omega_los=None,
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+        self.assertEqual(result.state, TERMINAL_VISUAL)
+        self.assertFalse(result.using_blind_push)
+        self.assertEqual(result.miss_count, 1)
+
+        result = extrapolator.update(
+            timestamp=0.10,
+            detected=False,
+            measurement_valid=False,
+            measurement_score=0.0,
+            bbox_area=0.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="no_detection",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=None,
+            omega_los=None,
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        self.assertEqual(result.state, BLIND_PUSH)
+        self.assertTrue(result.using_blind_push)
+        self.assertEqual(result.reason, "terminal_lost")
+
+    def test_visual_loss_policy_uses_image_kf_prediction_before_blind_push(self):
+        extrapolator = TerminalExtrapolator(
+            TerminalConfig(
+                terminal_enter_area_ratio=0.10,
+                cutoff_miss_count=1,
+                min_tracking_time_s=0.0,
+                max_measurement_age_s=0.20,
+                command_average_window_s=0.20,
+                blind_push_requires_visual_loss=True,
+            )
+        )
+        extrapolator.update(
+            timestamp=0.0,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        result = extrapolator.update(
+            timestamp=0.05,
+            detected=False,
+            measurement_valid=False,
+            measurement_score=0.0,
+            bbox_area=0.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="no_detection",
+            v_cmd=np.array([6.0, 0.0, 0.0]),
+            lambda_I=None,
+            omega_los=None,
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+            soft_measurement_valid=True,
+        )
+
+        self.assertEqual(result.state, TERMINAL_VISUAL)
+        self.assertFalse(result.using_blind_push)
+        self.assertEqual(result.miss_count, 0)
+        self.assertTrue(np.allclose(result.v_cmd, np.array([6.0, 0.0, 0.0])))
+
+    def test_visual_loss_policy_reacquires_from_blind_push(self):
+        extrapolator = TerminalExtrapolator(
+            TerminalConfig(
+                terminal_enter_area_ratio=0.10,
+                cutoff_miss_count=1,
+                min_tracking_time_s=0.0,
+                max_measurement_age_s=0.20,
+                blind_duration_s=1.0,
+                command_average_window_s=0.20,
+                blind_push_requires_visual_loss=True,
+            )
+        )
+        extrapolator.update(
+            timestamp=0.0,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=2000.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+        blind = extrapolator.update(
+            timestamp=0.05,
+            detected=False,
+            measurement_valid=False,
+            measurement_score=0.0,
+            bbox_area=0.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="no_detection",
+            v_cmd=np.array([5.0, 0.0, 0.0]),
+            lambda_I=None,
+            omega_los=None,
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+        self.assertEqual(blind.state, BLIND_PUSH)
+
+        result = extrapolator.update(
+            timestamp=0.10,
+            detected=True,
+            measurement_valid=True,
+            measurement_score=1.0,
+            bbox_area=6500.0,
+            image_width=100,
+            image_height=100,
+            reject_reason="bbox_bottom_clipped",
+            v_cmd=np.array([8.0, 0.0, 0.0]),
+            lambda_I=np.array([1.0, 0.0, 0.0]),
+            omega_los=np.zeros(3),
+            speed_cap=10.0,
+            max_vertical_speed=3.0,
+        )
+
+        self.assertEqual(result.state, TERMINAL_VISUAL)
+        self.assertFalse(result.using_blind_push)
+        self.assertEqual(result.miss_count, 0)
+        self.assertEqual(result.terminal_cutoff_source, "")
+
     def test_soft_image_kf_measurement_arms_terminal_visual(self):
         extrapolator = TerminalExtrapolator(
             TerminalConfig(

@@ -29,6 +29,8 @@ USER_TERMINAL_IMAGE_KF_MAX_RATE_RAD_S_SET="${TERMINAL_IMAGE_KF_MAX_RATE_RAD_S+x}
 USER_TERMINAL_IMAGE_KF_SOFT_REJECT_PREDICT_SET="${TERMINAL_IMAGE_KF_SOFT_REJECT_PREDICT+x}"
 USER_TERMINAL_VELOCITY_BLIND_PUSH_SET="${TERMINAL_VELOCITY_BLIND_PUSH+x}"
 USER_TERMINAL_ACCEL_HOLD_SET="${TERMINAL_ACCEL_HOLD+x}"
+USER_TERMINAL_BLIND_REQUIRES_VISUAL_LOSS_SET="${TERMINAL_BLIND_REQUIRES_VISUAL_LOSS+x}"
+USER_TERMINAL_CLIPPED_LOS_KF_PREDICT_SET="${TERMINAL_CLIPPED_LOS_KF_PREDICT+x}"
 USER_FRAME_CENTERING_ENTER_ERROR_RATIO_SET="${FRAME_CENTERING_ENTER_ERROR_RATIO+x}"
 USER_FRAME_CENTERING_TERMINAL_ERROR_RATIO_SET="${FRAME_CENTERING_TERMINAL_ERROR_RATIO+x}"
 USER_FRAME_CENTERING_AREA_RATIO_SET="${FRAME_CENTERING_AREA_RATIO+x}"
@@ -197,6 +199,20 @@ if [[ -z "$USER_TERMINAL_ACCEL_HOLD_SET" ]]; then
     TERMINAL_ACCEL_HOLD=1
   else
     TERMINAL_ACCEL_HOLD=0
+  fi
+fi
+if [[ -z "$USER_TERMINAL_BLIND_REQUIRES_VISUAL_LOSS_SET" ]]; then
+  if [[ "$UPWARD_ACCEL_TERMINAL" == "1" ]]; then
+    TERMINAL_BLIND_REQUIRES_VISUAL_LOSS=1
+  else
+    TERMINAL_BLIND_REQUIRES_VISUAL_LOSS=0
+  fi
+fi
+if [[ -z "$USER_TERMINAL_CLIPPED_LOS_KF_PREDICT_SET" ]]; then
+  if [[ "$UPWARD_ACCEL_TERMINAL" == "1" ]]; then
+    TERMINAL_CLIPPED_LOS_KF_PREDICT=1
+  else
+    TERMINAL_CLIPPED_LOS_KF_PREDICT=0
   fi
 fi
 TERMINAL_ACCEL_HOLD_WINDOW_S="${TERMINAL_ACCEL_HOLD_WINDOW_S:-0.35}"
@@ -395,6 +411,14 @@ run_case() {
   if [[ "$TERMINAL_ACCEL_HOLD" == "1" || "$TERMINAL_ACCEL_HOLD" == "true" || "$TERMINAL_ACCEL_HOLD" == "TRUE" ]]; then
     terminal_accel_hold_args=(--terminal-accel-hold)
   fi
+  local terminal_visual_loss_args=(--no-terminal-blind-requires-visual-loss)
+  if [[ "$TERMINAL_BLIND_REQUIRES_VISUAL_LOSS" == "1" || "$TERMINAL_BLIND_REQUIRES_VISUAL_LOSS" == "true" || "$TERMINAL_BLIND_REQUIRES_VISUAL_LOSS" == "TRUE" ]]; then
+    terminal_visual_loss_args=(--terminal-blind-requires-visual-loss)
+  fi
+  local terminal_clipped_los_args=(--no-terminal-clipped-los-kf-predict)
+  if [[ "$TERMINAL_CLIPPED_LOS_KF_PREDICT" == "1" || "$TERMINAL_CLIPPED_LOS_KF_PREDICT" == "true" || "$TERMINAL_CLIPPED_LOS_KF_PREDICT" == "TRUE" ]]; then
+    terminal_clipped_los_args=(--terminal-clipped-los-kf-predict)
+  fi
   local top_clip_args=(--no-reject-top-clipped-pitch)
   if [[ "$REJECT_TOP_CLIPPED_PITCH" == "1" || "$REJECT_TOP_CLIPPED_PITCH" == "true" || "$REJECT_TOP_CLIPPED_PITCH" == "TRUE" ]]; then
     top_clip_args=(--reject-top-clipped-pitch)
@@ -586,6 +610,8 @@ run_case() {
     --terminal-command-decay-tau-s "$TERMINAL_COMMAND_DECAY_TAU_S" \
     "${terminal_velocity_blind_push_args[@]}" \
     "${terminal_accel_hold_args[@]}" \
+    "${terminal_visual_loss_args[@]}" \
+    "${terminal_clipped_los_args[@]}" \
     --terminal-accel-hold-window-s "$TERMINAL_ACCEL_HOLD_WINDOW_S" \
     --terminal-accel-decay-tau-s "$TERMINAL_ACCEL_DECAY_TAU_S" \
     --terminal-accel-hold-max-mps2 "$TERMINAL_ACCEL_HOLD_MAX_MPS2" \
@@ -687,7 +713,7 @@ echo "Guidance output: ${GUIDANCE_OUTPUT_MODE}; max_accel=${MAX_GUIDANCE_ACCEL_M
 echo "Near-hit radius: ${NEAR_HIT_RADIUS_M}m"
 echo "Terminal profile: ${TERMINAL_PROFILE}; image_kf predict=${TERMINAL_IMAGE_KF_MAX_PREDICT_S}s reject=${TERMINAL_IMAGE_KF_INNOVATION_REJECT_RAD}rad soft_reject=${TERMINAL_IMAGE_KF_SOFT_REJECT_PREDICT} max_rate=${TERMINAL_IMAGE_KF_MAX_RATE_RAD_S}rad/s"
 echo "Terminal extrapolation: ${TERMINAL_EXTRAPOLATION}; enter=${TERMINAL_ENTER_AREA_RATIO}; soft=${TERMINAL_SOFT_ENTER_AREA_RATIO}; cutoff=${TERMINAL_CUTOFF_AREA_RATIO}; miss=${TERMINAL_CUTOFF_MISS_COUNT}; blind=${TERMINAL_BLIND_DURATION_S}s"
-echo "Terminal strapdown extrapolation: velocity_blind_push=${TERMINAL_VELOCITY_BLIND_PUSH}; accel_hold=${TERMINAL_ACCEL_HOLD}; accel_window=${TERMINAL_ACCEL_HOLD_WINDOW_S}s; accel_decay=${TERMINAL_ACCEL_DECAY_TAU_S}s; accel_max=${TERMINAL_ACCEL_HOLD_MAX_MPS2}"
+echo "Terminal strapdown extrapolation: velocity_blind_push=${TERMINAL_VELOCITY_BLIND_PUSH}; accel_hold=${TERMINAL_ACCEL_HOLD}; blind_requires_visual_loss=${TERMINAL_BLIND_REQUIRES_VISUAL_LOSS}; clipped_los_kf_predict=${TERMINAL_CLIPPED_LOS_KF_PREDICT}; accel_window=${TERMINAL_ACCEL_HOLD_WINDOW_S}s; accel_decay=${TERMINAL_ACCEL_DECAY_TAU_S}s; accel_max=${TERMINAL_ACCEL_HOLD_MAX_MPS2}"
 echo "Terminal yaw-rate: extrapolation=${TERMINAL_YAW_RATE_EXTRAPOLATION}; scale=${TERMINAL_YAW_RATE_SCALE}; window=${TERMINAL_YAW_RATE_AVERAGE_WINDOW_S}s; decay=${TERMINAL_YAW_RATE_DECAY_TAU_S}s"
 echo "Thrust model: ${THRUST_MODEL}; mass=${VEHICLE_MASS_KG}kg; max_total_thrust=${VEHICLE_MAX_TOTAL_THRUST_N}N"
 echo "Body-rate: profile=${BODY_RATE_CONTROL_PROFILE}; tilt=${BODY_RATE_MAX_TILT_DEG}deg rates=${BODY_RATE_MAX_ROLL_RATE_DEG}/${BODY_RATE_MAX_PITCH_RATE_DEG}deg/s thrust=${BODY_RATE_MIN_THRUST}/${BODY_RATE_HOVER_THRUST}/${BODY_RATE_MAX_THRUST}"

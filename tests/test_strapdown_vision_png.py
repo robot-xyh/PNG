@@ -14,8 +14,10 @@ from examples.run_airsim_strapdown_vision_png import (
     _body_rate_neutral_thrust,
     _candidate_guidance_velocity,
     _command_vehicle_velocity,
+    _clipped_los_uses_image_kf_predict,
     _fixed_camera_R_BC,
     _fixed_camera_pose,
+    _frame_centering_yaw_rate,
     _image_kf_takeover_allowed,
     _attitude_command_from_accel,
     _attitude_control_acceleration,
@@ -28,6 +30,7 @@ from examples.run_airsim_strapdown_vision_png import (
     _plot_strapdown,
     _rows_until_first_hit,
     _append_terminal_accel_sample,
+    _should_update_last_velocity,
     _terminal_accel_hold_command,
     _start_geometry_offsets,
     _terminal_trigger_strapdown,
@@ -82,6 +85,7 @@ def _runtime_args(**overrides):
         "terminal_accel_hold_max_mps2": 0.0,
         "terminal_velocity_blind_push": True,
         "terminal_accel_hold": False,
+        "terminal_clipped_los_kf_predict": None,
         "terminal_blind_duration_s": 1.0,
         "near_hit_radius_m": 1.5,
         "upward_centering": False,
@@ -543,35 +547,75 @@ class StrapdownVisionPNGTest(unittest.TestCase):
             camera_pitch_deg=-90.0,
             terminal_velocity_blind_push=None,
             terminal_accel_hold=None,
+            terminal_blind_requires_visual_loss=None,
+            terminal_clipped_los_kf_predict=None,
         )
 
         _validate_runtime_args(args)
 
         self.assertFalse(args.terminal_velocity_blind_push)
         self.assertTrue(args.terminal_accel_hold)
+        self.assertTrue(args.terminal_blind_requires_visual_loss)
+        self.assertTrue(args.terminal_clipped_los_kf_predict)
 
         args = _runtime_args(
             camera_pitch_deg=0.0,
             terminal_velocity_blind_push=None,
             terminal_accel_hold=None,
+            terminal_blind_requires_visual_loss=None,
+            terminal_clipped_los_kf_predict=None,
         )
 
         _validate_runtime_args(args)
 
         self.assertTrue(args.terminal_velocity_blind_push)
         self.assertFalse(args.terminal_accel_hold)
+        self.assertFalse(args.terminal_blind_requires_visual_loss)
+        self.assertFalse(args.terminal_clipped_los_kf_predict)
 
     def test_terminal_strategy_explicit_overrides_are_preserved(self):
         args = _runtime_args(
             camera_pitch_deg=-90.0,
             terminal_velocity_blind_push=True,
             terminal_accel_hold=False,
+            terminal_blind_requires_visual_loss=False,
+            terminal_clipped_los_kf_predict=False,
         )
 
         _validate_runtime_args(args)
 
         self.assertTrue(args.terminal_velocity_blind_push)
         self.assertFalse(args.terminal_accel_hold)
+        self.assertFalse(args.terminal_blind_requires_visual_loss)
+        self.assertFalse(args.terminal_clipped_los_kf_predict)
+
+    def test_clipped_los_kf_predict_requires_clipped_bbox_and_image_kf_guidance(self):
+        args = SimpleNamespace(
+            terminal_clipped_los_kf_predict=True,
+            terminal_image_kf=True,
+            terminal_image_kf_guidance=True,
+        )
+
+        self.assertTrue(_clipped_los_uses_image_kf_predict(True, args))
+        self.assertFalse(_clipped_los_uses_image_kf_predict(False, args))
+
+        args.terminal_image_kf_guidance = False
+        self.assertFalse(_clipped_los_uses_image_kf_predict(True, args))
+
+        args.terminal_image_kf_guidance = True
+        args.terminal_image_kf = False
+        self.assertFalse(_clipped_los_uses_image_kf_predict(True, args))
+
+    def test_upward_loss_hold_does_not_refresh_last_velocity_from_kf_prediction(self):
+        args = _runtime_args(camera_pitch_deg=-90.0, guidance_output_mode="accel_body_rate")
+
+        self.assertFalse(_should_update_last_velocity(True, False, True, args))
+        self.assertTrue(_should_update_last_velocity(True, True, True, args))
+        self.assertTrue(_should_update_last_velocity(True, False, False, args))
+        self.assertFalse(_should_update_last_velocity(False, False, True, args))
+
+        args.camera_pitch_deg = 0.0
+        self.assertTrue(_should_update_last_velocity(True, False, True, args))
 
     def test_mavlink_body_rate_runtime_validation_rejects_other_output_modes(self):
         args = _runtime_args(
@@ -829,6 +873,38 @@ class StrapdownVisionPNGTest(unittest.TestCase):
         self.assertAlmostEqual(base, 0.0)
         self.assertEqual(count, 0)
         self.assertAlmostEqual(decay, 0.0)
+
+    def test_terminal_yaw_hold_survives_frame_centering_loss_hold(self):
+        args = SimpleNamespace(frame_centering=True)
+        image_kf = TerminalImageEstimate(
+            timestamp=1.0,
+            theta_x=0.0,
+            theta_y=0.0,
+            theta_dot_x=0.0,
+            theta_dot_y=0.0,
+            valid=False,
+            mode="invalid",
+            age_s=0.0,
+            quality=0.0,
+        )
+        intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)
+
+        command, source, decay, sample_count = _frame_centering_yaw_rate(
+            yaw_rate_deg_s=-20.0,
+            px_err_x=0.0,
+            intrinsics=intrinsics,
+            state="loss_hold",
+            timestamp=1.0,
+            yaw_rate_samples=[],
+            image_kf=image_kf,
+            yaw_rate_source="terminal_yaw_hold",
+            args=args,
+        )
+
+        self.assertAlmostEqual(command, -20.0)
+        self.assertEqual(source, "terminal_yaw_hold")
+        self.assertAlmostEqual(decay, 1.0)
+        self.assertEqual(sample_count, 0)
 
     def test_terminal_trigger_strapdown_conditions(self):
         intrinsics = CameraIntrinsics(320.0, 320.0, 320.0, 240.0, 640, 480)

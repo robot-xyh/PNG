@@ -34,6 +34,7 @@ class TerminalConfig:
     trend_bias_max_mps: float = 1.5
     pitch_up_bias_mps: float = 0.8
     abort_on_tilt_hardcap: bool = True
+    blind_push_requires_visual_loss: bool = False
 
 
 @dataclass(frozen=True)
@@ -114,6 +115,20 @@ class TerminalExtrapolator:
             self.terminal_cutoff_source = "safety_abort"
             return self._passthrough(command, area_ratio, reason="safety_abort", cutoff_source="safety_abort")
 
+        score_valid = measurement_score >= self.config.confidence_min_score
+        soft_terminal_measurement = bool(
+            detected
+            and soft_measurement_valid
+            and area_ratio >= max(0.0, self.config.soft_enter_area_ratio)
+        )
+        normal_measurement = bool(detected and measurement_valid and score_valid)
+        soft_kf_prediction = bool(
+            self.config.blind_push_requires_visual_loss
+            and self.terminal_armed
+            and soft_measurement_valid
+        )
+        visual_usable = bool(normal_measurement or soft_terminal_measurement or soft_kf_prediction)
+
         self._record_if_valid(
             timestamp=timestamp,
             detected=detected,
@@ -126,6 +141,16 @@ class TerminalExtrapolator:
         )
 
         if self.state == BLIND_PUSH:
+            if self.config.blind_push_requires_visual_loss and visual_usable:
+                self.state = TERMINAL_VISUAL
+                self.terminal_armed = True
+                self.blind_start_ts = None
+                self.blind_reason = ""
+                self.terminal_cutoff_source = ""
+                self.miss_count = 0
+                if not self.terminal_arm_source:
+                    self.terminal_arm_source = "valid_guidance" if normal_measurement else "image_kf_soft"
+                return self._passthrough(command, area_ratio)
             elapsed = max(0.0, timestamp - float(self.blind_start_ts or timestamp))
             if elapsed > max(0.0, self.config.blind_duration_s):
                 self.state = COMPLETE
@@ -138,13 +163,8 @@ class TerminalExtrapolator:
 
         terminal_confident = self._terminal_confident(timestamp)
         cutoff_reason, cutoff_source = self._cutoff_reason(detected, area_ratio, reject_reason, gimbal_at_limit)
-        score_valid = measurement_score >= self.config.confidence_min_score
-        normal_measurement = bool(detected and measurement_valid and score_valid)
-        soft_terminal_measurement = bool(
-            detected
-            and soft_measurement_valid
-            and area_ratio >= max(0.0, self.config.soft_enter_area_ratio)
-        )
+        if self.config.blind_push_requires_visual_loss and self._is_visual_geometry_cutoff(cutoff_reason):
+            cutoff_reason, cutoff_source = "", ""
 
         if normal_measurement:
             self.miss_count = 0
@@ -155,7 +175,7 @@ class TerminalExtrapolator:
                     self.terminal_arm_source = "valid_guidance"
             else:
                 self.state = TRACKING
-        elif soft_terminal_measurement:
+        elif soft_terminal_measurement or soft_kf_prediction:
             self.miss_count = 0
             self.state = TERMINAL_VISUAL
             self.terminal_armed = True
@@ -167,7 +187,12 @@ class TerminalExtrapolator:
         else:
             self.state = LOSS_HOLD if not detected else TRACKING
 
-        if not cutoff_reason and self.terminal_armed and not detected and self.miss_count >= self.config.cutoff_miss_count:
+        terminal_lost = (
+            self.terminal_armed
+            and self.miss_count >= self.config.cutoff_miss_count
+            and (not visual_usable if self.config.blind_push_requires_visual_loss else not detected)
+        )
+        if not cutoff_reason and terminal_lost:
             cutoff_reason = "terminal_lost"
             cutoff_source = "terminal_lost"
 
@@ -236,6 +261,10 @@ class TerminalExtrapolator:
         if detected and gimbal_at_limit and area_ratio >= max(0.0, self.config.terminal_gimbal_limit_area_ratio):
             return "gimbal_limit", "gimbal_limit"
         return "", ""
+
+    @staticmethod
+    def _is_visual_geometry_cutoff(reason: str) -> bool:
+        return reason == "bbox_area_large" or (reason.startswith("bbox_") and reason.endswith("_clipped"))
 
     def _enter_blind(self, timestamp: float, reason: str, speed_cap: float, cutoff_source: str = "") -> None:
         samples = self._window_samples(timestamp)
