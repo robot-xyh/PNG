@@ -1,0 +1,13 @@
+feature -RX_SERIAL
+feature -RX_UDP
+feature RX_MSP
+feature TELEMETRY
+map AETR1234
+aux 0 0 0 1700 2100 0 0
+aux 1 1 1 1700 2100 0 0
+set small_angle = 180
+set auto_disarm_delay = 0
+set pwr_on_arm_grace = 0
+set runaway_takeoff_prevention = OFF
+set angle_limit = 35
+save
