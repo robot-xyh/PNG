@@ -17,10 +17,12 @@ run object detection and does not send MAVLink or flight-control commands.
 - Client code must connect using `AIRSIM_RPC_HOST` and `AIRSIM_RPC_PORT` when
   those variables are set. This is required when multiple Blocks instances run
   on the same machine.
-- This worktree defaults `AIRSIM_RPC_HOST` to `127.0.0.2`. The launcher rewrites
-  loopback AirSim settings fields such as `LocalHostIp`, `ControlIp`, and
-  `UdpIp` to the same host before each Blocks run, isolating it from other
-  worktrees that use `127.0.0.1`.
+- This worktree defaults `AIRSIM_RPC_HOST` to `127.0.0.2` for client RPC
+  connections. PX4 vehicle loopback fields such as `LocalHostIp`, `ControlIp`,
+  and `UdpIp` stay on `127.0.0.1` by default because PX4 SITL connects to
+  Blocks over that local TCP/MAVLink path. Set `AIRSIM_REWRITE_HOST_IPS=1` only
+  when the matching PX4 instance is also configured for the alternate loopback
+  host.
 - For deterministic single-instance experiments, set
   `AIRSIM_PORT_POLICY=strict` to fail fast on any port conflict. The default
   policy is `auto`.
@@ -235,7 +237,10 @@ Kalman filter is valid, its predicted angular error and angular rate override
 the window hold to generate yaw rate during clipped boxes or blind push; pass
 `--no-terminal-image-kf` to disable that predictive layer, and pass
 `--no-terminal-yaw-rate-extrapolation` to restore the older behavior where
-target loss immediately returns yaw rate to the current visual command. It
+target loss immediately returns yaw rate to the current visual command. For
+fixed upward cameras using acceleration output, `--terminal-blind-requires-visual-loss`
+defaults on so large or clipped boxes stay in visual terminal capture until
+visual/KF loss reaches the miss threshold. It
 writes `strapdown_vision_png_*.csv`, `strapdown_vision_png_*_meta.json`, and
 `strapdown_vision_png_*.png` to `logs/`.
 

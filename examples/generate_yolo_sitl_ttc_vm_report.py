@@ -416,6 +416,7 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|terminal image KF|predict `{cfg('terminal_image_kf_max_predict_s')} s`, reject `{cfg('terminal_image_kf_innovation_reject_rad')} rad`, soft reject `{cfg('terminal_image_kf_soft_reject_predict', False)}`|",
             f"|terminal image KF dynamics|accel noise `{cfg('terminal_image_kf_accel_noise_rad_s2')} rad/s^2`, max rate `{cfg('terminal_image_kf_max_rate_rad_s')} rad/s`|",
             f"|terminal velocity blind-push|`{cfg('terminal_velocity_blind_push')}`|",
+            f"|terminal blind requires visual loss|`{cfg('terminal_blind_requires_visual_loss', False)}`|",
             f"|terminal accel hold|`{cfg('terminal_accel_hold')}`, window `{cfg('terminal_accel_hold_window_s')} s`, decay `{cfg('terminal_accel_decay_tau_s')} s`, max `{cfg('terminal_accel_hold_max_mps2')} m/s^2`|",
             f"|frame_guard|`{meta.get('frame_guard', '')}`|",
             f"|bbox noise|`{cfg('bbox_noise_enabled', meta.get('bbox_noise', ''))}`|",
@@ -712,57 +713,94 @@ def _diagnostics_markdown(rows: list[CaseRow]) -> str:
     return "\n".join(lines)
 
 
-def _body_rate_v2_diagnostics_markdown(rows: list[CaseRow]) -> str:
+def _body_rate_diagnostics_markdown(rows: list[CaseRow]) -> str:
     sample = _first_sample(rows)
-    if sample.get("guidance_output_mode") != "accel_body_rate" and sample.get("body_rate_control_profile") != "v2":
-        return "本轮不是 `accel_body_rate + body-rate-control-profile=v2`，不生成 body-rate v2 专属诊断。"
+    if sample.get("guidance_output_mode") != "accel_body_rate":
+        return "本轮不是 `accel_body_rate` 输出模式，不生成 body-rate 控制诊断。"
+
+    profile = str(sample.get("body_rate_control_profile") or "legacy")
+
+    def row_values(samples: list[dict[str, str]], key: str) -> list[float]:
+        return _finite(_series(samples, key))
+
+    def active_ratio(samples: list[dict[str, str]], key: str) -> float:
+        vals = row_values(samples, key)
+        if not vals:
+            return math.nan
+        return 100.0 * sum(1 for value in vals if abs(value) > 1.0e-9) / len(vals)
+
+    def peak_abs(samples: list[dict[str, str]], key: str) -> float:
+        vals = row_values(samples, key)
+        return max((abs(value) for value in vals), default=math.nan)
+
+    if profile == "v2":
+        lines = [
+            "|组别|距离m|最近距离m|guard激活|p/q/r斜率限制|推力饱和|p/q/r峰值deg/s|姿态误差峰值|",
+            "|---|---:|---:|---:|---|---:|---|---|",
+        ]
+        for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
+            samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
+            if not samples:
+                continue
+
+            guard = active_ratio(samples, "body_rate_frame_guard_active")
+            slew_p = active_ratio(samples, "body_rate_p_slew_limited")
+            slew_q = active_ratio(samples, "body_rate_q_slew_limited")
+            slew_r = active_ratio(samples, "body_rate_r_slew_limited")
+            thrust_sat = active_ratio(samples, "body_rate_thrust_saturated")
+            p_peak = peak_abs(samples, "body_rate_p_deg_s")
+            q_peak = peak_abs(samples, "body_rate_q_deg_s")
+            r_peak = peak_abs(samples, "body_rate_r_deg_s")
+            ex_peak = peak_abs(samples, "body_rate_q_error_x")
+            ey_peak = peak_abs(samples, "body_rate_q_error_y")
+            ez_peak = peak_abs(samples, "body_rate_q_error_z")
+            lines.append(
+                f"|{row.label}|{row.start_range_m:.0f}|{row.min_range_m:.3f}|{guard:.1f}%|"
+                f"{slew_p:.1f}%/{slew_q:.1f}%/{slew_r:.1f}%|{thrust_sat:.1f}%|"
+                f"{p_peak:.1f}/{q_peak:.1f}/{r_peak:.1f}|{ex_peak:.3f}/{ey_peak:.3f}/{ez_peak:.3f}|"
+            )
+
+        lines.extend(
+            [
+                "",
+                "- `guard激活` 为 body-rate v2 的视场保持保护状态。该状态下 PNG 加速度和 speed-hold 加速度会分别乘以 `body_rate_v2_guard_png_scale` 与 `body_rate_v2_guard_speed_hold_scale`。",
+                "- `p/q/r斜率限制` 表示 slew rate limit 介入比例；比例高时末端响应主要受角速度变化率约束。",
+                "- `p/q/r峰值` 接近限幅且推力饱和不高时，应优先调角速度限幅、slew 和视觉闭环延迟，而不是只提高 PNG 增益。",
+            ]
+        )
+        return "\n".join(lines)
 
     lines = [
-        "|组别|距离m|最近距离m|guard激活|p/q/r斜率限制|推力饱和|p/q/r峰值deg/s|姿态误差峰值|",
-        "|---|---:|---:|---:|---|---:|---|---|",
+        "|组别|距离m|最近距离m|frame-centering激活|推力饱和|p/q/r峰值deg/s|roll/pitch指令峰值deg|thrust min/max|",
+        "|---|---:|---:|---:|---:|---|---|---|",
     ]
     for row in sorted(rows, key=lambda item: (item.start_range_m, item.label)):
         samples = _read_csv(row.csv_path) if row.csv_path.exists() else []
         if not samples:
             continue
 
-        def values(key: str) -> list[float]:
-            return _finite(_series(samples, key))
-
-        def active_ratio(key: str) -> float:
-            vals = values(key)
-            if not vals:
-                return math.nan
-            return 100.0 * sum(1 for value in vals if abs(value) > 1.0e-9) / len(vals)
-
-        def peak_abs(key: str) -> float:
-            vals = values(key)
-            return max((abs(value) for value in vals), default=math.nan)
-
-        guard = active_ratio("body_rate_frame_guard_active")
-        slew_p = active_ratio("body_rate_p_slew_limited")
-        slew_q = active_ratio("body_rate_q_slew_limited")
-        slew_r = active_ratio("body_rate_r_slew_limited")
-        thrust_sat = active_ratio("body_rate_thrust_saturated")
-        p_peak = peak_abs("body_rate_p_deg_s")
-        q_peak = peak_abs("body_rate_q_deg_s")
-        r_peak = peak_abs("body_rate_r_deg_s")
-        ex_peak = peak_abs("body_rate_q_error_x")
-        ey_peak = peak_abs("body_rate_q_error_y")
-        ez_peak = peak_abs("body_rate_q_error_z")
+        frame_centering = active_ratio(samples, "frame_centering_active")
+        thrust_sat = active_ratio(samples, "body_rate_thrust_saturated")
+        p_peak = peak_abs(samples, "body_rate_p_deg_s")
+        q_peak = peak_abs(samples, "body_rate_q_deg_s")
+        r_peak = peak_abs(samples, "body_rate_r_deg_s")
+        roll_sp_peak = peak_abs(samples, "roll_sp_deg")
+        pitch_sp_peak = peak_abs(samples, "pitch_sp_deg")
+        thrust_vals = row_values(samples, "body_rate_thrust")
+        thrust_min = min(thrust_vals, default=math.nan)
+        thrust_max = max(thrust_vals, default=math.nan)
         lines.append(
-            f"|{row.label}|{row.start_range_m:.0f}|{row.min_range_m:.3f}|{guard:.1f}%|"
-            f"{slew_p:.1f}%/{slew_q:.1f}%/{slew_r:.1f}%|{thrust_sat:.1f}%|"
-            f"{p_peak:.1f}/{q_peak:.1f}/{r_peak:.1f}|{ex_peak:.3f}/{ey_peak:.3f}/{ez_peak:.3f}|"
+            f"|{row.label}|{row.start_range_m:.0f}|{row.min_range_m:.3f}|{frame_centering:.1f}%|"
+            f"{thrust_sat:.1f}%|{p_peak:.1f}/{q_peak:.1f}/{r_peak:.1f}|"
+            f"{roll_sp_peak:.1f}/{pitch_sp_peak:.1f}|{thrust_min:.2f}/{thrust_max:.2f}|"
         )
 
     lines.extend(
         [
             "",
-            "- `guard激活` 为 body-rate v2 的视场保持保护状态。该状态下 PNG 加速度和 speed-hold 加速度会分别乘以 `body_rate_v2_guard_png_scale` 与 `body_rate_v2_guard_speed_hold_scale`。",
-            "- 本轮所有工况 guard 均长期激活，说明固定相机始终处于“视场保持优先”区域；这能减少甩出画面，但也会显著削弱末端机动。",
-            "- `p/q/r峰值` 多次达到 `120/120/45 deg/s` 限幅，说明体轴角速度通道经常打满。未命中不只是导引律问题，还受 PX4 body-rate 跟踪能力、角速度限幅和低频视觉闭环共同限制。",
-            "- 推力饱和比例整体不高，当前主要瓶颈更像是角速度/姿态响应与 frame guard 长期降权，而不是总推力常态触顶。",
+            f"- 本轮 `body_rate_control_profile={profile}`。legacy body-rate 使用欧拉角误差比例环，没有 v2 的 frame guard 降权和 slew rate limit。",
+            "- `frame-centering激活` 表示固定上视相机进入视场保持/末端捕获/丢失保持状态的比例；比例高时，命中结果更受视场保持策略和 yaw 丢失外推影响。",
+            "- `推力饱和` 与 `thrust min/max` 用于判断末端是否被垂向机动和总推力限制约束；若饱和高，应优先放宽 thrust、tilt 或垂向速度上限。",
         ]
     )
     return "\n".join(lines)
@@ -1124,9 +1162,9 @@ def write_report(
 
 {_shadow_diagnostics_markdown(rows)}
 
-## 9. body-rate v2 控制诊断
+## 9. body-rate 控制诊断
 
-{_body_rate_v2_diagnostics_markdown(rows)}
+{_body_rate_diagnostics_markdown(rows)}
 
 ## 10. PNG 到过载、姿态和角速度的控制流程
 
