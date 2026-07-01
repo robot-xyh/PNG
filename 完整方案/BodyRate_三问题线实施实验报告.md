@@ -70,7 +70,49 @@
 |C2 strapdown YOLO relaxed LOS|TTC|90|0|0|0|0|80.24|234.17|6.5%|7.2%|100.0%|1.9%|0|129.0|LossHold/no_detection|`body_rate_three_C2_TTC_body_rate_three_20260628_075242_r90_h20.csv`|
 |C2 strapdown YOLO relaxed LOS|TTC|100|0|0|0|0|89.16|272.39|6.8%|7.4%|100.0%|2.2%|0|129.6|LossHold/no_detection|`body_rate_three_C2_TTC_body_rate_three_20260628_075242_r100_h20.csv`|
 
-## 4. 判读口径
+## 4. baseline 与 C0/C1/C2 对比分析
+
+本节的 `baseline` 指历史 YOLO body-rate 基线 `TTC_accel_body_rate_loskf_relaxed_20260623_073738`，不是表中的 `B0 gimbal baseline`。该历史基线使用 `YOLOv8 + ByteTrack`、relaxed LOS KF、`guidance_output_mode=accel_body_rate`、`px4_command_mode=mavlink_body_rate`，50-100m 共 `4/6` 命中，命中 `50/80/90/100m`，未命中 `60/70m`。
+
+|对象|识别/LOS|命中|平均最小距离|总检测率|总有效率|最近点前 body bearing|关键结论|
+|---|---|---:|---:|---:|---:|---:|---|
+|历史 YOLO body-rate baseline|YOLOv8 + ByteTrack，同步检测，relaxed LOS KF|4/6|1.67m|75.8%|77.9%|未统一统计|真实 YOLO 闭环可命中多数距离，但仍受检测断续和 LOS/KF 门控影响。|
+|C0 strapdown AirSim detect|AirSim detect，关闭 LOS 滤波|6/6|1.33m|98.0%|100.0%|约 4.3deg|理论检测框连续时，固定相机 + body-rate 控制链路可以稳定拦截。|
+|C1 strapdown YOLO no LOS filter|YOLOv8 + ByteTrack async，关闭 LOS 滤波|0/5|63.5m|8.6%|10.1%|约 133.9deg|关闭 LOS 滤波不能弥补目标早期出框/检测断续，主失败是 `no_detection`。|
+|C2 strapdown YOLO relaxed LOS|YOLOv8 + ByteTrack async，relaxed LOS KF|0/6|63.6m|8.3%|8.6%|约 128.8deg|LOS 滤波放松后仍无效，因为有效视觉测量太少，导引长期处于 LossHold。|
+
+### 4.1 C0 给出的内部上限
+
+C0 与 C1/C2 使用同一条 `accel_body_rate + mavlink_body_rate` 控制链路、同一 actor 目标和同一固定相机安装参数：`camera_x=0.0m`、`camera_z=-0.5m`、`camera_pitch=0deg`。它只把检测源换成 AirSim detect，并关闭 LOS 滤波。结果 C0 在 `50/60/70/80/90/100m` 全部碰撞成功，最近点前 `target_body_bearing_deg` 基本压在 `2-8deg` 内。
+
+这说明当前失败不能简单归因于 PNG 公式、PX4 `mavlink_body_rate` 指令发不出去，或固定相机方案天然不可行。在检测框连续、LOS 不被门限打断时，body-rate 链路能够把机体指向目标并完成碰撞。
+
+### 4.2 C1/C2 为什么明显差于历史 baseline
+
+C1/C2 虽然也使用 YOLOv8 + ByteTrack，但它们不是历史 baseline 的严格复现，至少有两个关键差异：
+
+- 历史 baseline 使用同步 `yolo_bytetrack`；C1/C2 使用 `yolo_bytetrack_async`，并且 `async_detection_return_reused=false`、`async_detection_max_age_s=0.18`。这使日志中的有效检测帧显著减少，闭环更容易在末端进入无测量状态。
+- 历史 baseline 的相机参数为 `camera_x=0.5m, camera_z=0.0m`；C1/C2 为 `camera_x=0.0m, camera_z=-0.5m`。该安装位置在本轮 AirSim detect 下没有问题，但对真实 YOLO 来说会改变目标在画面中的尺度、背景和边缘裁切时序。
+
+结果上，历史 baseline 的总检测率为 `75.8%`，有效导引率为 `77.9%`；C1/C2 只有约 `8-10%`。C1 关闭 LOS 滤波后仍然 `0/5`，C2 打开 relaxed LOS 后仍然 `0/6`，说明本轮 C1/C2 的主矛盾不是 LOS KF 是否过严，而是 YOLO/ByteTrack 输入已经断续到导引无法维持。最近点前 body bearing 达到 `129-134deg`，也说明机体早已没有把目标保持在前向视场内。
+
+### 4.3 LOS 滤波在本轮 C2 中没有发挥作用的原因
+
+C2 的 relaxed LOS KF 只在有足够测量更新时才可能改善相位和抗抖。当前 C2 的有效率只有 `8.6%`，多数失败状态是 `LossHold/no_detection`。在这种条件下，KF 只能短时外推，不能凭空恢复目标；测量缺失时间超过外推窗口后，导引仍会失效。C2 的 `LOS拒绝` 总量只有 `6`，且主要集中在个别工况，因此它不是本轮 C2 失败的主因。
+
+### 4.4 对后续实验的直接建议
+
+后续要把历史 baseline 和 C0/C1/C2 的结论接起来，应先做严格复现实验：使用历史 baseline 的同步 `yolo_bytetrack`、`camera_x=0.5m, camera_z=0.0m`、relaxed LOS KF、相同 body-rate legacy 参数，再跑 `50-100m`。如果能恢复接近 `4/6`，说明 C1/C2 的退化主要来自 async 检测和相机外参变化；如果仍然退化，再检查当前代码默认参数和 PX4/Blocks 时序。
+
+在严格复现之后，再逐项改动：
+
+- 先固定同步 YOLO，单独比较 `camera_x=0.5,z=0.0` 与 `camera_x=0.0,z=-0.5`。
+- 再比较同步 YOLO 与 async YOLO，并记录 measurement age、连续丢检长度和最近点前 body bearing。
+- 最后再打开 relaxed LOS KF，验证它是否改善短时漏检，而不是在长期无检测时被误认为导引问题。
+
+当前结论是：C0 证明 body-rate 控制链路本身可用；C1/C2 证明本轮 YOLO async 固定相机链路没有保持目标连续可见；历史 baseline 仍应作为真实 YOLO body-rate 的对照基线，直到严格复现实验完成。
+
+## 5. 判读口径
 
 - `collision` 仍然是 AirSim collision 判据。
 - `geom<1m/1.5m/2m` 是独立几何评价，不改写 `hit`。
