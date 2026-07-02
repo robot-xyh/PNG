@@ -147,6 +147,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--intruder-vx", type=float, default=0.0)
     parser.add_argument("--intruder-vy", type=float, default=None)
     parser.add_argument("--intruder-vz", type=float, default=0.0)
+    parser.add_argument(
+        "--intruder-maneuver",
+        choices=("straight", "sine_s"),
+        default="straight",
+        help="Target actor maneuver model. sine_s adds a horizontal sinusoidal offset perpendicular to nominal velocity.",
+    )
+    parser.add_argument("--intruder-maneuver-amplitude-m", type=float, default=0.0)
+    parser.add_argument("--intruder-maneuver-period-s", type=float, default=8.0)
+    parser.add_argument("--intruder-maneuver-phase-deg", type=float, default=0.0)
     parser.add_argument("--speed-ratio", type=float, default=2.0)
     parser.add_argument("--rate-hz", type=float, default=20.0)
     parser.add_argument("--duration-s", type=float, default=60.0)
@@ -717,6 +726,8 @@ def _validate_runtime_args(args) -> None:
         raise SystemExit("--rate-hz must be positive")
     if args.speed_ratio <= 0.0:
         raise SystemExit("--speed-ratio must be positive")
+    if _intruder_maneuver_enabled(args) and float(args.intruder_maneuver_period_s) <= 0.0:
+        raise SystemExit("--intruder-maneuver-period-s must be positive")
     if args.navigation_constant <= 0.0:
         raise SystemExit("--navigation-constant must be positive")
     if args.guidance_output_mode == "accel_body_rate":
@@ -982,6 +993,44 @@ def _align_body_yaw_to_target(client, airsim_module, args, origins: dict[str, np
 
 def _start_geometry_enabled(args) -> bool:
     return args.start_horizontal_range_m is not None or args.start_forward_offset_m is not None
+
+
+def _intruder_maneuver_enabled(args) -> bool:
+    return (
+        str(getattr(args, "intruder_maneuver", "straight")) == "sine_s"
+        and abs(float(getattr(args, "intruder_maneuver_amplitude_m", 0.0))) > 1.0e-9
+    )
+
+
+def _intruder_maneuver_basis(velocity: np.ndarray) -> np.ndarray:
+    horizontal = np.array([float(velocity[0]), float(velocity[1]), 0.0], dtype=float)
+    norm = float(np.linalg.norm(horizontal))
+    if norm <= 1.0e-9:
+        return np.array([1.0, 0.0, 0.0], dtype=float)
+    forward = horizontal / norm
+    return np.array([-forward[1], forward[0], 0.0], dtype=float)
+
+
+def _intruder_actor_motion(
+    initial_pos: np.ndarray,
+    nominal_velocity: np.ndarray,
+    sim_t: float,
+    args,
+) -> tuple[np.ndarray, np.ndarray, float, float]:
+    base_pos = initial_pos + nominal_velocity * float(sim_t)
+    if not _intruder_maneuver_enabled(args):
+        return base_pos, np.array(nominal_velocity, dtype=float), 0.0, 0.0
+
+    period_s = max(1.0e-6, float(args.intruder_maneuver_period_s))
+    omega = 2.0 * math.pi / period_s
+    phase = omega * float(sim_t) + math.radians(float(args.intruder_maneuver_phase_deg))
+    amplitude_m = float(args.intruder_maneuver_amplitude_m)
+    lateral_axis = _intruder_maneuver_basis(nominal_velocity)
+    offset_m = amplitude_m * math.sin(phase)
+    lateral_velocity_mps = amplitude_m * omega * math.cos(phase)
+    pos = base_pos + lateral_axis * offset_m
+    velocity = np.array(nominal_velocity, dtype=float) + lateral_axis * lateral_velocity_mps
+    return pos, velocity, offset_m, phase
 
 
 def _local_start_z(vehicle: str, args) -> float:
@@ -3328,6 +3377,9 @@ def main() -> None:
         loop_dt = target_dt if frame_id == 0 else max(1.0e-6, loop_start - last_loop_start)
         last_loop_start = loop_start
         command_duration = _command_duration(loop_dt, target_dt, args)
+        intruder_command_velocity = np.array(intruder_velocity_cmd, dtype=float)
+        intruder_maneuver_offset_m = 0.0
+        intruder_maneuver_phase_rad = 0.0
         if args.enable_motion and not hit and not args.intruder_actor:
             _command_vehicle_velocity(client, airsim, args.intruder, intruder_velocity_cmd, 0.0, command_duration, args)
 
@@ -3343,8 +3395,13 @@ def main() -> None:
         if sim_t >= args.duration_s:
             break
         if args.enable_motion and args.intruder_actor and actor_initial_pos is not None and not hit:
-            actor_pos = actor_initial_pos + intruder_velocity_cmd * float(sim_t)
-            _move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(intruder_velocity_cmd))
+            actor_pos, intruder_command_velocity, intruder_maneuver_offset_m, intruder_maneuver_phase_rad = _intruder_actor_motion(
+                actor_initial_pos,
+                intruder_velocity_cmd,
+                float(sim_t),
+                args,
+            )
+            _move_intruder_actor(client, airsim, args, actor_pos, _yaw_deg_from_velocity(intruder_command_velocity))
         interceptor_kin = _guidance_kinematics(client, args.interceptor, args)
         interceptor_pos = _vehicle_truth_position(client, args.interceptor, origins, kinematics=interceptor_kin)
         interceptor_vel = _vector_xyz(interceptor_kin.linear_velocity)
@@ -4229,6 +4286,15 @@ def main() -> None:
                 "sim_clock_ratio": sim_clock_ratio,
                 "command_duration": command_duration,
                 "target_hz": args.rate_hz,
+                "intruder_maneuver": str(args.intruder_maneuver),
+                "intruder_maneuver_amplitude_m": float(args.intruder_maneuver_amplitude_m),
+                "intruder_maneuver_period_s": float(args.intruder_maneuver_period_s),
+                "intruder_maneuver_phase_deg": float(args.intruder_maneuver_phase_deg),
+                "intruder_maneuver_offset_m": float(intruder_maneuver_offset_m),
+                "intruder_maneuver_phase_rad": float(intruder_maneuver_phase_rad),
+                "intruder_cmd_vel_x": float(intruder_command_velocity[0]),
+                "intruder_cmd_vel_y": float(intruder_command_velocity[1]),
+                "intruder_cmd_vel_z": float(intruder_command_velocity[2]),
                 "guidance_law": args.guidance_law,
                 "guidance_output_mode": args.guidance_output_mode,
                 "navigation_constant": float(args.navigation_constant),

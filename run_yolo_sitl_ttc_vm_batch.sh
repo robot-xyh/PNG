@@ -13,6 +13,10 @@ ALTITUDE_OFFSET="${ALTITUDE_OFFSET:-20}"
 START_LATERAL_OFFSET="${START_LATERAL_OFFSET:--20}"
 INTERCEPT_ALTITUDE_M="${INTERCEPT_ALTITUDE_M:-50}"
 INTRUDER_SPEED="${INTRUDER_SPEED:-5}"
+INTRUDER_MANEUVER="${INTRUDER_MANEUVER:-straight}"
+INTRUDER_MANEUVER_AMPLITUDE_M="${INTRUDER_MANEUVER_AMPLITUDE_M:-0}"
+INTRUDER_MANEUVER_PERIOD_S="${INTRUDER_MANEUVER_PERIOD_S:-8.0}"
+INTRUDER_MANEUVER_PHASE_DEG="${INTRUDER_MANEUVER_PHASE_DEG:-0.0}"
 SPEED_RATIO="${SPEED_RATIO:-2}"
 NAVIGATION_CONSTANT="${NAVIGATION_CONSTANT:-3.0}"
 DURATION_MIN_S="${DURATION_MIN_S:-28.0}"
@@ -480,6 +484,10 @@ run_case() {
     --duration-s "$duration_s" \
     --rate-hz "$RATE_HZ" \
     --intruder-speed "$INTRUDER_SPEED" \
+    --intruder-maneuver "$INTRUDER_MANEUVER" \
+    --intruder-maneuver-amplitude-m "$INTRUDER_MANEUVER_AMPLITUDE_M" \
+    --intruder-maneuver-period-s "$INTRUDER_MANEUVER_PERIOD_S" \
+    --intruder-maneuver-phase-deg "$INTRUDER_MANEUVER_PHASE_DEG" \
     --speed-ratio "$SPEED_RATIO" \
     "${guidance_args[@]}" \
     --guidance-output-mode "$GUIDANCE_OUTPUT_MODE" \
@@ -706,6 +714,7 @@ echo "YOLO SITL TTC/Vm stamp: ${STAMP}"
 echo "Ranges: ${RANGES[*]}"
 echo "Run groups: TTC=${RUN_TTC}; VM=${RUN_VM}"
 echo "Detector: source=${DETECTOR_SOURCE}, model=${YOLO_MODEL}, device=${YOLO_DEVICE}, conf=${YOLO_CONF}, tracker=bytetrack.yaml"
+echo "Intruder: speed=${INTRUDER_SPEED}m/s, maneuver=${INTRUDER_MANEUVER}, amplitude=${INTRUDER_MANEUVER_AMPLITUDE_M}m, period=${INTRUDER_MANEUVER_PERIOD_S}s, phase=${INTRUDER_MANEUVER_PHASE_DEG}deg"
 echo "KCF: period_n=${KCF_YOLO_PERIOD_N}, period_s=${KCF_YOLO_PERIOD_S}, max_coast=${KCF_MAX_COAST_S}, min_iou=${KCF_MIN_YOLO_IOU}, center_jump=${KCF_MAX_CENTER_JUMP_PX}, area_ratio=${KCF_AREA_RATIO_MIN}/${KCF_AREA_RATIO_MAX}, reset_on_drift=${KCF_RESET_ON_YOLO_DRIFT}"
 echo "Actor: ${INTRUDER_ACTOR_ASSET}, scale=${INTRUDER_ACTOR_SCALE}, scale_xyz=${INTRUDER_ACTOR_SCALE_X:-base}/${INTRUDER_ACTOR_SCALE_Y:-base}/${INTRUDER_ACTOR_SCALE_Z:-base}"
 echo "PX4 command mode: ${PX4_COMMAND_MODE}"

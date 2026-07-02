@@ -425,6 +425,7 @@ def _settings_markdown(rows: list[CaseRow], stamp: str) -> str:
             f"|FOV / resolution|`{cfg('fov_deg')} deg`, `{sample.get('image_width_runtime', sample.get('width', ''))}x{sample.get('image_height_runtime', sample.get('height', ''))}`|",
             f"|高度差|`{cfg('intruder_altitude_offset_m')} m`|",
             f"|目标速度 / speed ratio|`{cfg('intruder_speed')} m/s` / `{cfg('speed_ratio')}`|",
+            f"|目标机动|`{cfg('intruder_maneuver', 'straight')}`, amplitude `{cfg('intruder_maneuver_amplitude_m', 0)} m`, period `{cfg('intruder_maneuver_period_s', 0)} s`, phase `{cfg('intruder_maneuver_phase_deg', 0)} deg`|",
             f"|rate_hz|`{cfg('rate_hz')}`|",
             f"|guidance output|`{cfg('guidance_output_mode')}`|",
             f"|max guidance accel|`{cfg('max_guidance_accel_mps2')} m/s^2`|",
