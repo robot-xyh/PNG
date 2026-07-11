@@ -12,7 +12,7 @@ import numpy as np
 from .types import FrameDetection
 
 
-_ABI_VERSION = 1
+_ABI_VERSION = 2
 _ERROR_BUFFER_SIZE = 1024
 _REJECT_REASONS = {
     0: "",
@@ -91,6 +91,51 @@ class _NativeResult(ctypes.Structure):
     ]
 
 
+class _NativeDetection(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("x1", ctypes.c_float),
+        ("y1", ctypes.c_float),
+        ("x2", ctypes.c_float),
+        ("y2", ctypes.c_float),
+        ("score", ctypes.c_float),
+        ("class_id", ctypes.c_int32),
+        ("candidate_index", ctypes.c_int32),
+    ]
+
+
+class _NativeBatchResult(ctypes.Structure):
+    _fields_ = [
+        ("struct_size", ctypes.c_uint32),
+        ("count", ctypes.c_int32),
+        ("total_count", ctypes.c_int32),
+        ("truncated", ctypes.c_int32),
+        ("preprocess_ms", ctypes.c_float),
+        ("inference_ms", ctypes.c_float),
+        ("postprocess_ms", ctypes.c_float),
+        ("total_ms", ctypes.c_float),
+    ]
+
+
+@dataclass(frozen=True)
+class RknnDetection:
+    bbox_xyxy: tuple[float, float, float, float]
+    score: float
+    class_id: int
+    candidate_index: int
+
+
+@dataclass(frozen=True)
+class RknnDetectionBatch:
+    detections: tuple[RknnDetection, ...]
+    total_count: int
+    truncated: bool
+    preprocess_ms: float
+    inference_ms: float
+    postprocess_ms: float
+    total_ms: float
+
+
 class NativeRknnBridge:
     def __init__(self, library_path: str | Path, model_path: str | Path, config: RknnDetectorConfig):
         self.library_path = Path(library_path).expanduser().resolve()
@@ -156,6 +201,19 @@ class NativeRknnBridge:
             ctypes.c_size_t,
         ]
         self._library.circle_rknn_infer.restype = ctypes.c_int
+        self._library.circle_rknn_infer_all.argtypes = [
+            ctypes.c_void_p,
+            ctypes.POINTER(ctypes.c_uint8),
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.c_int32,
+            ctypes.POINTER(_NativeDetection),
+            ctypes.c_int32,
+            ctypes.POINTER(_NativeBatchResult),
+            ctypes.c_char_p,
+            ctypes.c_size_t,
+        ]
+        self._library.circle_rknn_infer_all.restype = ctypes.c_int
         self._library.circle_rknn_output_schema.argtypes = [ctypes.c_void_p]
         self._library.circle_rknn_output_schema.restype = ctypes.c_char_p
         self._library.circle_rknn_destroy.argtypes = [ctypes.c_void_p]
@@ -180,6 +238,48 @@ class NativeRknnBridge:
         if status != 0:
             raise RuntimeError(f"RKNN inference failed ({status}): {_decode_error(error)}")
         return result
+
+    def infer_all(self, image_rgb: np.ndarray, *, capacity: int = 300) -> RknnDetectionBatch:
+        if self._handle is None:
+            raise RuntimeError("RKNN detector is closed")
+        if capacity <= 0:
+            raise ValueError("RKNN detection capacity must be positive")
+        image = _packed_rgb(image_rgb)
+        native_detections = (_NativeDetection * int(capacity))()
+        result = _NativeBatchResult(struct_size=ctypes.sizeof(_NativeBatchResult))
+        error = ctypes.create_string_buffer(_ERROR_BUFFER_SIZE)
+        status = self._library.circle_rknn_infer_all(
+            self._handle,
+            image.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8)),
+            image.shape[1],
+            image.shape[0],
+            image.strides[0],
+            native_detections,
+            capacity,
+            ctypes.byref(result),
+            error,
+            len(error),
+        )
+        if status != 0:
+            raise RuntimeError(f"RKNN batch inference failed ({status}): {_decode_error(error)}")
+        detections = tuple(
+            RknnDetection(
+                bbox_xyxy=(float(item.x1), float(item.y1), float(item.x2), float(item.y2)),
+                score=float(item.score),
+                class_id=int(item.class_id),
+                candidate_index=int(item.candidate_index),
+            )
+            for item in native_detections[: result.count]
+        )
+        return RknnDetectionBatch(
+            detections=detections,
+            total_count=int(result.total_count),
+            truncated=bool(result.truncated),
+            preprocess_ms=float(result.preprocess_ms),
+            inference_ms=float(result.inference_ms),
+            postprocess_ms=float(result.postprocess_ms),
+            total_ms=float(result.total_ms),
+        )
 
     def close(self) -> None:
         handle = getattr(self, "_handle", None)

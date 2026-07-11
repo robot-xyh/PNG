@@ -19,6 +19,14 @@ namespace {
 
 using Clock = std::chrono::steady_clock;
 
+struct RawInference {
+  std::vector<circle::vision::YoloDetection> detections;
+  float preprocess_ms{0.0F};
+  float inference_ms{0.0F};
+  float postprocess_ms{0.0F};
+  float total_ms{0.0F};
+};
+
 float elapsedMs(Clock::time_point start, Clock::time_point end) {
   return std::chrono::duration<float, std::milli>(end - start).count();
 }
@@ -80,42 +88,11 @@ class Detector {
     result.struct_size = sizeof(result);
     result.selected_index = -1;
 
-    const auto total_start = Clock::now();
-    const auto pre_start = total_start;
-    const uint8_t* packed = rgb;
-    if (stride != width * 3) {
-      packed_input_.resize(static_cast<size_t>(width) * height * 3U);
-      for (int row = 0; row < height; ++row) {
-        std::memcpy(packed_input_.data() + static_cast<size_t>(row) * width * 3U,
-                    rgb + static_cast<size_t>(row) * stride,
-                    static_cast<size_t>(width) * 3U);
-      }
-      packed = packed_input_.data();
-    }
-
-    const auto letterbox = circle::perception::computeLetterbox(
-        width, height, engine_.inputWidth(), engine_.inputHeight());
-    uint8_t* input = engine_.getInputBuffer();
-    const bool use_zero_copy =
-        input && engine_.getInputBufferSize() >= scratch_.size();
-    uint8_t* destination = use_zero_copy ? input : scratch_.data();
-    circle::perception::letterboxRgbToBuffer(
-        packed, width, height, letterbox, engine_.inputWidth(),
-        engine_.inputHeight(), destination);
-    const auto pre_end = Clock::now();
-
-    const auto infer_start = pre_end;
-    const bool inference_ok = use_zero_copy
-                                  ? engine_.runZeroCopy(false)
-                                  : engine_.run(scratch_.data(), scratch_.size());
-    const auto infer_end = Clock::now();
-    if (!inference_ok) {
-      error = "RKNN inference failed";
+    RawInference raw;
+    if (!runModel(rgb, width, height, stride, raw, error)) {
       return false;
     }
-
-    const auto post_start = infer_end;
-    const auto yolo = postprocess(width, height, letterbox);
+    const auto& yolo = raw.detections;
     std::vector<circle::types::Detection> typed;
     typed.reserve(yolo.size());
     for (const auto& item : yolo) {
@@ -170,17 +147,99 @@ class Detector {
       result.reject_code = typed.empty() ? CIRCLE_RKNN_REJECT_NO_CANDIDATES
                                          : CIRCLE_RKNN_REJECT_FILTERED;
     }
-    const auto post_end = Clock::now();
-    result.preprocess_ms = elapsedMs(pre_start, pre_end);
-    result.inference_ms = elapsedMs(infer_start, infer_end);
-    result.postprocess_ms = elapsedMs(post_start, post_end);
-    result.total_ms = elapsedMs(total_start, post_end);
+    result.preprocess_ms = raw.preprocess_ms;
+    result.inference_ms = raw.inference_ms;
+    result.postprocess_ms = raw.postprocess_ms;
+    result.total_ms = raw.total_ms;
+    return true;
+  }
+
+  bool inferAll(const uint8_t* rgb, int width, int height, int stride,
+                CircleRknnDetection* detections, int capacity,
+                CircleRknnBatchResult& result, std::string& error) {
+    if (capacity < 0 || (capacity > 0 && !detections)) {
+      error = "invalid detection output buffer or capacity";
+      return false;
+    }
+    RawInference raw;
+    if (!runModel(rgb, width, height, stride, raw, error)) {
+      return false;
+    }
+    result = {};
+    result.struct_size = sizeof(result);
+    result.total_count = static_cast<int32_t>(raw.detections.size());
+    result.count = std::min(result.total_count, capacity);
+    result.truncated = result.count < result.total_count ? 1 : 0;
+    result.preprocess_ms = raw.preprocess_ms;
+    result.inference_ms = raw.inference_ms;
+    result.postprocess_ms = raw.postprocess_ms;
+    result.total_ms = raw.total_ms;
+    for (int index = 0; index < result.count; ++index) {
+      const auto& source = raw.detections[static_cast<size_t>(index)];
+      auto& target = detections[index];
+      target = {};
+      target.struct_size = sizeof(target);
+      target.x1 = source.x1;
+      target.y1 = source.y1;
+      target.x2 = source.x2;
+      target.y2 = source.y2;
+      target.score = source.score;
+      target.class_id = source.class_id;
+      target.candidate_index = index;
+    }
     return true;
   }
 
   const std::string& outputSchema() const { return output_schema_; }
 
  private:
+  bool runModel(const uint8_t* rgb, int width, int height, int stride,
+                RawInference& raw, std::string& error) {
+    if (!rgb || width <= 0 || height <= 0 || stride < width * 3) {
+      error = "invalid packed RGB image or stride";
+      return false;
+    }
+    const auto total_start = Clock::now();
+    const auto pre_start = total_start;
+    const uint8_t* packed = rgb;
+    if (stride != width * 3) {
+      packed_input_.resize(static_cast<size_t>(width) * height * 3U);
+      for (int row = 0; row < height; ++row) {
+        std::memcpy(packed_input_.data() + static_cast<size_t>(row) * width * 3U,
+                    rgb + static_cast<size_t>(row) * stride,
+                    static_cast<size_t>(width) * 3U);
+      }
+      packed = packed_input_.data();
+    }
+    const auto letterbox = circle::perception::computeLetterbox(
+        width, height, engine_.inputWidth(), engine_.inputHeight());
+    uint8_t* input = engine_.getInputBuffer();
+    const bool use_zero_copy =
+        input && engine_.getInputBufferSize() >= scratch_.size();
+    uint8_t* destination = use_zero_copy ? input : scratch_.data();
+    circle::perception::letterboxRgbToBuffer(
+        packed, width, height, letterbox, engine_.inputWidth(),
+        engine_.inputHeight(), destination);
+    const auto pre_end = Clock::now();
+    const auto infer_start = pre_end;
+    const bool inference_ok = use_zero_copy
+                                  ? engine_.runZeroCopy(false)
+                                  : engine_.run(scratch_.data(), scratch_.size());
+    const auto infer_end = Clock::now();
+    if (!inference_ok) {
+      error = "RKNN inference failed";
+      return false;
+    }
+    const auto post_start = infer_end;
+    raw.detections = postprocess(width, height, letterbox);
+    const auto post_end = Clock::now();
+    raw.preprocess_ms = elapsedMs(pre_start, pre_end);
+    raw.inference_ms = elapsedMs(infer_start, infer_end);
+    raw.postprocess_ms = elapsedMs(post_start, post_end);
+    raw.total_ms = elapsedMs(total_start, post_end);
+    return true;
+  }
+
   std::vector<circle::vision::YoloDetection> postprocess(
       int image_width, int image_height,
       const circle::perception::LetterboxParams& letterbox) {
@@ -319,6 +378,34 @@ extern "C" int circle_rknn_infer(void* handle,
     CircleRknnResult output{};
     if (!static_cast<Detector*>(handle)->infer(
             rgb, width, height, stride_bytes, output, message)) {
+      setError(error, error_size, message);
+      return -2;
+    }
+    *result = output;
+    setError(error, error_size, "");
+    return 0;
+  } catch (const std::exception& exception) {
+    setError(error, error_size, exception.what());
+    return -3;
+  }
+}
+
+extern "C" int circle_rknn_infer_all(
+    void* handle, const uint8_t* rgb, int32_t width, int32_t height,
+    int32_t stride_bytes, CircleRknnDetection* detections,
+    int32_t detection_capacity, CircleRknnBatchResult* result, char* error,
+    size_t error_size) {
+  if (!handle || !result ||
+      result->struct_size != sizeof(CircleRknnBatchResult)) {
+    setError(error, error_size, "invalid detector handle or batch result ABI size");
+    return -1;
+  }
+  try {
+    std::string message;
+    CircleRknnBatchResult output{};
+    if (!static_cast<Detector*>(handle)->inferAll(
+            rgb, width, height, stride_bytes, detections,
+            detection_capacity, output, message)) {
       setError(error, error_size, message);
       return -2;
     }

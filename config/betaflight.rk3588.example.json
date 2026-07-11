@@ -41,6 +41,23 @@
     "reacquire_area_ratio": 0.4,
     "track_hint_max_misses": 30
   },
+  "rknn_bytetrack": {
+    "detector_conf_threshold": 0.05,
+    "detector_iou_threshold": 0.7,
+    "track_high_thresh": 0.25,
+    "track_low_thresh": 0.1,
+    "new_track_thresh": 0.25,
+    "match_thresh": 0.8,
+    "fuse_score": false,
+    "track_buffer": 30,
+    "track_buffer_s": 0.5,
+    "frame_rate": 30.0,
+    "perception_rate_hz": 30.0,
+    "minimum_confirmed_frames": 3,
+    "final_min_score": 0.25,
+    "final_min_bbox_area": 0.0,
+    "final_max_bbox_aspect_ratio": 3.0
+  },
   "torch_runtime": {
     "num_threads": 1,
     "disable_mkldnn": true,

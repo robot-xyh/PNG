@@ -7,7 +7,7 @@
 extern "C" {
 #endif
 
-#define CIRCLE_RKNN_BRIDGE_ABI_VERSION 1
+#define CIRCLE_RKNN_BRIDGE_ABI_VERSION 2
 
 typedef struct CircleRknnConfig {
   uint32_t struct_size;
@@ -44,6 +44,28 @@ typedef struct CircleRknnResult {
   float total_ms;
 } CircleRknnResult;
 
+typedef struct CircleRknnDetection {
+  uint32_t struct_size;
+  float x1;
+  float y1;
+  float x2;
+  float y2;
+  float score;
+  int32_t class_id;
+  int32_t candidate_index;
+} CircleRknnDetection;
+
+typedef struct CircleRknnBatchResult {
+  uint32_t struct_size;
+  int32_t count;
+  int32_t total_count;
+  int32_t truncated;
+  float preprocess_ms;
+  float inference_ms;
+  float postprocess_ms;
+  float total_ms;
+} CircleRknnBatchResult;
+
 enum CircleRknnRejectCode {
   CIRCLE_RKNN_REJECT_NONE = 0,
   CIRCLE_RKNN_REJECT_NO_CANDIDATES = 1,
@@ -65,6 +87,17 @@ int circle_rknn_infer(void* handle,
                       CircleRknnResult* result,
                       char* error,
                       size_t error_size);
+
+int circle_rknn_infer_all(void* handle,
+                          const uint8_t* rgb,
+                          int32_t width,
+                          int32_t height,
+                          int32_t stride_bytes,
+                          CircleRknnDetection* detections,
+                          int32_t detection_capacity,
+                          CircleRknnBatchResult* result,
+                          char* error,
+                          size_t error_size);
 
 const char* circle_rknn_output_schema(void* handle);
 

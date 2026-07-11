@@ -13,7 +13,9 @@ cmake --build native/rknn_detector/build -j2
 ```
 
 The build requires `/usr/local/include/rknn_api.h` and `librknnrt.so`. The
-Python logger loads `build/librknn_detector_bridge.so` through `ctypes`.
+Python logger loads `build/librknn_detector_bridge.so` through `ctypes`. ABI v2
+keeps the selected-box call and adds a bounded batch call that returns every
+post-NMS candidate required by ByteTrack.
 
 The model receives packed RGB, applies pad value 114 letterboxing, and uses the
 vendor multi-head DFL decoder. Its output must not be decoded with standard

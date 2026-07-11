@@ -5,6 +5,7 @@ import csv
 import importlib
 import json
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Any
@@ -30,6 +31,8 @@ from vision_guidance.flight_control import (  # noqa: E402
 from vision_guidance.fusion import PureVisionGuidancePipeline, VisionGuidanceResult  # noqa: E402
 from vision_guidance.geometry import camera_to_body_mount  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
+from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
+from vision_guidance.bytetrack_adapter import ByteTrackConfig  # noqa: E402
 from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetection  # noqa: E402
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
@@ -47,7 +50,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--allow-control", action="store_true", help="Required before MSP_SET_RAW_RC is sent.")
     parser.add_argument(
         "--detector-source",
-        choices=("none", "csv", "camera_only", "yolo_bytetrack", "rknn_native"),
+        choices=("none", "csv", "camera_only", "yolo_bytetrack", "rknn_native", "rknn_bytetrack"),
         default="none",
     )
     parser.add_argument("--detections-csv", default="", help="CSV with x1,y1,x2,y2 and optional exposure_ts,track_id,score.")
@@ -331,6 +334,132 @@ class OpenCvRknnSource:
         return detection, detector_stats
 
 
+class OpenCvRknnByteTrackSource:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        config: dict[str, Any],
+        *,
+        camera_source: OpenCvCameraSource | None = None,
+        detector: RknnByteTrackDetector | None = None,
+    ) -> None:
+        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        rknn = dict(config.get("rknn_detector", {}))
+        tracker_values = dict(config.get("rknn_bytetrack", {}))
+        library_path = str(getattr(args, "rknn_library", "") or rknn.get("library", ""))
+        model_path = str(getattr(args, "rknn_model", "") or rknn.get("model", ""))
+        if not library_path:
+            raise RuntimeError("rknn_detector.library or --rknn-library is required")
+        if not model_path:
+            raise RuntimeError("rknn_detector.model or --rknn-model is required")
+        detector_values = dict(rknn)
+        detector_values["conf_threshold"] = float(tracker_values.get("detector_conf_threshold", 0.05))
+        detector_values["iou_threshold"] = float(tracker_values.get("detector_iou_threshold", 0.70))
+        self.detector = detector if detector is not None else RknnByteTrackDetector(
+            library_path=library_path,
+            model_path=model_path,
+            rknn_config=RknnDetectorConfig.from_mapping(detector_values),
+            tracker_config=ByteTrackConfig.from_mapping(tracker_values),
+        )
+        self.perception_rate_hz = float(tracker_values.get("perception_rate_hz", 0.0))
+        self._stop_event = threading.Event()
+        self._result_lock = threading.Lock()
+        self._latest_result: tuple[int, FrameDetection | None, dict[str, Any]] | None = None
+        self._latest_consumed_seq = 0
+        self._perception_seq = 0
+        self._queue_dropped = 0
+        self._worker_error = ""
+        self._worker: threading.Thread | None = None
+        if self.perception_rate_hz > 0.0:
+            self._worker = threading.Thread(target=self._worker_loop, name="rknn-bytetrack", daemon=True)
+            self._worker.start()
+
+    def close(self) -> None:
+        self._stop_event.set()
+        if self._worker is not None:
+            self._worker.join(timeout=2.0)
+        self.detector.close()
+        self.camera.close()
+
+    def metadata(self) -> dict[str, Any]:
+        return self.detector.metadata()
+
+    def detect(
+        self,
+        *,
+        timestamp: float,
+        frame_id: int,
+        active_track_id: int | None,
+    ) -> tuple[FrameDetection | None, dict[str, Any]]:
+        del active_track_id
+        if self._worker is None:
+            return self._detect_once(timestamp=timestamp, frame_id=frame_id)
+        with self._result_lock:
+            worker_error = self._worker_error
+            latest = self._latest_result
+            if latest is None or latest[0] == self._latest_consumed_seq:
+                stats = {
+                    "detector_source": "rknn_bytetrack",
+                    "detector_reject_reason": "perception_no_new_result",
+                    "bbox_measurement_source": "none",
+                    "perception_worker_error": worker_error,
+                    "perception_queue_dropped": self._queue_dropped,
+                }
+                if worker_error:
+                    raise RuntimeError(f"RKNN ByteTrack perception worker failed: {worker_error}")
+                return None, stats
+            self._latest_consumed_seq = latest[0]
+            _sequence, detection, stored_stats = latest
+            stats = dict(stored_stats)
+        if worker_error:
+            raise RuntimeError(f"RKNN ByteTrack perception worker failed: {worker_error}")
+        capture_ts = stats.get("camera_capture_ts")
+        stats["perception_result_age_ms"] = (
+            "" if capture_ts in (None, "") else max(0.0, 1000.0 * (float(timestamp) - float(capture_ts)))
+        )
+        return detection, stats
+
+    def _detect_once(self, *, timestamp: float, frame_id: int) -> tuple[FrameDetection | None, dict[str, Any]]:
+        image_bgr = self.camera.read_image()
+        camera_stats = dict(self.camera.last_stats)
+        if image_bgr is None:
+            camera_stats.update(
+                detector_source="rknn_bytetrack",
+                detector_reject_reason="camera_frame_unavailable",
+                bbox_measurement_source="none",
+            )
+            return None, camera_stats
+        image_rgb = np.ascontiguousarray(image_bgr[:, :, ::-1])
+        exposure_ts = float(camera_stats.get("camera_capture_ts") or timestamp)
+        detection, detector_stats = self.detector.detect(
+            image_rgb,
+            frame_id=frame_id,
+            exposure_ts=exposure_ts,
+        )
+        detector_stats.update(camera_stats)
+        return detection, detector_stats
+
+    def _worker_loop(self) -> None:
+        period_s = 1.0 / max(1.0, self.perception_rate_hz)
+        try:
+            while not self._stop_event.is_set():
+                loop_start = time.monotonic()
+                self._perception_seq += 1
+                detection, stats = self._detect_once(timestamp=loop_start, frame_id=self._perception_seq)
+                stats["perception_seq"] = self._perception_seq
+                stats["perception_worker_rate_hz"] = self.perception_rate_hz
+                with self._result_lock:
+                    if self._latest_result is not None and self._latest_result[0] != self._latest_consumed_seq:
+                        self._queue_dropped += 1
+                    stats["perception_queue_dropped"] = self._queue_dropped
+                    stats["perception_worker_error"] = ""
+                    self._latest_result = (self._perception_seq, detection, stats)
+                self._stop_event.wait(max(0.0, period_s - (time.monotonic() - loop_start)))
+        except Exception as exc:
+            with self._result_lock:
+                self._worker_error = str(exc)
+
+
 def main() -> None:
     args = parse_args()
     config = _load_config(args.config)
@@ -562,6 +691,8 @@ def _create_detection_source(args: argparse.Namespace, config: dict[str, Any]):
         return OpenCvYoloSource(args, config)
     if args.detector_source == "rknn_native":
         return OpenCvRknnSource(args, config)
+    if args.detector_source == "rknn_bytetrack":
+        return OpenCvRknnByteTrackSource(args, config)
     raise ValueError(f"unsupported detector source: {args.detector_source}")
 
 
@@ -758,6 +889,30 @@ def _log_fields(channel_count: int) -> list[str]:
         "rknn_inference_ms",
         "rknn_postprocess_ms",
         "rknn_total_ms",
+        "rknn_batch_truncated",
+        "tracker_state",
+        "tracker_track_id",
+        "tracker_age_frames",
+        "tracker_hits",
+        "tracker_lost_frames",
+        "tracker_confirmed",
+        "tracker_high_count",
+        "tracker_low_count",
+        "tracker_output_count",
+        "tracker_match_count",
+        "tracker_match_iou",
+        "tracker_association_stage",
+        "tracker_switch_count",
+        "tracker_fragment_count",
+        "tracker_update_ms",
+        "tracker_actual_fps",
+        "target_selector_reason",
+        "bbox_measurement_source",
+        "perception_seq",
+        "perception_worker_rate_hz",
+        "perception_result_age_ms",
+        "perception_queue_dropped",
+        "perception_worker_error",
         "loop_period_s",
         "camera_device",
         "camera_frame_ok",
@@ -910,6 +1065,30 @@ def _log_row(
         "rknn_inference_ms": _stats_float(detector_stats, "rknn_inference_ms", precision=3),
         "rknn_postprocess_ms": _stats_float(detector_stats, "rknn_postprocess_ms", precision=3),
         "rknn_total_ms": _stats_float(detector_stats, "rknn_total_ms", precision=3),
+        "rknn_batch_truncated": detector_stats.get("rknn_batch_truncated", ""),
+        "tracker_state": detector_stats.get("tracker_state", ""),
+        "tracker_track_id": detector_stats.get("tracker_track_id", ""),
+        "tracker_age_frames": detector_stats.get("tracker_age_frames", ""),
+        "tracker_hits": detector_stats.get("tracker_hits", ""),
+        "tracker_lost_frames": detector_stats.get("tracker_lost_frames", ""),
+        "tracker_confirmed": detector_stats.get("tracker_confirmed", ""),
+        "tracker_high_count": detector_stats.get("tracker_high_count", ""),
+        "tracker_low_count": detector_stats.get("tracker_low_count", ""),
+        "tracker_output_count": detector_stats.get("tracker_output_count", ""),
+        "tracker_match_count": detector_stats.get("tracker_match_count", ""),
+        "tracker_match_iou": _stats_float(detector_stats, "tracker_match_iou", precision=6),
+        "tracker_association_stage": detector_stats.get("tracker_association_stage", ""),
+        "tracker_switch_count": detector_stats.get("tracker_switch_count", ""),
+        "tracker_fragment_count": detector_stats.get("tracker_fragment_count", ""),
+        "tracker_update_ms": _stats_float(detector_stats, "tracker_update_ms", precision=3),
+        "tracker_actual_fps": _stats_float(detector_stats, "tracker_actual_fps", precision=3),
+        "target_selector_reason": detector_stats.get("target_selector_reason", ""),
+        "bbox_measurement_source": detector_stats.get("bbox_measurement_source", ""),
+        "perception_seq": detector_stats.get("perception_seq", ""),
+        "perception_worker_rate_hz": _stats_float(detector_stats, "perception_worker_rate_hz", precision=3),
+        "perception_result_age_ms": _stats_float(detector_stats, "perception_result_age_ms", precision=3),
+        "perception_queue_dropped": detector_stats.get("perception_queue_dropped", ""),
+        "perception_worker_error": detector_stats.get("perception_worker_error", ""),
         "loop_period_s": _stats_float(detector_stats, "loop_period_s", precision=6),
         "camera_device": detector_stats.get("camera_device", ""),
         "camera_frame_ok": detector_stats.get("camera_frame_ok", ""),

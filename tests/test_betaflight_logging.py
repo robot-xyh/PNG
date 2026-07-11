@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from types import SimpleNamespace
@@ -183,6 +184,51 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(detection.exposure_ts, 4.25)
         self.assertEqual(stats["camera_frame_ok"], 1)
         self.assertEqual(source.metadata()["backend"], "rknn_native")
+        source.close()
+        self.assertTrue(camera.closed)
+        self.assertTrue(detector.closed)
+
+    def test_rknn_bytetrack_worker_publishes_latest_result_without_backlog(self):
+        class FakeCamera:
+            def __init__(self):
+                self.last_stats = {}
+
+            def read_image(self):
+                self.last_stats = {"camera_capture_ts": time.monotonic(), "camera_frame_ok": 1}
+                return np.zeros((2, 2, 3), dtype=np.uint8)
+
+            def close(self):
+                self.closed = True
+
+        class FakeDetector:
+            def detect(self, image, *, frame_id, exposure_ts):
+                del image
+                detection = FrameDetection(frame_id, exposure_ts, (0.0, 0.0, 1.0, 1.0), 1, 0.9)
+                return detection, {
+                    "detector_source": "rknn_bytetrack",
+                    "detector_reject_reason": "",
+                    "bbox_measurement_source": "detector_update",
+                }
+
+            def metadata(self):
+                return {"backend": "rknn_bytetrack"}
+
+            def close(self):
+                self.closed = True
+
+        camera = FakeCamera()
+        detector = FakeDetector()
+        args = SimpleNamespace(rknn_library="bridge.so", rknn_model="model.rknn")
+        config = {"rknn_bytetrack": {"perception_rate_hz": 100.0}}
+        source = runner.OpenCvRknnByteTrackSource(args, config, camera_source=camera, detector=detector)
+        time.sleep(0.04)
+
+        detection, stats = source.detect(timestamp=time.monotonic(), frame_id=1, active_track_id=None)
+
+        self.assertIsNotNone(detection)
+        self.assertGreaterEqual(stats["perception_seq"], 2)
+        self.assertGreaterEqual(stats["perception_queue_dropped"], 1)
+        self.assertGreaterEqual(stats["perception_result_age_ms"], 0.0)
         source.close()
         self.assertTrue(camera.closed)
         self.assertTrue(detector.closed)

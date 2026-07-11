@@ -19,8 +19,9 @@
 - 已新增 `rknn_native` 后端，复用板端 `src/circle_pilot` 的修改模型、RKNN 引擎、多头
   DFL 后处理和时序目标门控；原 `yolo_bytetrack` 仍加载 Ultralytics `.pt` 并调用
   `model.track()`，`--yolo-device` 不能把 PyTorch 模型自动切换到 NPU。
-- 当前 MSP 轮询、图像采集、YOLO/ByteTrack、导引、RC 发送和 CSV 写入位于同一同步
-  循环，尚未完成 RK3588 上的实时性、热稳定性和进程故障验证。
+- 已新增 `rknn_bytetrack`：C ABI v2 返回全部 NMS 候选，Python 运行固定版本完整 ByteTrack
+  和单目标锁定，不加载 PyTorch。该路径使用独立 latest-frame worker；其他 detector source
+  仍位于同步主循环。长期热稳定性和进程故障验证尚未完成。
 
 ### 从 `src` 复用的修改模型识别链路
 
@@ -49,6 +50,9 @@ box_16 [1, 64, 40, 40]   cls_16 [1, 1, 40, 40]
 单目标代次，在连续漏检超过 `track_hint_max_misses` 后重建。需要 ByteTrack 的跨遮挡 ID 和
 多目标关联时，仍须把 NMS 后的全部框暴露给独立 tracker 并做录制视频回归，不能把当前代次
 ID 宣称为 ByteTrack 结果。
+
+正式跟踪路径使用 `rknn_bytetrack`。它保留低分候选做第二阶段关联，轨迹 lost 时只保持
+真实 ByteTrack ID，不向 LOS/TTC 输出预测框；当前轨迹 removed 前禁止其他目标接管。
 
 ## Betaflight 专用算法优化
 
@@ -178,6 +182,8 @@ CSV 字段按用途分组如下。
 |输入 RC|`rc_in_count`, `rc_in_ch1..rc_in_ch8`|
 |检测|`detector_source`, `detector_reject_reason`, `detector_*_count`, `frame_id`, `detection_exposure_ts`, `detection_score`, `track_id`|
 |RKNN 性能|`rknn_selected_index`, `rknn_preprocess_ms`, `rknn_inference_ms`, `rknn_postprocess_ms`, `rknn_total_ms`|
+|ByteTrack|`tracker_state/id/age/hits/lost_frames`, `tracker_high/low_count`, `tracker_match_iou`, `tracker_switch/fragment_count`, `tracker_update_ms`|
+|感知 worker|`perception_seq`, `perception_worker_rate_hz`, `perception_result_age_ms`, `perception_queue_dropped`, `perception_worker_error`|
 |bbox|`bbox_x1..bbox_y2`, `bbox_width`, `bbox_height`, `bbox_area`, `bbox_area_ratio`, `bbox_clip_*`, `bbox_clipped`|
 |LOS|`los_valid`, `los_reject_reason`, `los_quality`, `los_innovation_norm`, `lambda_I_*`, `lambda_dot_I_*`, `omega_los_*`|
 |TTC|`ttc_valid`, `ttc_reject_reason`, `ttc_quality`, `ttc_s`, `ttc_area_filtered`, `ttc_area_dot_filtered`|
@@ -233,7 +239,7 @@ python3 -m unittest discover -s tests -v
 
 1. **PyTorch 基线**：`yolo_bytetrack` 用 `.pt` + Ultralytics ByteTrack，只做离线或已证明
    稳定的平台基线。当前板端 CPU 持续推理会触发整机重启，因此配置默认阻断。
-2. **正式机载路径**：`rknn_native` 通过 `ctypes` 加载
+2. **正式机载路径**：`rknn_bytetrack` 通过 `ctypes` 加载
    `native/rknn_detector/build/librknn_detector_bridge.so`，使用板端已有 Rockchip runtime
    和 `src` 修改模型。该原生库不链接 MSP/RC 代码，不能输出飞控命令。
 
@@ -339,10 +345,10 @@ inference/postprocess/total、raw/accepted/selected 候选数。LOS/TTC、MSP �
 
 1. **P0，只读联调**：锁定 ARM64 环境，打通稳定串口和真实相机，保持 `rate_gain_matrix`
    全零；先增加实际采集格式、真实取帧时间和分段耗时日志。
-2. **P0，感知基准**：用真实目标录制视频验证已实现的修改模型 RKNN detector；按任务是否
-   需要跨遮挡 ID 决定增加独立 ByteTrack，通过逐帧回归后才作为控制输入。
-3. **P0，运行架构**：重构 `run_betaflight_log_only.py` 的同步主循环，分离采集、推理、
-   MSP/RC 和写盘，增加陈旧帧拒绝、串口统计、平台健康日志与进程 watchdog。
+2. **P0，感知基准**：已接入修改模型 RKNN detector 和完整 ByteTrack；下一步用带标注真实
+   目标视频逐帧回归，搜索 high/low/new/match 阈值并冻结模型、配置哈希。
+3. **P0，运行架构**：采集、RKNN 和 ByteTrack 已移入 latest-frame worker；继续分离
+   MSP/RC 与写盘，增加陈旧帧硬拒绝、串口统计、平台健康日志与进程 watchdog。
 4. **P1，无桨控制**：锁定 Betaflight rate/PID profile，实现 rate 曲线反算或标定 LUT，
    验证八通道映射、AUX、接管、failsafe 和所有断链/断电故障注入。
 5. **P1，机载固化**：增加配置校验、依赖锁定、udev、systemd、日志轮转和模型/配置哈希；
@@ -421,6 +427,8 @@ Python runner 支持三种机载相机模式：
 - `--detector-source yolo_bytetrack`：在相同采集链路上运行 `.pt` 模型和 ByteTrack。
 - `--detector-source rknn_native`：运行从 `src/circle_pilot` 复用的修改模型 RKNN NPU
   后端和时序门控；不加载 PyTorch。
+- `--detector-source rknn_bytetrack`：在 RKNN 全候选上运行完整 ByteTrack 和单目标锁定，
+  使用独立 latest-frame worker；这是正式感知验证路径。
 
 相机日志增加 `camera_device`、`camera_frame_ok`、`camera_capture_ts`、`camera_read_ms`、
 输入/输出尺寸、请求/回读 FPS、FOURCC、失败帧累计和 `loop_period_s`。当前
@@ -434,7 +442,8 @@ RK3588 Python CPU 推理配置包含 `torch_runtime.num_threads=1` 和
 当前 RK3588 示例同时设置 `torch_runtime.allow_cpu_inference=false`。2026-07-11 台架中，
 禁用 MKLDNN 后单张黑图推理成功，但相机联合持续推理期间 Orange Pi 发生整机重启；因此
 CPU YOLO 被 fail-fast 阻断。只有在供电稳定性问题关闭并重新做满载验收后才能显式解除，
-正式机载路径使用已实现的 `rknn_native`，CPU YOLO 只保留为受控基线。
+正式机载路径使用已实现的 `rknn_bytetrack`，`rknn_native` 用于单框诊断，CPU YOLO 只
+保留为受控基线。
 
 ### 2026-07-11 Orange Pi 5 Max 实测结果
 
@@ -462,6 +471,14 @@ CPU YOLO 被 fail-fast 阻断。只有在供电稳定性问题关闭并重新做
   解码回归，9 张输出有效 bbox，其余为 5 次 `rknn_candidates_filtered` 和 6 次
   `rknn_no_candidates`。这证明修改模型的多头解码、阈值筛选和坐标反变换可运行，但样本无
   独立 ground truth，不能把 9/20 当作召回率。
+- 完整 ByteTrack 的 40 帧历史序列测试接收 82 个 NMS 候选，形成两个三帧确认轨迹区间；
+  lost 帧不输出 bbox。30 Hz latest-frame worker 实际约 27.45 Hz，结果帧龄均值/最大
+  1.75/15.87 ms，tracker 均值/最大 0.254/0.305 ms，无 worker error 或候选截断。
+- 10 s 相机+MSP+RKNN+ByteTrack worker 联合测试完成 50 行，MSP 错误 0，主循环稳定
+  5 Hz，全程 `LOG_ONLY`、`rc_active=0`。尚无真实目标 ground truth 和长时间热稳定性结论。
+- 最终同步后再次完成 5 s、25 行联合短测：控制请求/许可/RC 输出均为 0，MSP、发送、worker
+  错误和候选截断均为 0；感知约 27.61 Hz，结果帧龄均值/最大 1.24/11.02 ms，RKNN 总耗时
+  均值/最大 5.743/7.531 ms，ByteTrack 均值/最大 0.251/0.343 ms。
 - 板端系统时间不正确，且重启后发生约一小时回跳；日志时间戳不能用于跨设备对齐，需在
   后续实验前配置 NTP/RTC。板端没有持久化 journal，重启原因缺少内核级证据。
 
@@ -508,12 +525,12 @@ python3 examples/run_betaflight_log_only.py \
   --duration-s 60 \
   --rate-hz 5 \
   --control-mode log_only \
-  --detector-source rknn_native
+  --detector-source rknn_bytetrack
 ```
 
 该命令不得附加 `--allow-control`。meta JSON 必须包含模型 SHA256 和 4 个真实输出张量；
 CSV 必须包含 `rknn_preprocess_ms`、`rknn_inference_ms`、`rknn_postprocess_ms`、
-`rknn_total_ms` 和候选计数。
+`rknn_total_ms`、tracker 状态/耗时、perception FPS/帧龄和候选计数。
 
 使用摄像头和 PyTorch YOLO/ByteTrack 基线：
 
@@ -582,6 +599,8 @@ CSV 已包含：
 - 视觉：bbox、面积、面积比例、裁切标志、track id、检测拒绝原因。
 - RKNN：模型哈希/输出 schema（meta），raw/accepted/selected 候选数和预处理、NPU 推理、
   后处理、总耗时（CSV）。
+- ByteTrack：真实轨迹 ID、状态、age/hits/lost、关联阶段/IoU、切换/碎片计数和耗时；感知
+  worker 的实际 FPS、结果帧龄、覆盖旧结果数和异常。
 - 导引：LOS、LOS rate、LOS omega、TTC、`g_eval`。
 - 控制：setpoint、raw RC、最终 RC、限幅标志、斜率限制标志。
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
@@ -623,6 +642,11 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `rknn_detector.core_mask` / `max_det`
 - `rknn_detector.temporal_gating_enabled` / `gate_radius_px` /
   `reacquire_area_ratio` / `track_hint_max_misses`
+- `rknn_bytetrack.detector_conf_threshold` / `detector_iou_threshold`
+- `rknn_bytetrack.track_high_thresh` / `track_low_thresh` / `new_track_thresh` /
+  `match_thresh` / `fuse_score`
+- `rknn_bytetrack.track_buffer_s` / `frame_rate` / `minimum_confirmed_frames` /
+  `perception_rate_hz`
 - `rc_mapping.channel_map`
 - `rc_mapping.roll_rate_limit_deg_s`
 - `rc_mapping.pitch_rate_limit_deg_s`
@@ -655,7 +679,7 @@ rate limit 和 `rate_gain_matrix` 标定。
 
 ### 识别模型和相机运行参数
 
-使用 RK3588 正式路径时，必须确认 `--detector-source rknn_native`、稳定相机路径、原生库
+使用 RK3588 正式路径时，必须确认 `--detector-source rknn_bytetrack`、稳定相机路径、原生库
 路径、`.rknn` 模型路径及 SHA256，并在 meta 中核对输入和 4 个输出张量。以下参数只适用于
 PyTorch/ByteTrack 基线：
 
@@ -692,8 +716,8 @@ PyTorch/ByteTrack 基线：
 - 端到端延迟、时间戳来源、安装刚性和振动隔离。
 - 修改模型 RKNN artifact/hash、RGB/letterbox 约定、四输出 head schema、confidence/NMS、
   时序门控参数、有效检测距离和漏检率。
-- 若任务要求跨遮挡 ID：ByteTrack 阈值、track buffer、ID switch 和与 RKNN 全框输出的接口；
-  当前 `rknn_native` 只提供 `src` 的单目标时序门控代次 ID。
+- ByteTrack 的 high/low/new/match 阈值、按实际 FPS 换算的 track buffer、三帧确认、ID switch
+  和 lost 不输出策略；`rknn_native` 仅作为不带完整跟踪的诊断后端。
 
 ### 导引与控制映射
 
