@@ -233,6 +233,18 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertTrue(camera.closed)
         self.assertTrue(detector.closed)
 
+    def test_direct_rc_path_never_sends_without_msp_worker(self):
+        class RejectingAdapter:
+            def send_raw_rc(self, _command):
+                raise AssertionError("direct RC send must not be called")
+
+        args = SimpleNamespace(control_mode="msp_raw_rc", allow_control=True)
+        command = RcCommand(timestamp=1.0, channels=(1500,) * 8, active=True)
+
+        error = runner._maybe_send_rc(RejectingAdapter(), args, command, True, {})
+
+        self.assertEqual(error, "msp_io_worker_required")
+
     def test_rk3588_torch_runtime_disables_mkldnn_and_limits_threads(self):
         fake_torch = SimpleNamespace(
             backends=SimpleNamespace(mkldnn=SimpleNamespace(enabled=True)),

@@ -86,6 +86,7 @@
   "conflicts": [
     "Default PNG throttle 0.078/0.082 conflicts with low/mid/high 0.283/0.50.",
     "Active RC max rate 3.491 rad/s conflicts with bf_runtime_test expectation 5.236 rad/s.",
+    "Source comments say AETR while active indices are roll=0,pitch=1,yaw=2,throttle=3; channel order requires bench confirmation.",
     "Source flight profiles set dry_run=false and are not safe deployment defaults.",
     "Source has no Betaflight CLI dump, Blackbox file, or calibration provenance."
   ],

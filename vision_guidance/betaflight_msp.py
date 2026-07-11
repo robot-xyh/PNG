@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import struct
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -82,6 +83,16 @@ class BetaflightTelemetry:
     attitude: AttitudeTelemetry | None = None
     analog: AnalogTelemetry | None = None
     rc_channels: tuple[int, ...] = ()
+
+
+@dataclass(frozen=True)
+class MspAdapterStats:
+    request_count: int = 0
+    request_error_count: int = 0
+    tx_bytes: int = 0
+    rx_bytes: int = 0
+    set_raw_rc_attempt_count: int = 0
+    set_raw_rc_success_count: int = 0
 
 
 def encode_msp_frame(command: int, payload: bytes | bytearray = b"", direction: str = "<") -> bytes:
@@ -220,6 +231,13 @@ class BetaflightMSPAdapter:
         self.timeout_s = float(timeout_s)
         self.transport = transport
         self._owns_transport = False
+        self._io_lock = threading.Lock()
+        self._request_count = 0
+        self._request_error_count = 0
+        self._tx_bytes = 0
+        self._rx_bytes = 0
+        self._set_raw_rc_attempt_count = 0
+        self._set_raw_rc_success_count = 0
 
     def open(self) -> None:
         if self.transport is not None:
@@ -245,9 +263,31 @@ class BetaflightMSPAdapter:
         self._owns_transport = False
 
     def request(self, command: int, payload: bytes | bytearray = b"") -> MSPFrame:
+        with self._io_lock:
+            self._request_count += 1
+            if int(command) == MSP_SET_RAW_RC:
+                self._set_raw_rc_attempt_count += 1
+            request_frame = encode_msp_frame(command, payload, direction="<")
+            self._tx_bytes += len(request_frame)
+            try:
+                response = self._request_locked(command, payload, request_frame)
+            except Exception:
+                self._request_error_count += 1
+                raise
+            self._rx_bytes += 6 + len(response.payload)
+            if int(command) == MSP_SET_RAW_RC:
+                self._set_raw_rc_success_count += 1
+            return response
+
+    def _request_locked(
+        self,
+        command: int,
+        payload: bytes | bytearray,
+        request_frame: bytes,
+    ) -> MSPFrame:
         self.open()
         assert self.transport is not None
-        self.transport.write(encode_msp_frame(command, payload, direction="<"))
+        self.transport.write(request_frame)
         flush = getattr(self.transport, "flush", None)
         if callable(flush):
             flush()
@@ -261,6 +301,17 @@ class BetaflightMSPAdapter:
             if frame.direction == ">" and frame.command == int(command):
                 return frame
         raise TimeoutError(f"timed out waiting for MSP command {command}")
+
+    def snapshot_stats(self) -> MspAdapterStats:
+        with self._io_lock:
+            return MspAdapterStats(
+                request_count=self._request_count,
+                request_error_count=self._request_error_count,
+                tx_bytes=self._tx_bytes,
+                rx_bytes=self._rx_bytes,
+                set_raw_rc_attempt_count=self._set_raw_rc_attempt_count,
+                set_raw_rc_success_count=self._set_raw_rc_success_count,
+            )
 
     def read_api_version(self) -> ApiVersion:
         return parse_api_version(self.request(MSP_API_VERSION).payload)

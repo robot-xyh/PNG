@@ -114,6 +114,12 @@ class FlightControlTest(unittest.TestCase):
                 attitude_synced=True,
                 voltage_ok=True,
                 watchdog_ok=True,
+                armed=True,
+                override_available=True,
+                override_active=True,
+                physical_rc_fresh=True,
+                snapshot_approved=True,
+                config_conflict_free=True,
                 aux_enabled=False,
                 target_valid=True,
             )
@@ -129,6 +135,12 @@ class FlightControlTest(unittest.TestCase):
                 attitude_synced=True,
                 voltage_ok=True,
                 watchdog_ok=True,
+                armed=True,
+                override_available=True,
+                override_active=True,
+                physical_rc_fresh=True,
+                snapshot_approved=True,
+                config_conflict_free=True,
                 aux_enabled=True,
                 target_valid=True,
             )
@@ -145,6 +157,39 @@ class FlightControlTest(unittest.TestCase):
         self.assertAlmostEqual(watchdog.age_s(1.4), 0.4)
         self.assertFalse(watchdog.fresh(1.6))
         self.assertAlmostEqual(watchdog.age_s(1.6), 0.6)
+
+    def test_control_authorization_gates_fail_closed(self):
+        base = {
+            "control_requested": True,
+            "allow_control": True,
+            "target_valid": True,
+            "aux_enabled": True,
+            "telemetry_fresh": True,
+            "attitude_synced": True,
+            "voltage_ok": True,
+            "watchdog_ok": True,
+            "armed": True,
+            "override_available": True,
+            "override_active": True,
+            "physical_rc_fresh": True,
+            "snapshot_approved": True,
+            "config_conflict_free": True,
+        }
+        cases = (
+            ("snapshot_approved", False, "snapshot_not_approved"),
+            ("config_conflict_free", False, "config_conflict"),
+            ("override_available", False, "msp_override_unavailable"),
+            ("override_active", False, "msp_override_inactive"),
+            ("armed", False, "not_armed"),
+            ("physical_rc_fresh", False, "physical_rc_stale"),
+        )
+        for field, value, reason in cases:
+            with self.subTest(field=field):
+                inputs = dict(base)
+                inputs[field] = value
+                decision = BetaflightSafetyStateMachine().update(SafetyInputs(**inputs))
+                self.assertFalse(decision.command_active)
+                self.assertEqual(decision.reason, reason)
 
     def test_guidance_eval_to_setpoint_uses_gain_matrix(self):
         guidance = GuidanceEval(

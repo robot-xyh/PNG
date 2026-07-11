@@ -620,6 +620,12 @@ CSV 已包含：
 - 导引：LOS、LOS rate、LOS omega、TTC、`g_eval`。
 - 控制：setpoint、raw RC、最终 RC、限幅标志、斜率限制标志。
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
+- MSP 运行：armed、OVERRIDE available/active、物理 RC 帧龄、快照授权、串口请求/错误/
+  字节数、RAW RC 尝试/成功计数和 worker poll/stage/skip/error。
+
+`src` 参考的单串口 MSP worker 已在 Python 中实现，但 RK3588 示例默认关闭。任何未来 RC
+输出都必须使用 worker；同步日志路径不再允许直接发送，也不会在退出时发送中性 RC。控制
+授权还要求独立 approval manifest 对快照、FC identity、参数哈希和冲突关闭状态进行绑定。
 
 ## 上机前必须确认并写入的参数
 

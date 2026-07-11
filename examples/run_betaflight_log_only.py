@@ -2,21 +2,35 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import importlib
 import json
+import platform
+import subprocess
 import sys
 import threading
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
 import numpy as np
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
 from vision_guidance.airsim_adapter import AirSimDetectionConfig  # noqa: E402
 from vision_guidance.attitude_buffer import AttitudeHistoryBuffer  # noqa: E402
 from vision_guidance.betaflight_msp import BetaflightMSPAdapter, BetaflightTelemetry  # noqa: E402
+from vision_guidance.betaflight_runtime import (  # noqa: E402
+    MSP_OVERRIDE_PERMANENT_ID,
+    BetaflightMspIoWorker,
+    MspRuntimeConfig,
+    armed_from_telemetry,
+    box_mode_active,
+    box_mode_index,
+    resolve_control_authorization,
+)
 from vision_guidance.flight_control import (  # noqa: E402
     BetaflightSafetyStateMachine,
     CommandWatchdog,
@@ -477,6 +491,19 @@ def main() -> None:
     adapter = BetaflightMSPAdapter(port, baudrate, timeout_s=timeout_s)
     adapter.open()
     fc_identity = _read_fc_identity(adapter)
+    box_ids, box_ids_error = _read_box_ids(adapter)
+    authorization = resolve_control_authorization(
+        dict(config.get("control_authorization", {})),
+        fc_identity=fc_identity,
+        box_ids=box_ids,
+    )
+    msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
+    if args.control_mode == "msp_raw_rc" and args.allow_control and not msp_runtime_config.io_worker_enabled:
+        raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
+    msp_worker = None
+    if msp_runtime_config.io_worker_enabled:
+        msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config)
+        msp_worker.start()
 
     detection_source = _create_detection_source(args, config)
     intrinsics = _camera_intrinsics(config)
@@ -498,6 +525,15 @@ def main() -> None:
         fields=fields,
         fc_identity=fc_identity,
         detector_metadata=_detector_metadata(detection_source),
+        fc_configuration={
+            "box_ids": list(box_ids),
+            "box_ids_error": box_ids_error,
+            "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
+            "msp_override_available": MSP_OVERRIDE_PERMANENT_ID in box_ids,
+            "msp_override_mode_index": box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID),
+        },
+        control_authorization=asdict(authorization),
+        msp_runtime={"config": asdict(msp_runtime_config)},
     )
     start = time.monotonic()
     frame_id = 0
@@ -517,12 +553,18 @@ def main() -> None:
                 loop_period_s = None if last_loop_start_s is None else max(0.0, loop_start - last_loop_start_s)
                 last_loop_start_s = loop_start
                 frame_id += 1
-                telemetry, telemetry_error = _read_telemetry(adapter)
+                worker_snapshot = None
+                if msp_worker is None:
+                    telemetry, telemetry_error = _read_telemetry(adapter)
+                else:
+                    worker_snapshot = msp_worker.snapshot(loop_start)
+                    telemetry = worker_snapshot.telemetry
+                    telemetry_error = worker_snapshot.telemetry_error
                 if telemetry is not None:
                     last_telemetry_s = telemetry.timestamp
                     if telemetry.attitude is not None:
-                        attitude_buffer.push(AttitudeSample(timestamp=loop_start, R_IB=telemetry.attitude.R_IB))
-                        last_attitude_s = loop_start
+                        attitude_buffer.push(AttitudeSample(timestamp=telemetry.timestamp, R_IB=telemetry.attitude.R_IB))
+                        last_attitude_s = telemetry.timestamp
 
                 detection, detector_stats = _read_detection(
                     detection_source,
@@ -547,6 +589,24 @@ def main() -> None:
                 voltage_ok = _voltage_ok(telemetry, safety_cfg)
                 aux_enabled = _aux_enabled(telemetry, safety_cfg)
                 watchdog_ok = watchdog.fresh(loop_start)
+                physical_rc_age_s = (
+                    worker_snapshot.physical_rc_age_s
+                    if worker_snapshot is not None
+                    else telemetry_age_s if telemetry is not None and telemetry.rc_channels else None
+                )
+                physical_rc_fresh = (
+                    worker_snapshot.physical_rc_fresh
+                    if worker_snapshot is not None
+                    else physical_rc_age_s is not None
+                    and physical_rc_age_s <= msp_runtime_config.physical_rc_timeout_s
+                )
+                armed = armed_from_telemetry(telemetry, box_ids)
+                override_available = MSP_OVERRIDE_PERMANENT_ID in box_ids
+                override_active = bool(
+                    telemetry is not None
+                    and telemetry.status is not None
+                    and box_mode_active(telemetry.status.mode_flags, box_ids, MSP_OVERRIDE_PERMANENT_ID)
+                )
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
                 decision = safety.update(
@@ -559,10 +619,36 @@ def main() -> None:
                         attitude_synced=attitude_synced,
                         voltage_ok=voltage_ok,
                         watchdog_ok=watchdog_ok,
+                        armed=armed,
+                        override_available=override_available,
+                        override_active=override_active,
+                        physical_rc_fresh=physical_rc_fresh,
+                        snapshot_approved=authorization.approved,
+                        config_conflict_free=(
+                            authorization.config_conflict_free and msp_runtime_config.io_worker_enabled
+                        ),
                     )
                 )
                 rc_command = rc_mapper.map_setpoint(setpoint, active=decision.command_active)
-                send_error = _maybe_send_rc(adapter, args, rc_command, decision.command_active, config)
+                if msp_worker is None:
+                    send_error = _maybe_send_rc(adapter, args, rc_command, decision.command_active, config)
+                else:
+                    msp_worker.stage(rc_command, authorized=decision.command_active)
+                    send_error = worker_snapshot.worker_error if worker_snapshot is not None else ""
+                detector_stats.update(
+                    _msp_log_stats(
+                        adapter,
+                        worker_snapshot,
+                        armed=armed,
+                        override_available=override_available,
+                        override_active=override_active,
+                        override_index=box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID),
+                        physical_rc_age_s=physical_rc_age_s,
+                        physical_rc_fresh=physical_rc_fresh,
+                        authorization=authorization,
+                        runtime_config=msp_runtime_config,
+                    )
+                )
                 writer.writerow(
                     _log_row(
                         timestamp=loop_start,
@@ -595,8 +681,9 @@ def main() -> None:
                 sleep_s = max(0.0, (1.0 / max(1.0, float(args.rate_hz))) - (time.monotonic() - loop_start))
                 time.sleep(sleep_s)
     finally:
-        if args.control_mode == "msp_raw_rc" and args.allow_control:
-            _send_neutral_stop(adapter, rc_mapper)
+        if msp_worker is not None:
+            msp_worker.stage(None, authorized=False)
+            msp_worker.close()
         close = getattr(detection_source, "close", None)
         if callable(close):
             close()
@@ -718,11 +805,68 @@ def _read_fc_identity(adapter: BetaflightMSPAdapter) -> dict[str, Any]:
     return identity
 
 
+def _read_box_ids(adapter: BetaflightMSPAdapter) -> tuple[tuple[int, ...], str]:
+    try:
+        return adapter.read_box_ids(), ""
+    except Exception as exc:
+        return (), str(exc)
+
+
 def _read_telemetry(adapter: BetaflightMSPAdapter) -> tuple[BetaflightTelemetry | None, str]:
     try:
         return adapter.read_telemetry(), ""
     except Exception as exc:
         return None, str(exc)
+
+
+def _msp_log_stats(
+    adapter: BetaflightMSPAdapter,
+    worker_snapshot,
+    *,
+    armed: bool,
+    override_available: bool,
+    override_active: bool,
+    override_index: int | None,
+    physical_rc_age_s: float | None,
+    physical_rc_fresh: bool,
+    authorization,
+    runtime_config: MspRuntimeConfig,
+) -> dict[str, Any]:
+    stats = adapter.snapshot_stats() if worker_snapshot is None else worker_snapshot.adapter_stats
+    values = {
+        "armed": int(armed),
+        "msp_override_available": int(override_available),
+        "msp_override_active": int(override_active),
+        "msp_override_mode_index": "" if override_index is None else override_index,
+        "physical_rc_age_s": "" if physical_rc_age_s is None else physical_rc_age_s,
+        "physical_rc_fresh": int(physical_rc_fresh),
+        "control_snapshot_approved": int(authorization.approved),
+        "control_authorization_reason": authorization.reason,
+        "config_conflict_free": int(authorization.config_conflict_free),
+        "msp_io_worker_enabled": int(runtime_config.io_worker_enabled),
+        "msp_request_count": stats.request_count,
+        "msp_request_error_count": stats.request_error_count,
+        "msp_tx_bytes": stats.tx_bytes,
+        "msp_rx_bytes": stats.rx_bytes,
+        "msp_set_raw_rc_attempt_count": stats.set_raw_rc_attempt_count,
+        "msp_set_raw_rc_success_count": stats.set_raw_rc_success_count,
+        "msp_worker_poll_count": "",
+        "msp_worker_poll_error_count": "",
+        "msp_worker_staged_count": "",
+        "msp_worker_send_skip_count": "",
+        "msp_worker_send_error_count": "",
+        "msp_worker_error": "",
+    }
+    if worker_snapshot is not None:
+        values.update(
+            msp_worker_poll_count=worker_snapshot.poll_count,
+            msp_worker_poll_error_count=worker_snapshot.poll_error_count,
+            msp_worker_staged_count=worker_snapshot.staged_count,
+            msp_worker_send_skip_count=worker_snapshot.send_skip_count,
+            msp_worker_send_error_count=worker_snapshot.send_error_count,
+            msp_worker_error=worker_snapshot.worker_error,
+        )
+    return values
 
 
 def _read_detection(
@@ -790,24 +934,12 @@ def _maybe_send_rc(
     command_active: bool,
     config: dict[str, Any],
 ) -> str:
+    del adapter, command, config
     if args.control_mode != "msp_raw_rc" or not args.allow_control:
         return ""
-    if not command_active and not bool(config.get("safety", {}).get("send_neutral_when_inactive", True)):
+    if not command_active:
         return ""
-    try:
-        adapter.send_raw_rc(command)
-        return ""
-    except Exception as exc:
-        return str(exc)
-
-
-def _send_neutral_stop(adapter: BetaflightMSPAdapter, mapper: RcCommandMapper) -> None:
-    for _ in range(5):
-        try:
-            adapter.send_raw_rc(mapper.neutral(time.monotonic(), "stop"))
-        except Exception:
-            break
-        time.sleep(0.03)
+    return "msp_io_worker_required"
 
 
 def _log_path(log_dir: str, prefix: str) -> Path:
@@ -830,7 +962,12 @@ def _write_run_meta(
     fields: list[str],
     fc_identity: dict[str, Any],
     detector_metadata: dict[str, Any] | None = None,
+    fc_configuration: dict[str, Any] | None = None,
+    control_authorization: dict[str, Any] | None = None,
+    msp_runtime: dict[str, Any] | None = None,
 ) -> None:
+    config_path = Path(str(getattr(args, "config", ""))).expanduser()
+    source_reference_path = Path(str(config.get("source_reference", {}).get("manifest", ""))).expanduser()
     meta = {
         "created_unix_s": time.time(),
         "created_local": time.strftime("%Y-%m-%d %H:%M:%S %z"),
@@ -840,12 +977,46 @@ def _write_run_meta(
         "fields": fields,
         "control_mode": args.control_mode,
         "allow_control": bool(args.allow_control),
+        "repository_commit": _git_commit(),
+        "config_path": str(config_path),
+        "config_sha256": _sha256_path(config_path),
+        "source_reference": {
+            "path": str(source_reference_path),
+            "sha256": _sha256_path(source_reference_path),
+        },
+        "runtime_platform": {
+            "python": platform.python_version(),
+            "machine": platform.machine(),
+            "platform": platform.platform(),
+        },
         "fc_identity": fc_identity,
+        "fc_configuration": fc_configuration or {},
+        "control_authorization": control_authorization or {},
+        "msp_runtime": msp_runtime or {},
         "detector": detector_metadata or {},
     }
     with path.open("w") as stream:
         json.dump(meta, stream, indent=2, sort_keys=True)
         stream.write("\n")
+
+
+def _sha256_path(path: Path) -> str:
+    if not path.is_file():
+        return ""
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _git_commit() -> str:
+    try:
+        return subprocess.check_output(
+            ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True, stderr=subprocess.DEVNULL
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return ""
 
 
 def _log_fields(channel_count: int) -> list[str]:
@@ -856,6 +1027,28 @@ def _log_fields(channel_count: int) -> list[str]:
         "safety_reason",
         "control_requested",
         "allow_control",
+        "armed",
+        "msp_override_available",
+        "msp_override_active",
+        "msp_override_mode_index",
+        "physical_rc_age_s",
+        "physical_rc_fresh",
+        "control_snapshot_approved",
+        "control_authorization_reason",
+        "config_conflict_free",
+        "msp_io_worker_enabled",
+        "msp_request_count",
+        "msp_request_error_count",
+        "msp_tx_bytes",
+        "msp_rx_bytes",
+        "msp_set_raw_rc_attempt_count",
+        "msp_set_raw_rc_success_count",
+        "msp_worker_poll_count",
+        "msp_worker_poll_error_count",
+        "msp_worker_staged_count",
+        "msp_worker_send_skip_count",
+        "msp_worker_send_error_count",
+        "msp_worker_error",
         "telemetry_fresh",
         "attitude_synced",
         "watchdog_ok",
@@ -1032,6 +1225,28 @@ def _log_row(
         "safety_reason": safety_reason,
         "control_requested": int(control_requested),
         "allow_control": int(allow_control),
+        "armed": detector_stats.get("armed", ""),
+        "msp_override_available": detector_stats.get("msp_override_available", ""),
+        "msp_override_active": detector_stats.get("msp_override_active", ""),
+        "msp_override_mode_index": detector_stats.get("msp_override_mode_index", ""),
+        "physical_rc_age_s": _stats_float(detector_stats, "physical_rc_age_s", precision=6),
+        "physical_rc_fresh": detector_stats.get("physical_rc_fresh", ""),
+        "control_snapshot_approved": detector_stats.get("control_snapshot_approved", ""),
+        "control_authorization_reason": detector_stats.get("control_authorization_reason", ""),
+        "config_conflict_free": detector_stats.get("config_conflict_free", ""),
+        "msp_io_worker_enabled": detector_stats.get("msp_io_worker_enabled", ""),
+        "msp_request_count": detector_stats.get("msp_request_count", ""),
+        "msp_request_error_count": detector_stats.get("msp_request_error_count", ""),
+        "msp_tx_bytes": detector_stats.get("msp_tx_bytes", ""),
+        "msp_rx_bytes": detector_stats.get("msp_rx_bytes", ""),
+        "msp_set_raw_rc_attempt_count": detector_stats.get("msp_set_raw_rc_attempt_count", ""),
+        "msp_set_raw_rc_success_count": detector_stats.get("msp_set_raw_rc_success_count", ""),
+        "msp_worker_poll_count": detector_stats.get("msp_worker_poll_count", ""),
+        "msp_worker_poll_error_count": detector_stats.get("msp_worker_poll_error_count", ""),
+        "msp_worker_staged_count": detector_stats.get("msp_worker_staged_count", ""),
+        "msp_worker_send_skip_count": detector_stats.get("msp_worker_send_skip_count", ""),
+        "msp_worker_send_error_count": detector_stats.get("msp_worker_send_error_count", ""),
+        "msp_worker_error": detector_stats.get("msp_worker_error", ""),
         "telemetry_fresh": int(telemetry_fresh),
         "attitude_synced": int(attitude_synced),
         "watchdog_ok": int(watchdog_ok),

@@ -297,6 +297,12 @@ class SafetyInputs:
     attitude_synced: bool = False
     voltage_ok: bool = True
     watchdog_ok: bool = False
+    armed: bool = False
+    override_available: bool = False
+    override_active: bool = False
+    physical_rc_fresh: bool = False
+    snapshot_approved: bool = False
+    config_conflict_free: bool = False
 
 
 @dataclass(frozen=True)
@@ -315,6 +321,18 @@ class BetaflightSafetyStateMachine:
             return self._set(SafetyState.LOG_ONLY, False, "log_only")
         if not inputs.allow_control:
             return self._set(SafetyState.DISABLED, False, "control_not_allowed")
+        if not inputs.snapshot_approved:
+            return self._set(SafetyState.DISABLED, False, "snapshot_not_approved")
+        if not inputs.config_conflict_free:
+            return self._set(SafetyState.DISABLED, False, "config_conflict")
+        if not inputs.override_available:
+            return self._set(SafetyState.DISABLED, False, "msp_override_unavailable")
+        if not inputs.override_active:
+            return self._set(SafetyState.READY, False, "msp_override_inactive")
+        if not inputs.armed:
+            return self._set(SafetyState.READY, False, "not_armed")
+        if not inputs.physical_rc_fresh:
+            return self._set(SafetyState.FAILSAFE, False, "physical_rc_stale")
         if not inputs.telemetry_fresh:
             return self._set(SafetyState.FAILSAFE, False, "telemetry_stale")
         if not inputs.attitude_synced:

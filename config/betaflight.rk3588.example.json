@@ -4,6 +4,24 @@
     "baud": 115200,
     "timeout_s": 0.1
   },
+  "source_reference": {
+    "manifest": "config/betaflight.src-reference.json",
+    "runtime_loadable": false
+  },
+  "msp_runtime": {
+    "io_worker_enabled": false,
+    "telemetry_poll_hz": 5.0,
+    "control_publish_hz": 50.0,
+    "physical_rc_timeout_s": 0.25,
+    "override_channels_mask": 15,
+    "aux_arm_channel_zero_based": 4,
+    "throttle_channel_zero_based": 2,
+    "throttle_handover_s": 0.4
+  },
+  "control_authorization": {
+    "enabled": false,
+    "approval_manifest": ""
+  },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
     "capture_width": 1280,

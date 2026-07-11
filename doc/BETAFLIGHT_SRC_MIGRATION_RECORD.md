@@ -30,6 +30,8 @@
 - 默认 PNG 文件使用 `hover=0.078`、`strike=0.082`，速度档使用 `0.283/0.50`。
 - `bf_flight_common.yaml` 使用最大速率 `3.491 rad/s`，现有 `bf_runtime_test` 仍期望
   `5.236 rad/s`，板端测试有两项失败。
+- 来源注释写 AETR，但活动索引为 roll=0、pitch=1、yaw=2、throttle=3，实际通道顺序必须
+  以 Receiver tab 和无桨方向测试为准。
 - 所有飞行 profile 均设置 `dry_run=false`，不能作为当前工程默认值。
 - 未发现 Betaflight CLI `dump/diff all`、Blackbox、动力标定或 Rate/PID 来源记录。
 
@@ -42,7 +44,7 @@
 |---|---|---|
 |S0 来源清单与冲突审计|完成|来源 SHA256、候选参数、冲突和禁止生效标记|
 |S1 只读飞控快照|完成|MSP identity/BOXIDS/telemetry + CLI 导入 manifest|
-|S2 安全 MSP 运行架构|待实施|单元测试证明所有授权条件 fail-closed|
+|S2 安全 MSP 运行架构|完成|单元测试证明所有授权条件 fail-closed|
 |S3 Python systemd|待实施|服务安装后 disabled/inactive，命令固定 LOG_ONLY|
 |S4 Orange Pi 验证|待实施|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
 
@@ -68,3 +70,15 @@ python3 tools/capture_betaflight_snapshot.py \
 未提供 CLI 文件时仍可完成 MSP 只读快照，但 manifest 必须把 PID/Rate/Failsafe/Blackbox
 标记为缺失。快照工具没有 RC 发送接口，且始终输出 `control_ready=false`，人工审核不能通过
 直接修改原始 manifest 绕过后续授权文件和哈希检查。
+
+## 安全运行架构
+
+新增的 MSP worker 是唯一允许承载未来 RC 发布的路径，示例配置默认
+`msp_runtime.io_worker_enabled=false`。旧同步路径已改为只读，即使命令行误传
+`msp_raw_rc --allow-control`，worker 未启用时也会直接拒绝，退出阶段不再发送中性 RC。
+
+未来控制授权要求独立 approval manifest，同时校验快照 SHA256、FC identity、参数哈希、
+来源冲突已关闭和 MSP OVERRIDE permanent ID 50。运行时还必须满足 armed、OVERRIDE active、
+物理 RC/姿态/遥测新鲜、AUX、电压、目标和 watchdog gate。物理 RC 合并只覆盖明确 mask
+内的 A/E/T/R，ARM 与其他 AUX 始终来自接收机；物理 RC 过期后停止发送，由 Betaflight
+failsafe 接管。

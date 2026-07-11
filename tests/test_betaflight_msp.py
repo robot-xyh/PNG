@@ -134,6 +134,10 @@ class BetaflightMSPTest(unittest.TestCase):
 
         expected_payload = pack_rc_channels(command.channels)
         self.assertEqual(transport.writes, [encode_msp_frame(MSP_SET_RAW_RC, expected_payload, direction="<")])
+        stats = adapter.snapshot_stats()
+        self.assertEqual(stats.set_raw_rc_attempt_count, 1)
+        self.assertEqual(stats.set_raw_rc_success_count, 1)
+        self.assertEqual(stats.request_error_count, 0)
 
 
 if __name__ == "__main__":
