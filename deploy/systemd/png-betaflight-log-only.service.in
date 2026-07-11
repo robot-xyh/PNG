@@ -1,0 +1,18 @@
+[Unit]
+Description=PNG Betaflight RKNN ByteTrack log-only service
+After=local-fs.target
+
+[Service]
+Type=simple
+WorkingDirectory=@@PROJECT_ROOT@@
+Environment=PYTHONUNBUFFERED=1
+ExecStart=@@PYTHON@@ @@PROJECT_ROOT@@/examples/run_betaflight_log_only.py --config @@CONFIG@@ --duration-s 0 --rate-hz 5 --log-dir @@PROJECT_ROOT@@/logs/service --log-prefix betaflight_service --control-mode log_only --detector-source rknn_bytetrack
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=default.target

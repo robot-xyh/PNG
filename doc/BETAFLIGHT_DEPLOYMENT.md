@@ -345,6 +345,10 @@ inference/postprocess/total、raw/accepted/selected 候选数。LOS/TTC、MSP �
 - 稳定性测试应覆盖重复开关机、服务崩溃重启、日志盘满、相机热插拔和串口重连。飞行时
   是否允许自动重连必须作为显式策略；默认应退出控制许可并要求人工重新使能。
 
+当前已提供 `deploy/systemd/png-betaflight-log-only.service.in` 和
+`tools/install_betaflight_log_only_service.sh`。模板固定 `log_only` 且不包含
+`--allow-control`；安装器只安装并强制保持 disabled/inactive，不会自动开机运行。
+
 ### 建议实施顺序
 
 1. **P0，只读联调**：锁定 ARM64 环境，打通稳定串口和真实相机，保持 `rate_gain_matrix`

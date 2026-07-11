@@ -45,7 +45,7 @@
 |S0 来源清单与冲突审计|完成|来源 SHA256、候选参数、冲突和禁止生效标记|
 |S1 只读飞控快照|完成|MSP identity/BOXIDS/telemetry + CLI 导入 manifest|
 |S2 安全 MSP 运行架构|完成|单元测试证明所有授权条件 fail-closed|
-|S3 Python systemd|待实施|服务安装后 disabled/inactive，命令固定 LOG_ONLY|
+|S3 Python systemd|实现完成，待板端安装|服务模板固定 LOG_ONLY，安装器强制 disabled/inactive|
 |S4 Orange Pi 验证|待实施|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
 
 ## 留档规则
@@ -82,3 +82,14 @@ python3 tools/capture_betaflight_snapshot.py \
 物理 RC/姿态/遥测新鲜、AUX、电压、目标和 watchdog gate。物理 RC 合并只覆盖明确 mask
 内的 A/E/T/R，ARM 与其他 AUX 始终来自接收机；物理 RC 过期后停止发送，由 Betaflight
 failsafe 接管。
+
+## systemd 安装
+
+```bash
+./tools/install_betaflight_log_only_service.sh \
+  --project-root /home/orangepi/png_betaflight_python
+```
+
+服务使用 `duration-s 0` 持续记录，固定 `rknn_bytetrack` 和 `control-mode log_only`。安装器
+拒绝含 `--allow-control` 的单元，并在 daemon-reload 后执行 `disable --now`。渲染单元的
+SHA256、Python/config 路径和 enabled/active 状态写入忽略的 `logs/deployment/`。

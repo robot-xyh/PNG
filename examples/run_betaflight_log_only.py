@@ -547,7 +547,7 @@ def main() -> None:
         with log_path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
-            while time.monotonic() - start < float(args.duration_s):
+            while float(args.duration_s) <= 0.0 or time.monotonic() - start < float(args.duration_s):
                 loop_start = time.monotonic()
                 elapsed = loop_start - start
                 loop_period_s = None if last_loop_start_s is None else max(0.0, loop_start - last_loop_start_s)
