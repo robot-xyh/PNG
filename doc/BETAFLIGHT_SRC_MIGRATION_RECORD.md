@@ -45,8 +45,8 @@
 |S0 来源清单与冲突审计|完成|来源 SHA256、候选参数、冲突和禁止生效标记|
 |S1 只读飞控快照|完成|MSP identity/BOXIDS/telemetry + CLI 导入 manifest|
 |S2 安全 MSP 运行架构|完成|单元测试证明所有授权条件 fail-closed|
-|S3 Python systemd|实现完成，待板端安装|服务模板固定 LOG_ONLY，安装器强制 disabled/inactive|
-|S4 Orange Pi 验证|待实施|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
+|S3 Python systemd|完成|服务已安装且 disabled/inactive，命令固定 LOG_ONLY|
+|S4 Orange Pi 验证|完成|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
 
 ## 留档规则
 
@@ -93,3 +93,20 @@ failsafe 接管。
 服务使用 `duration-s 0` 持续记录，固定 `rknn_bytetrack` 和 `control-mode log_only`。安装器
 拒绝含 `--allow-control` 的单元，并在 daemon-reload 后执行 `disable --now`。渲染单元的
 SHA256、Python/config 路径和 enabled/active 状态写入忽略的 `logs/deployment/`。
+
+## 2026-07-11 Orange Pi 验证
+
+只读快照识别到 `BTFL 25.12.2`、API `1.47`，BOXIDS 为
+`0,1,2,5,3,6,27,11,46,7,13,15,19,20,26,30,32,33,34,35,36,37,39,45,40,41,48,49,51,52,53`。
+实际列表不含 `src` 假设的 permanent ID 50，因此 `msp_override_available=false`，控制继续
+阻断。快照完成 25/25 样本、错误 0；未提供 CLI 导出，PID/Rate/Failsafe/Blackbox 未关闭。
+
+60 s 相机+MSP+RKNN+ByteTrack 联合测试完成 300 行，全程 `LOG_ONLY`、`rc_active=0`；
+`msp_set_raw_rc_attempt_count` 和 success 最大值均为 0，MSP、发送、相机和 perception worker
+错误均为 0。感知均值 27.311 Hz，结果帧龄均值/最大 1.403/13.936 ms，RKNN 总耗时
+5.550/6.523 ms，ByteTrack 0.257/0.377 ms。
+
+systemd 单元已安装到用户目录，状态为 disabled/inactive，没有运行进程，渲染命令不含
+`--allow-control`。关键部署文件与本地 SHA256 全部一致。机器可读的脱敏结果和原始 artifact
+哈希见 `config/betaflight.rk3588.validation.json`；板端时钟仍不正确，文件名时间不能用于
+跨设备对时。

@@ -1,0 +1,83 @@
+{
+  "schema_version": 1,
+  "validated_on_host_date": "2026-07-11",
+  "board_clock_valid": false,
+  "repository_commit_deployed": "2f2ee2c",
+  "deployment": {
+    "platform": "Orange Pi 5 Max",
+    "project_root": "/home/orangepi/png_betaflight_python",
+    "source_root": "/home/orangepi/src/circle_pilot",
+    "source_modified": false
+  },
+  "flight_controller": {
+    "api_protocol_version": 0,
+    "api_major": 1,
+    "api_minor": 47,
+    "fc_variant": "BTFL",
+    "fc_version": "25.12.2",
+    "box_ids": [
+      0, 1, 2, 5, 3, 6, 27, 11, 46, 7, 13, 15, 19, 20, 26, 30, 32, 33,
+      34, 35, 36, 37, 39, 45, 40, 41, 48, 49, 51, 52, 53
+    ],
+    "msp_override_permanent_id_expected_from_src": 50,
+    "msp_override_available": false
+  },
+  "snapshot": {
+    "raw_path": "logs/betaflight_snapshots/betaflight_snapshot_20260626_024652",
+    "manifest_sha256": "615ad5620388797a7b27a67d96ff4a70d35c09034a2065205507888d9dbd3e62",
+    "telemetry_sha256": "e67b00a3b542321b436de5a55a4d86217360d3363c3b11957e33c32511e26dbd",
+    "sample_count": 25,
+    "error_count": 0,
+    "log_only_ready": true,
+    "control_ready": false,
+    "cli_export_provided": false
+  },
+  "joint_log_only_validation": {
+    "raw_csv_path": "logs/src_supplement_validation/src_supplement_20260626_024752.csv",
+    "csv_sha256": "a4c9f075505956e201a1fce753023a9fa3365fa3cf23e2d2b918fb2dad940910",
+    "meta_sha256": "2cde03f6ec748622bb23888a276f2529a16f44866ccadecbb4f91322d7e25ab6",
+    "duration_s": 60.0,
+    "row_count": 300,
+    "safety_states": ["LOG_ONLY"],
+    "rc_active_values": [0],
+    "msp_set_raw_rc_attempt_max": 0,
+    "msp_set_raw_rc_success_max": 0,
+    "msp_request_error_max": 0,
+    "telemetry_error_rows": 0,
+    "send_error_rows": 0,
+    "camera_error_rows": 0,
+    "perception_worker_error_rows": 0,
+    "tracker_actual_fps_mean": 27.311,
+    "perception_result_age_ms_mean": 1.403,
+    "perception_result_age_ms_max": 13.936,
+    "rknn_total_ms_mean": 5.55,
+    "rknn_total_ms_max": 6.523,
+    "tracker_update_ms_mean": 0.257,
+    "tracker_update_ms_max": 0.377
+  },
+  "systemd": {
+    "unit": "png-betaflight-log-only.service",
+    "installed": true,
+    "enabled": false,
+    "active": false,
+    "unit_sha256": "80ea6cea9d98a731365d0ecf9e7cad5508abda2c7b49f80efdb2945650a473c4",
+    "contains_allow_control": false
+  },
+  "deployed_file_hashes": {
+    "examples/run_betaflight_log_only.py": "b8d8d0ce9e580d1b2574802b737ca606330684b9ca448fbfd206da128d0c77e2",
+    "vision_guidance/betaflight_msp.py": "4422d8030de20a52e8ba72bf112886624d07cee2ee89be5173f785e465c1d13e",
+    "vision_guidance/betaflight_runtime.py": "4e7650ede301f4312040942cded8fcfcac5a24e27df1631a1d89760db3b7241b",
+    "vision_guidance/betaflight_snapshot.py": "68738889e8e8750e35b27bda3c0db76b880b8e7f31f63eef788eac1ea0182a7f",
+    "config/betaflight.rk3588.example.json": "07f23362369e6f9f9506ab7d30a0ee5a050d84373ecf6d8bda15aeb5a6f2c503",
+    "config/betaflight.src-reference.json": "0dc41b6c063abebcf9e4e9a062adc1d441e5ea652884a965c7e87072fa6664ee",
+    "deploy/systemd/png-betaflight-log-only.service.in": "73981104fa6aa7ad97ba415fa9e0d39d82b2306b0794d1bbe52324e6c548697c",
+    "tools/install_betaflight_log_only_service.sh": "6402650f53b5a74aeb3cd89a1d273152ba4f256543360abf218027aef6b6a948"
+  },
+  "control_blockers": [
+    "Betaflight CLI diff all or dump all has not been archived.",
+    "Actual BOXIDS does not contain src-assumed MSP OVERRIDE permanent ID 50.",
+    "Source throttle, rate, and channel-order conflicts remain unresolved.",
+    "No manual control approval manifest exists.",
+    "No-prop RC direction and failsafe injection tests have not been run."
+  ]
+}

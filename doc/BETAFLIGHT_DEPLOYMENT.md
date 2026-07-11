@@ -489,6 +489,10 @@ CPU YOLO 被 fail-fast 阻断。只有在供电稳定性问题关闭并重新做
   均值/最大 5.743/7.531 ms，ByteTrack 均值/最大 0.251/0.343 ms。
 - 板端系统时间不正确，且重启后发生约一小时回跳；日志时间戳不能用于跨设备对齐，需在
   后续实验前配置 NTP/RTC。板端没有持久化 journal，重启原因缺少内核级证据。
+- 非视觉能力补充后完成 60 s、300 行 `LOG_ONLY` 联合验证：RAW RC 尝试/成功计数均为 0，
+  MSP、发送、相机、感知 worker 错误均为 0。只读快照确认 `BTFL 25.12.2`/API 1.47，但
+  实际 BOXIDS 不含 `src` 假设的 OVERRIDE permanent ID 50，因此控制保持硬阻断。完整脱敏
+  结果及 artifact SHA256 见 `config/betaflight.rk3588.validation.json`。
 
 ### 1. 无桨只读 MSP 验证
 
