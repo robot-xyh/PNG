@@ -1,0 +1,96 @@
+{
+  "schema_version": 1,
+  "runtime_loadable": false,
+  "captured_on": "2026-07-11",
+  "source": {
+    "host": "orangepi@10.168.1.103",
+    "root": "/home/orangepi/src/circle_pilot",
+    "version_control": "unavailable",
+    "modified_by_this_project": false
+  },
+  "files": {
+    "config/bf_flight_common.yaml": "73445f30a9fbbf97dcf7affab5efca2580e263fab280ff0a715cb0591e3069ea",
+    "config/strike_png_bf_flight.yaml": "781192f6c769dfd23f64baf31ac2a7676dd3f1af5e8d7b5d974e0ba9913830f4",
+    "config/strike_png_bf_flight_low_speed.yaml": "dfcf551ad807879ce3930c7e5d55252cecf2e01bd5c87709feb9898279e7fe40",
+    "config/strike_png_bf_flight_mid_speed.yaml": "1ab128cebf7703c3c067534a1a803eb52aec9d4cd6011bbbc636b77ee0f6e0c3",
+    "config/strike_png_bf_flight_high_speed.yaml": "8795d703e1f60e4ebcb7e5d68e47865e7545098d0f9038f92ba2ef9dcc9b7510",
+    "adapters/bf/common/include/circle/bf/msp_client.hpp": "af86505fb6e1e5e6366d18036a3e8fb43c8a0e3037c5a8707289efabbf832e96",
+    "adapters/bf/common/src/msp_client.cpp": "114dce7b2d28746133520648377b3a29ab100ef226c929ba748a5d3e67017d4c",
+    "adapters/bf/common/src/bf_rc_mapper.cpp": "74e17222c970021018c38a41225694cf75c6af47dccb5c61cb365f366bb3e840",
+    "adapters/bf/bf_runtime/src/bf_gating.cpp": "6681c009b5fc8bccb357c29533714f72340e4a51b930f09ff5b2be55df4b630f",
+    "adapters/bf/bf_runtime/src/bf_control_host.cpp": "35173d67246d61100ee73c680a2f55a7f5d3610671a33674b7e984b04180bfa9",
+    "adapters/bf/systemd/bf_flight.service.in": "c58fe37d6a0e6a23f22782c93434324421101e6939534db486b0b5eed0417304",
+    "adapters/bf/systemd/bf_deploy.sh": "17e6243ac5be9bc24de9c17f4d4d7ca7a8112f545e9658671bcb37a5bd4bef02"
+  },
+  "candidates": {
+    "msp": {
+      "device": "/dev/ttyS1",
+      "baud": 115200,
+      "passthrough_hz": 50.0,
+      "live_publish_hz": 100.0,
+      "attitude_poll_divisor": 1,
+      "status_poll_divisor": 5,
+      "override_grace_hold_s": 0.35,
+      "override_mode_permanent_id": 50,
+      "override_channels_mask": 15,
+      "passthrough_channel_count": 16
+    },
+    "runtime": {
+      "control_loop_hz": 200.0,
+      "watchdog_state_timeout_s": 0.5,
+      "throttle_handover_s": 0.4,
+      "engage_require_fresh_detection": true,
+      "engage_detection_fresh_timeout_s": 0.3
+    },
+    "rc": {
+      "channel_order": "AETR",
+      "roll_channel_zero_based": 0,
+      "pitch_channel_zero_based": 1,
+      "yaw_channel_zero_based": 2,
+      "throttle_channel_zero_based": 3,
+      "aux_arm_channel_zero_based": 4,
+      "rc_min_us": 1000,
+      "rc_mid_us": 1500,
+      "rc_max_us": 2000,
+      "max_rate_rad_s_active_config": 3.491,
+      "max_rate_rad_s_test_expected": 5.236
+    },
+    "png_profiles": {
+      "default": {
+        "dry_run": false,
+        "hover_thrust": 0.078,
+        "strike_thrust": 0.082,
+        "max_roll_rate_rad_s": 2.0,
+        "max_pitch_rate_rad_s": 2.0
+      },
+      "low_speed": {
+        "hover_thrust": 0.283,
+        "strike_thrust": 0.5,
+        "max_roll_rate_rad_s": 1.2,
+        "max_pitch_rate_rad_s": 1.45
+      },
+      "mid_speed": {
+        "hover_thrust": 0.283,
+        "strike_thrust": 0.5,
+        "max_roll_rate_rad_s": 1.35,
+        "max_pitch_rate_rad_s": 1.2
+      },
+      "high_speed": {
+        "hover_thrust": 0.283,
+        "strike_thrust": 0.5,
+        "max_roll_rate_rad_s": 1.45,
+        "max_pitch_rate_rad_s": 1.7
+      }
+    }
+  },
+  "conflicts": [
+    "Default PNG throttle 0.078/0.082 conflicts with low/mid/high 0.283/0.50.",
+    "Active RC max rate 3.491 rad/s conflicts with bf_runtime_test expectation 5.236 rad/s.",
+    "Source flight profiles set dry_run=false and are not safe deployment defaults.",
+    "Source has no Betaflight CLI dump, Blackbox file, or calibration provenance."
+  ],
+  "approval": {
+    "parameters_approved_for_control": false,
+    "reason": "Source values are uncalibrated and internally inconsistent."
+  }
+}

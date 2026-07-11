@@ -196,6 +196,10 @@ CSV 字段按用途分组如下。
 
 ## RK3588 上机前仍需完成的工作
 
+Betaflight 非视觉能力的 `src` 来源、候选参数、已知冲突和迁移状态见
+`doc/BETAFLIGHT_SRC_MIGRATION_RECORD.md`。机器可读来源清单
+`config/betaflight.src-reference.json` 仅用于审计，禁止作为运行配置加载。
+
 当前仓库可以作为 RK3588 无桨 `log_only` 联调起点，但还不是可直接上桨的机载程序。
 下表区分已有代码和仍需实现/验证的边界。
 
