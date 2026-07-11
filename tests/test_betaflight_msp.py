@@ -18,6 +18,7 @@ from vision_guidance.betaflight_msp import (
     parse_analog,
     parse_api_version,
     parse_attitude,
+    parse_box_ids,
     parse_rc_channels,
     parse_status,
 )
@@ -90,6 +91,12 @@ class BetaflightMSPTest(unittest.TestCase):
 
         rc = parse_rc_channels(struct.pack("<HHHH", 1000, 1500, 1600, 2000))
         self.assertEqual(rc, (1000, 1500, 1600, 2000))
+
+        self.assertEqual(parse_box_ids(bytes([0, 1, 50, 27])), (0, 1, 50, 27))
+
+    def test_box_ids_rejects_empty_payload(self):
+        with self.assertRaisesRegex(MSPError, "must not be empty"):
+            parse_box_ids(b"")
 
     def test_adapter_request_writes_command_and_reads_response(self):
         response = encode_msp_frame(MSP_API_VERSION, b"\x00\x02\x01", direction=">")

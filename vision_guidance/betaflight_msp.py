@@ -18,6 +18,7 @@ MSP_STATUS = 101
 MSP_RC = 105
 MSP_ATTITUDE = 108
 MSP_ANALOG = 110
+MSP_BOXIDS = 119
 MSP_SET_RAW_RC = 200
 
 
@@ -179,6 +180,13 @@ def parse_rc_channels(payload: bytes | bytearray) -> tuple[int, ...]:
     return tuple(int(value) for value in struct.unpack("<" + "H" * (len(data) // 2), data))
 
 
+def parse_box_ids(payload: bytes | bytearray) -> tuple[int, ...]:
+    data = bytes(payload)
+    if not data:
+        raise MSPError("MSP_BOXIDS payload must not be empty")
+    return tuple(int(value) for value in data)
+
+
 def pack_rc_channels(channels: Sequence[int]) -> bytes:
     if not channels:
         raise ValueError("channels must not be empty")
@@ -274,6 +282,9 @@ class BetaflightMSPAdapter:
 
     def read_rc(self) -> tuple[int, ...]:
         return parse_rc_channels(self.request(MSP_RC).payload)
+
+    def read_box_ids(self) -> tuple[int, ...]:
+        return parse_box_ids(self.request(MSP_BOXIDS).payload)
 
     def read_telemetry(
         self,

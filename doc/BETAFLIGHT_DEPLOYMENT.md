@@ -496,6 +496,18 @@ python3 examples/run_betaflight_log_only.py \
   --detector-source none
 ```
 
+在常规日志前建议先生成独立的飞控配置快照：
+
+```bash
+python3 tools/capture_betaflight_snapshot.py \
+  --config config/betaflight.rk3588.example.json \
+  --duration-s 5 --rate-hz 5
+```
+
+该工具额外读取 MSP API/FC identity 和 BOXIDS，并将 OVERRIDE permanent ID 50 的可用性、
+遥测样本、错误和 artifact SHA256 写入 `logs/betaflight_snapshots/`。Rate/PID/Failsafe/
+Blackbox 仍须通过 Configurator 人工导出的 `diff all`/`dump all` 补齐。
+
 验收标准：
 - CSV 中 `telemetry_error` 为空或偶发可解释。
 - `roll_deg/pitch_deg/yaw_deg` 随机体姿态变化。

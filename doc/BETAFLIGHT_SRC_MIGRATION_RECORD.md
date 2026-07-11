@@ -41,7 +41,7 @@
 |阶段|状态|验收证据|
 |---|---|---|
 |S0 来源清单与冲突审计|完成|来源 SHA256、候选参数、冲突和禁止生效标记|
-|S1 只读飞控快照|待实施|MSP identity/BOXIDS/telemetry + CLI 导入 manifest|
+|S1 只读飞控快照|完成|MSP identity/BOXIDS/telemetry + CLI 导入 manifest|
 |S2 安全 MSP 运行架构|待实施|单元测试证明所有授权条件 fail-closed|
 |S3 Python systemd|待实施|服务安装后 disabled/inactive，命令固定 LOG_ONLY|
 |S4 Orange Pi 验证|待实施|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
@@ -53,3 +53,18 @@
   `logs/` 不提交，但 manifest 中必须包含每个文件 SHA256。
 - 不记录 SSH 密码、无线凭据或其他秘密。
 - 每阶段独立提交；板端验证完成后追加最终验证记录，不改写历史结论。
+
+## 只读快照命令
+
+先在 Betaflight Configurator CLI 中人工执行 `diff all` 或 `dump all` 并保存文本，再运行：
+
+```bash
+python3 tools/capture_betaflight_snapshot.py \
+  --config config/betaflight.rk3588.example.json \
+  --duration-s 5 --rate-hz 5 \
+  --cli-export /path/to/betaflight_diff_all.txt
+```
+
+未提供 CLI 文件时仍可完成 MSP 只读快照，但 manifest 必须把 PID/Rate/Failsafe/Blackbox
+标记为缺失。快照工具没有 RC 发送接口，且始终输出 `control_ready=false`，人工审核不能通过
+直接修改原始 manifest 绕过后续授权文件和哈希检查。
