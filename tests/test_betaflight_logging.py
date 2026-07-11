@@ -31,7 +31,184 @@ def _load_runner_module():
 runner = _load_runner_module()
 
 
+class _FakeCapture:
+    def __init__(self, image, *, accept_settings=True):
+        self.image = image
+        self.accept_settings = accept_settings
+        self.opened = True
+        self.released = False
+        self.values = {
+            1: float(image.shape[1]),
+            2: float(image.shape[0]),
+            3: 30.0,
+            4: 0.0,
+            5: 1.0,
+        }
+
+    def isOpened(self):
+        return self.opened
+
+    def set(self, prop, value):
+        if self.accept_settings:
+            self.values[prop] = float(value)
+        return self.accept_settings
+
+    def get(self, prop):
+        return self.values.get(prop, 0.0)
+
+    def read(self):
+        return True, self.image.copy()
+
+    def release(self):
+        self.released = True
+
+
+class _FakeCv2:
+    CAP_PROP_FRAME_WIDTH = 1
+    CAP_PROP_FRAME_HEIGHT = 2
+    CAP_PROP_FPS = 3
+    CAP_PROP_FOURCC = 4
+    CAP_PROP_BUFFERSIZE = 5
+    INTER_LINEAR = 6
+
+    @staticmethod
+    def VideoWriter_fourcc(*characters):
+        return sum(ord(character) << (8 * index) for index, character in enumerate(characters))
+
+    @staticmethod
+    def resize(image, dimensions, interpolation):
+        del interpolation
+        width, height = dimensions
+        return np.zeros((height, width, image.shape[2]), dtype=image.dtype)
+
+    @staticmethod
+    def undistort(image, matrix, distortion, _unused, new_matrix):
+        del matrix, distortion, new_matrix
+        return image
+
+
 class BetaflightLoggingTest(unittest.TestCase):
+    def test_camera_only_source_configures_resizes_and_logs_frame(self):
+        image = np.zeros((1024, 1280, 3), dtype=np.uint8)
+        capture = _FakeCapture(image)
+        args = SimpleNamespace(camera_device="/dev/video-test")
+        config = {
+            "camera": {
+                "capture_width": 1280,
+                "capture_height": 1024,
+                "width": 640,
+                "height": 512,
+                "fps": 180.0,
+                "fourcc": "MJPG",
+                "buffer_size": 1,
+            }
+        }
+        source = runner.OpenCvCameraSource(
+            args,
+            config,
+            cv2_module=_FakeCv2,
+            capture_factory=lambda _device: capture,
+        )
+
+        resized = source.read_image()
+        detection, stats = source.detect(timestamp=1.0, frame_id=1, active_track_id=None)
+
+        self.assertEqual(resized.shape, (512, 640, 3))
+        self.assertIsNone(detection)
+        self.assertEqual(stats["detector_source"], "camera_only")
+        self.assertEqual(stats["camera_device"], "/dev/video-test")
+        self.assertEqual(stats["camera_frame_ok"], 1)
+        self.assertEqual(stats["camera_input_width"], 1280)
+        self.assertEqual(stats["camera_input_height"], 1024)
+        self.assertEqual(stats["camera_output_width"], 640)
+        self.assertEqual(stats["camera_output_height"], 512)
+        self.assertEqual(stats["camera_reported_fourcc"], "MJPG")
+        source.close()
+        self.assertTrue(capture.released)
+
+    def test_camera_source_rejects_capture_dimension_mismatch(self):
+        image = np.zeros((480, 640, 3), dtype=np.uint8)
+        capture = _FakeCapture(image, accept_settings=False)
+        args = SimpleNamespace(camera_device="0")
+        config = {"camera": {"capture_width": 1280, "capture_height": 1024, "width": 640, "height": 512}}
+
+        with self.assertRaisesRegex(RuntimeError, "camera width mismatch"):
+            runner.OpenCvCameraSource(
+                args,
+                config,
+                cv2_module=_FakeCv2,
+                capture_factory=lambda _device: capture,
+            )
+
+    def test_camera_device_accepts_index_or_path(self):
+        self.assertEqual(runner._camera_device_value("1"), 1)
+        self.assertEqual(runner._camera_device_value("/dev/v4l/by-id/camera"), "/dev/v4l/by-id/camera")
+
+    def test_rknn_source_converts_bgr_to_rgb_and_uses_capture_timestamp(self):
+        class FakeCamera:
+            def __init__(self):
+                self.last_stats = {"camera_capture_ts": 4.25, "camera_frame_ok": 1}
+                self.closed = False
+
+            def read_image(self):
+                return np.array([[[1, 2, 3]]], dtype=np.uint8)
+
+            def close(self):
+                self.closed = True
+
+        class FakeDetector:
+            def __init__(self):
+                self.closed = False
+
+            def detect(self, image, *, frame_id, exposure_ts):
+                self.call = (image.copy(), frame_id, exposure_ts)
+                detection = FrameDetection(frame_id, exposure_ts, (0.0, 0.0, 1.0, 1.0), 1, 0.9)
+                return detection, {"detector_source": "rknn_native", "rknn_inference_ms": 3.0}
+
+            def metadata(self):
+                return {"backend": "rknn_native"}
+
+            def close(self):
+                self.closed = True
+
+        camera = FakeCamera()
+        detector = FakeDetector()
+        args = SimpleNamespace(rknn_library="bridge.so", rknn_model="model.rknn")
+        source = runner.OpenCvRknnSource(args, {"rknn_detector": {}}, camera_source=camera, detector=detector)
+
+        detection, stats = source.detect(timestamp=4.0, frame_id=9, active_track_id=None)
+
+        np.testing.assert_array_equal(detector.call[0], np.array([[[3, 2, 1]]], dtype=np.uint8))
+        self.assertEqual(detector.call[1:], (9, 4.25))
+        self.assertEqual(detection.exposure_ts, 4.25)
+        self.assertEqual(stats["camera_frame_ok"], 1)
+        self.assertEqual(source.metadata()["backend"], "rknn_native")
+        source.close()
+        self.assertTrue(camera.closed)
+        self.assertTrue(detector.closed)
+
+    def test_rk3588_torch_runtime_disables_mkldnn_and_limits_threads(self):
+        fake_torch = SimpleNamespace(
+            backends=SimpleNamespace(mkldnn=SimpleNamespace(enabled=True)),
+            set_num_threads=lambda value: setattr(fake_torch, "num_threads", value),
+        )
+
+        runner._configure_torch_runtime(
+            {"torch_runtime": {"num_threads": 1, "disable_mkldnn": True}},
+            torch_module=fake_torch,
+        )
+
+        self.assertEqual(fake_torch.num_threads, 1)
+        self.assertFalse(fake_torch.backends.mkldnn.enabled)
+
+    def test_rk3588_config_blocks_cpu_yolo_after_bench_reboot(self):
+        config = {"torch_runtime": {"allow_cpu_inference": False}}
+
+        with self.assertRaisesRegex(RuntimeError, "CPU YOLO inference is disabled"):
+            runner._validate_yolo_runtime(config, "cpu")
+
+        runner._validate_yolo_runtime(config, "rknn")
+
     def test_log_row_includes_expanded_telemetry_guidance_and_rc_fields(self):
         intrinsics = CameraIntrinsics(500.0, 500.0, 320.0, 240.0, 640, 480)
         detection = FrameDetection(
@@ -95,7 +272,31 @@ class BetaflightLoggingTest(unittest.TestCase):
             elapsed_s=0.2,
             telemetry=telemetry,
             telemetry_error="",
-            detector_stats={"detector_source": "csv", "detector_reject_reason": ""},
+            detector_stats={
+                "detector_source": "csv",
+                "detector_reject_reason": "",
+                "loop_period_s": 0.05,
+                "camera_device": "/dev/video1",
+                "camera_frame_ok": 1,
+                "camera_capture_ts": 10.15,
+                "camera_read_ms": 2.5,
+                "camera_input_width": 1280,
+                "camera_input_height": 1024,
+                "camera_output_width": 640,
+                "camera_output_height": 512,
+                "camera_requested_fps": 180.0,
+                "camera_reported_fps": 180.0,
+                "camera_reported_fourcc": "MJPG",
+                "camera_failed_frames": 0,
+                "detector_raw_count": 2,
+                "detector_class_filtered_count": 1,
+                "detector_track_filtered_count": 1,
+                "rknn_selected_index": 0,
+                "rknn_preprocess_ms": 1.0,
+                "rknn_inference_ms": 4.0,
+                "rknn_postprocess_ms": 0.5,
+                "rknn_total_ms": 5.5,
+            },
             detection=detection,
             result=result,
             setpoint=setpoint,
@@ -122,6 +323,10 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["cycle_time_us"], 1000)
         self.assertEqual(row["mode_flags"], 5)
         self.assertEqual(row["mah_drawn"], 100)
+        self.assertEqual(row["camera_device"], "/dev/video1")
+        self.assertEqual(row["camera_read_ms"], "2.500")
+        self.assertEqual(row["loop_period_s"], "0.050000")
+        self.assertEqual(row["rknn_inference_ms"], "4.000")
         self.assertEqual(row["rc_in_ch5"], 1800)
         self.assertEqual(row["bbox_clip_left"], 1)
         self.assertEqual(row["bbox_area"], "600.000")

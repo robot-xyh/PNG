@@ -1,0 +1,88 @@
+{
+  "serial": {
+    "port": "/dev/ttyS1",
+    "baud": 115200,
+    "timeout_s": 0.1
+  },
+  "camera": {
+    "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
+    "capture_width": 1280,
+    "capture_height": 1024,
+    "fps": 180.0,
+    "fourcc": "MJPG",
+    "buffer_size": 1,
+    "width": 640,
+    "height": 512,
+    "fx": 530.8443137411823,
+    "fy": 532.2954942356003,
+    "cx": 321.02786894123255,
+    "cy": 247.25731946583392,
+    "distortion_coefficients": [
+      0.07805567312849697,
+      -0.9515884755519438,
+      -0.006880353064013193,
+      -0.00021461333729847564,
+      1.4612166830713538
+    ],
+    "pitch_up_deg": 90.0
+  },
+  "rknn_detector": {
+    "library": "native/rknn_detector/build/librknn_detector_bridge.so",
+    "model": "models/rknn/drone_v8n_v21_kd_relu_lambda008_640_640-rk3588.rknn",
+    "conf_threshold": 0.2,
+    "iou_threshold": 0.45,
+    "min_score": 0.25,
+    "min_bbox_area": 0.0,
+    "max_bbox_aspect_ratio": 3.0,
+    "max_det": 300,
+    "core_mask": 7,
+    "temporal_gating_enabled": false,
+    "gate_radius_px": 160.0,
+    "reacquire_area_ratio": 0.4,
+    "track_hint_max_misses": 30
+  },
+  "torch_runtime": {
+    "num_threads": 1,
+    "disable_mkldnn": true,
+    "allow_cpu_inference": false
+  },
+  "attitude_buffer_s": 2.0,
+  "rc_mapping": {
+    "channel_map": "AETR1234",
+    "channel_count": 8,
+    "roll_rate_limit_deg_s": 120.0,
+    "pitch_rate_limit_deg_s": 120.0,
+    "yaw_rate_limit_deg_s": 90.0,
+    "thrust_min": 0.0,
+    "thrust_hover": 0.5,
+    "thrust_max": 1.0,
+    "throttle_min_us": 1000,
+    "throttle_hover_us": 1500,
+    "throttle_max_us": 2000,
+    "neutral_throttle_us": 1000,
+    "max_delta_us_per_s": 600.0,
+    "aux_values_us": {}
+  },
+  "guidance_command": {
+    "rate_gain_matrix": [
+      [0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0]
+    ],
+    "hover_thrust": 0.5,
+    "yaw_rate_bias_deg_s": 0.0
+  },
+  "safety": {
+    "telemetry_timeout_s": 0.5,
+    "attitude_timeout_s": 0.5,
+    "watchdog_timeout_s": 0.25,
+    "min_vbat_v": 0.0,
+    "require_aux_enable": true,
+    "aux_enable": {
+      "channel_index": 5,
+      "min_us": 1700,
+      "max_us": 2100
+    },
+    "send_neutral_when_inactive": false
+  }
+}

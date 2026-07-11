@@ -29,6 +29,7 @@ from vision_guidance.flight_control import (  # noqa: E402
 )
 from vision_guidance.fusion import PureVisionGuidancePipeline, VisionGuidanceResult  # noqa: E402
 from vision_guidance.geometry import camera_to_body_mount  # noqa: E402
+from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
 from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetection  # noqa: E402
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
@@ -44,9 +45,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--msp-baud", type=int, default=0, help="Override config serial.baud.")
     parser.add_argument("--control-mode", choices=("log_only", "msp_raw_rc"), default="log_only")
     parser.add_argument("--allow-control", action="store_true", help="Required before MSP_SET_RAW_RC is sent.")
-    parser.add_argument("--detector-source", choices=("none", "csv", "yolo_bytetrack"), default="none")
+    parser.add_argument(
+        "--detector-source",
+        choices=("none", "csv", "camera_only", "yolo_bytetrack", "rknn_native"),
+        default="none",
+    )
     parser.add_argument("--detections-csv", default="", help="CSV with x1,y1,x2,y2 and optional exposure_ts,track_id,score.")
-    parser.add_argument("--camera-device", type=int, default=0)
+    parser.add_argument("--camera-device", default="", help="Camera index or device path; overrides camera.device.")
     parser.add_argument("--yolo-model", default="")
     parser.add_argument("--yolo-class-id", type=int, default=None)
     parser.add_argument("--yolo-conf", type=float, default=0.25)
@@ -55,6 +60,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yolo-device", default="")
     parser.add_argument("--yolo-tracker", default="bytetrack.yaml")
     parser.add_argument("--yolo-allow-untracked-fallback", action="store_true")
+    parser.add_argument("--rknn-library", default="", help="Override rknn_detector.library.")
+    parser.add_argument("--rknn-model", default="", help="Override rknn_detector.model.")
     return parser.parse_args()
 
 
@@ -90,12 +97,150 @@ class DetectionCsvSource:
         return detection, {"detector_source": "csv", "detector_reject_reason": ""}
 
 
-class OpenCvYoloSource:
-    def __init__(self, args: argparse.Namespace):
-        self.cv2 = importlib.import_module("cv2")
-        self.capture = self.cv2.VideoCapture(int(args.camera_device))
+class OpenCvCameraSource:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        config: dict[str, Any],
+        *,
+        cv2_module: Any = None,
+        capture_factory: Any = None,
+    ) -> None:
+        self.cv2 = cv2_module if cv2_module is not None else importlib.import_module("cv2")
+        self.camera_config = dict(config.get("camera", {}))
+        configured_device = self.camera_config.get("device", 0)
+        requested_device = getattr(args, "camera_device", "")
+        self.device = _camera_device_value(requested_device if requested_device not in (None, "") else configured_device)
+        factory = capture_factory if capture_factory is not None else self.cv2.VideoCapture
+        self.capture = factory(self.device)
         if not self.capture.isOpened():
-            raise RuntimeError(f"failed to open camera device {args.camera_device}")
+            raise RuntimeError(f"failed to open camera device {self.device}")
+
+        self.capture_width = int(self.camera_config.get("capture_width", self.camera_config.get("width", 640)))
+        self.capture_height = int(self.camera_config.get("capture_height", self.camera_config.get("height", 480)))
+        self.output_width = int(self.camera_config.get("width", self.capture_width))
+        self.output_height = int(self.camera_config.get("height", self.capture_height))
+        self.requested_fps = float(self.camera_config.get("fps", 0.0))
+        self.requested_fourcc = str(self.camera_config.get("fourcc", "") or "").upper()
+        self.buffer_size = int(self.camera_config.get("buffer_size", 1))
+        self.failed_frames = 0
+        self.last_stats = self._empty_stats()
+        self._configure_capture()
+
+    def _configure_capture(self) -> None:
+        self.capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, float(self.capture_width))
+        self.capture.set(self.cv2.CAP_PROP_FRAME_HEIGHT, float(self.capture_height))
+        if self.requested_fps > 0.0:
+            self.capture.set(self.cv2.CAP_PROP_FPS, self.requested_fps)
+        if self.requested_fourcc:
+            if len(self.requested_fourcc) != 4:
+                raise ValueError("camera.fourcc must contain exactly four characters")
+            fourcc = self.cv2.VideoWriter_fourcc(*self.requested_fourcc)
+            self.capture.set(self.cv2.CAP_PROP_FOURCC, float(fourcc))
+        if self.buffer_size > 0 and hasattr(self.cv2, "CAP_PROP_BUFFERSIZE"):
+            self.capture.set(self.cv2.CAP_PROP_BUFFERSIZE, float(self.buffer_size))
+
+        actual_width = int(round(float(self.capture.get(self.cv2.CAP_PROP_FRAME_WIDTH))))
+        actual_height = int(round(float(self.capture.get(self.cv2.CAP_PROP_FRAME_HEIGHT))))
+        if actual_width > 0 and actual_width != self.capture_width:
+            raise RuntimeError(f"camera width mismatch: requested {self.capture_width}, got {actual_width}")
+        if actual_height > 0 and actual_height != self.capture_height:
+            raise RuntimeError(f"camera height mismatch: requested {self.capture_height}, got {actual_height}")
+
+    def close(self) -> None:
+        self.capture.release()
+
+    def detect(
+        self,
+        *,
+        timestamp: float,
+        frame_id: int,
+        active_track_id: int | None,
+    ) -> tuple[FrameDetection | None, dict[str, Any]]:
+        del timestamp, frame_id, active_track_id
+        image = self.read_image()
+        stats = dict(self.last_stats)
+        stats["detector_source"] = "camera_only"
+        stats["detector_reject_reason"] = "" if image is not None else "camera_frame_unavailable"
+        return None, stats
+
+    def read_image(self):
+        read_start = time.monotonic()
+        ok, image = self.capture.read()
+        capture_ts = time.monotonic()
+        read_ms = 1000.0 * (capture_ts - read_start)
+        if not ok or image is None:
+            self.failed_frames += 1
+            self.last_stats = self._empty_stats(
+                frame_ok=False,
+                capture_ts=capture_ts,
+                read_ms=read_ms,
+            )
+            return None
+
+        input_height, input_width = image.shape[:2]
+        if input_width != self.output_width or input_height != self.output_height:
+            image = self.cv2.resize(image, (self.output_width, self.output_height), interpolation=self.cv2.INTER_LINEAR)
+        image = self._undistort(image)
+        self.last_stats = self._empty_stats(
+            frame_ok=True,
+            capture_ts=capture_ts,
+            read_ms=read_ms,
+            input_width=input_width,
+            input_height=input_height,
+        )
+        return image
+
+    def _undistort(self, image):
+        coefficients = self.camera_config.get("distortion_coefficients", [])
+        if not coefficients:
+            return image
+        distortion = np.asarray(coefficients, dtype=float)
+        if distortion.shape not in {(4,), (5,), (8,), (12,), (14,)} or not np.all(np.isfinite(distortion)):
+            raise ValueError("camera.distortion_coefficients must contain 4, 5, 8, 12, or 14 finite values")
+        matrix = np.array(
+            [
+                [float(self.camera_config["fx"]), 0.0, float(self.camera_config["cx"])],
+                [0.0, float(self.camera_config["fy"]), float(self.camera_config["cy"])],
+                [0.0, 0.0, 1.0],
+            ],
+            dtype=float,
+        )
+        return self.cv2.undistort(image, matrix, distortion, None, matrix)
+
+    def _empty_stats(
+        self,
+        *,
+        frame_ok: bool = False,
+        capture_ts: float | None = None,
+        read_ms: float | None = None,
+        input_width: int | None = None,
+        input_height: int | None = None,
+    ) -> dict[str, Any]:
+        reported_fps = float(self.capture.get(self.cv2.CAP_PROP_FPS))
+        reported_fourcc = int(round(float(self.capture.get(self.cv2.CAP_PROP_FOURCC))))
+        return {
+            "camera_device": str(self.device),
+            "camera_frame_ok": int(frame_ok),
+            "camera_capture_ts": "" if capture_ts is None else float(capture_ts),
+            "camera_read_ms": "" if read_ms is None else float(read_ms),
+            "camera_input_width": "" if input_width is None else int(input_width),
+            "camera_input_height": "" if input_height is None else int(input_height),
+            "camera_output_width": self.output_width,
+            "camera_output_height": self.output_height,
+            "camera_requested_fps": self.requested_fps,
+            "camera_reported_fps": reported_fps,
+            "camera_reported_fourcc": _decode_fourcc(reported_fourcc),
+            "camera_failed_frames": self.failed_frames,
+        }
+
+
+class OpenCvYoloSource:
+    def __init__(self, args: argparse.Namespace, config: dict[str, Any], *, camera_source: OpenCvCameraSource | None = None):
+        _validate_yolo_runtime(config, str(args.yolo_device or ""))
+        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        self.cv2 = self.camera.cv2
+        _configure_torch_runtime(config)
         self.detector = YoloByteTrackDetector(
             model_path=str(args.yolo_model),
             class_id=args.yolo_class_id,
@@ -111,7 +256,7 @@ class OpenCvYoloSource:
         self.config = AirSimDetectionConfig(camera_name="opencv", vehicle_name="Betaflight")
 
     def close(self) -> None:
-        self.capture.release()
+        self.camera.close()
 
     def detect(self, *, timestamp: float, frame_id: int, active_track_id: int | None) -> tuple[FrameDetection | None, dict[str, Any]]:
         frame = self.detector.detect(
@@ -121,13 +266,69 @@ class OpenCvYoloSource:
             exposure_ts=timestamp,
             active_track_id=active_track_id,
         )
-        return frame.frame_detection, frame.stats
+        stats = dict(frame.stats)
+        stats.update(self.camera.last_stats)
+        return frame.frame_detection, stats
 
     def _read_image(self, _client: Any, _config: AirSimDetectionConfig):
-        ok, image = self.capture.read()
-        if not ok:
-            return None
-        return image
+        return self.camera.read_image()
+
+
+class OpenCvRknnSource:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        config: dict[str, Any],
+        *,
+        camera_source: OpenCvCameraSource | None = None,
+        detector: RknnNativeDetector | None = None,
+    ) -> None:
+        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        rknn = dict(config.get("rknn_detector", {}))
+        library_path = str(getattr(args, "rknn_library", "") or rknn.get("library", ""))
+        model_path = str(getattr(args, "rknn_model", "") or rknn.get("model", ""))
+        if not library_path:
+            raise RuntimeError("rknn_detector.library or --rknn-library is required")
+        if not model_path:
+            raise RuntimeError("rknn_detector.model or --rknn-model is required")
+        self.detector = detector if detector is not None else RknnNativeDetector(
+            library_path=library_path,
+            model_path=model_path,
+            config=RknnDetectorConfig.from_mapping(rknn),
+        )
+
+    def close(self) -> None:
+        self.detector.close()
+        self.camera.close()
+
+    def metadata(self) -> dict[str, Any]:
+        return self.detector.metadata()
+
+    def detect(
+        self,
+        *,
+        timestamp: float,
+        frame_id: int,
+        active_track_id: int | None,
+    ) -> tuple[FrameDetection | None, dict[str, Any]]:
+        del active_track_id
+        image_bgr = self.camera.read_image()
+        camera_stats = dict(self.camera.last_stats)
+        if image_bgr is None:
+            camera_stats.update(
+                detector_source="rknn_native",
+                detector_reject_reason="camera_frame_unavailable",
+            )
+            return None, camera_stats
+        image_rgb = np.ascontiguousarray(image_bgr[:, :, ::-1])
+        exposure_ts = float(camera_stats.get("camera_capture_ts") or timestamp)
+        detection, detector_stats = self.detector.detect(
+            image_rgb,
+            frame_id=frame_id,
+            exposure_ts=exposure_ts,
+        )
+        detector_stats.update(camera_stats)
+        return detection, detector_stats
 
 
 def main() -> None:
@@ -148,7 +349,7 @@ def main() -> None:
     adapter.open()
     fc_identity = _read_fc_identity(adapter)
 
-    detection_source = _create_detection_source(args)
+    detection_source = _create_detection_source(args, config)
     intrinsics = _camera_intrinsics(config)
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
     pipeline = PureVisionGuidancePipeline(
@@ -167,11 +368,13 @@ def main() -> None:
         log_path=log_path,
         fields=fields,
         fc_identity=fc_identity,
+        detector_metadata=_detector_metadata(detection_source),
     )
     start = time.monotonic()
     frame_id = 0
     last_telemetry_s: float | None = None
     last_attitude_s: float | None = None
+    last_loop_start_s: float | None = None
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
@@ -182,6 +385,8 @@ def main() -> None:
             while time.monotonic() - start < float(args.duration_s):
                 loop_start = time.monotonic()
                 elapsed = loop_start - start
+                loop_period_s = None if last_loop_start_s is None else max(0.0, loop_start - last_loop_start_s)
+                last_loop_start_s = loop_start
                 frame_id += 1
                 telemetry, telemetry_error = _read_telemetry(adapter)
                 if telemetry is not None:
@@ -198,6 +403,7 @@ def main() -> None:
                     frame_id=frame_id,
                     active_track_id=pipeline.active_track_id,
                 )
+                detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
                 result = _process_detection(pipeline, detection)
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
@@ -319,16 +525,49 @@ def _camera_mount(config: dict[str, Any]) -> np.ndarray:
     return camera_to_body_mount(float(camera.get("pitch_up_deg", 90.0)))
 
 
-def _create_detection_source(args: argparse.Namespace):
+def _configure_torch_runtime(config: dict[str, Any], *, torch_module: Any = None) -> None:
+    runtime = dict(config.get("torch_runtime", {}))
+    num_threads = int(runtime.get("num_threads", 0))
+    disable_mkldnn = bool(runtime.get("disable_mkldnn", False))
+    if num_threads <= 0 and not disable_mkldnn:
+        return
+    torch = torch_module if torch_module is not None else importlib.import_module("torch")
+    if num_threads > 0:
+        torch.set_num_threads(num_threads)
+    if disable_mkldnn:
+        torch.backends.mkldnn.enabled = False
+
+
+def _validate_yolo_runtime(config: dict[str, Any], requested_device: str) -> None:
+    runtime = dict(config.get("torch_runtime", {}))
+    allow_cpu_inference = bool(runtime.get("allow_cpu_inference", True))
+    normalized_device = str(requested_device or "").strip().lower()
+    if not allow_cpu_inference and normalized_device in {"", "cpu"}:
+        raise RuntimeError(
+            "CPU YOLO inference is disabled by torch_runtime.allow_cpu_inference; "
+            "the RK3588 bench rebooted under sustained PyTorch CPU inference"
+        )
+
+
+def _create_detection_source(args: argparse.Namespace, config: dict[str, Any]):
     if args.detector_source == "none":
         return None
     if args.detector_source == "csv":
         if not args.detections_csv:
             raise RuntimeError("--detections-csv is required for --detector-source csv")
         return DetectionCsvSource(args.detections_csv)
+    if args.detector_source == "camera_only":
+        return OpenCvCameraSource(args, config)
     if args.detector_source == "yolo_bytetrack":
-        return OpenCvYoloSource(args)
+        return OpenCvYoloSource(args, config)
+    if args.detector_source == "rknn_native":
+        return OpenCvRknnSource(args, config)
     raise ValueError(f"unsupported detector source: {args.detector_source}")
+
+
+def _detector_metadata(detection_source: Any) -> dict[str, Any]:
+    metadata = getattr(detection_source, "metadata", None)
+    return metadata() if callable(metadata) else {}
 
 
 def _read_fc_identity(adapter: BetaflightMSPAdapter) -> dict[str, Any]:
@@ -459,6 +698,7 @@ def _write_run_meta(
     log_path: Path,
     fields: list[str],
     fc_identity: dict[str, Any],
+    detector_metadata: dict[str, Any] | None = None,
 ) -> None:
     meta = {
         "created_unix_s": time.time(),
@@ -470,6 +710,7 @@ def _write_run_meta(
         "control_mode": args.control_mode,
         "allow_control": bool(args.allow_control),
         "fc_identity": fc_identity,
+        "detector": detector_metadata or {},
     }
     with path.open("w") as stream:
         json.dump(meta, stream, indent=2, sort_keys=True)
@@ -509,6 +750,27 @@ def _log_fields(channel_count: int) -> list[str]:
         "rc_in_count",
         "detector_source",
         "detector_reject_reason",
+        "detector_raw_count",
+        "detector_class_filtered_count",
+        "detector_track_filtered_count",
+        "rknn_selected_index",
+        "rknn_preprocess_ms",
+        "rknn_inference_ms",
+        "rknn_postprocess_ms",
+        "rknn_total_ms",
+        "loop_period_s",
+        "camera_device",
+        "camera_frame_ok",
+        "camera_capture_ts",
+        "camera_read_ms",
+        "camera_input_width",
+        "camera_input_height",
+        "camera_output_width",
+        "camera_output_height",
+        "camera_requested_fps",
+        "camera_reported_fps",
+        "camera_reported_fourcc",
+        "camera_failed_frames",
         "frame_id",
         "detection_exposure_ts",
         "detection_score",
@@ -640,6 +902,27 @@ def _log_row(
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "detector_source": detector_stats.get("detector_source", ""),
         "detector_reject_reason": detector_stats.get("detector_reject_reason", ""),
+        "detector_raw_count": detector_stats.get("detector_raw_count", ""),
+        "detector_class_filtered_count": detector_stats.get("detector_class_filtered_count", ""),
+        "detector_track_filtered_count": detector_stats.get("detector_track_filtered_count", ""),
+        "rknn_selected_index": detector_stats.get("rknn_selected_index", ""),
+        "rknn_preprocess_ms": _stats_float(detector_stats, "rknn_preprocess_ms", precision=3),
+        "rknn_inference_ms": _stats_float(detector_stats, "rknn_inference_ms", precision=3),
+        "rknn_postprocess_ms": _stats_float(detector_stats, "rknn_postprocess_ms", precision=3),
+        "rknn_total_ms": _stats_float(detector_stats, "rknn_total_ms", precision=3),
+        "loop_period_s": _stats_float(detector_stats, "loop_period_s", precision=6),
+        "camera_device": detector_stats.get("camera_device", ""),
+        "camera_frame_ok": detector_stats.get("camera_frame_ok", ""),
+        "camera_capture_ts": _stats_float(detector_stats, "camera_capture_ts", precision=6),
+        "camera_read_ms": _stats_float(detector_stats, "camera_read_ms", precision=3),
+        "camera_input_width": detector_stats.get("camera_input_width", ""),
+        "camera_input_height": detector_stats.get("camera_input_height", ""),
+        "camera_output_width": detector_stats.get("camera_output_width", ""),
+        "camera_output_height": detector_stats.get("camera_output_height", ""),
+        "camera_requested_fps": _stats_float(detector_stats, "camera_requested_fps", precision=3),
+        "camera_reported_fps": _stats_float(detector_stats, "camera_reported_fps", precision=3),
+        "camera_reported_fourcc": detector_stats.get("camera_reported_fourcc", ""),
+        "camera_failed_frames": detector_stats.get("camera_failed_frames", ""),
         "frame_id": "" if detection is None else detection.frame_id,
         "detection_exposure_ts": "" if detection is None else f"{detection.exposure_ts:.6f}",
         "detection_score": "" if detection is None else f"{detection.score:.6f}",
@@ -707,6 +990,13 @@ def _format_optional_float(value: float | None, *, precision: int) -> str:
     return f"{float(value):.{precision}f}"
 
 
+def _stats_float(stats: dict[str, Any], key: str, *, precision: int) -> str:
+    value = stats.get(key)
+    if value in (None, ""):
+        return ""
+    return f"{float(value):.{precision}f}"
+
+
 def _vector_field(vector: Any, index: int) -> str:
     if vector is None:
         return ""
@@ -726,6 +1016,23 @@ def _float_or_none(value: Any) -> float | None:
     if value in (None, ""):
         return None
     return float(value)
+
+
+def _camera_device_value(value: Any) -> int | str:
+    if isinstance(value, int):
+        return value
+    text = str(value).strip()
+    if text.isdigit():
+        return int(text)
+    if not text:
+        return 0
+    return str(Path(text).expanduser())
+
+
+def _decode_fourcc(value: int) -> str:
+    if value <= 0:
+        return ""
+    return "".join(chr((int(value) >> (8 * index)) & 0xFF) for index in range(4)).rstrip("\x00")
 
 
 if __name__ == "__main__":

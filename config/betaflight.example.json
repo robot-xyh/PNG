@@ -5,12 +5,19 @@
     "timeout_s": 0.2
   },
   "camera": {
+    "device": 0,
+    "capture_width": 640,
+    "capture_height": 480,
+    "fps": 30.0,
+    "fourcc": "MJPG",
+    "buffer_size": 1,
     "width": 640,
     "height": 480,
     "fx": 500.0,
     "fy": 500.0,
     "cx": 320.0,
     "cy": 240.0,
+    "distortion_coefficients": [],
     "pitch_up_deg": 90.0
   },
   "attitude_buffer_s": 2.0,

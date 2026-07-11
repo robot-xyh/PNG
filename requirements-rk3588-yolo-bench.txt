@@ -1,0 +1,7 @@
+numpy==1.26.4
+opencv-python==5.0.0.93
+pyserial==3.5
+torch==2.1.0
+torchvision==0.16.0
+ultralytics==8.4.71
+lap==0.5.13
