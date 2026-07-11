@@ -1,0 +1,32 @@
+当前执行优先级
+
+1. 保持算法主链路稳定
+   bbox center -> camera ray -> R_BC -> R_IB(t_exposure) -> 6D LOS -> TTC -> GuidanceEval。
+   bbox 面积只进入 TTC，不进入 LOS 主状态。
+
+2. AirSim/PX4 继续作为仿真验证平台
+   strapdown 上视相机路径用于验证 YOLO/ByteTrack、LOS/TTC、PX4 setpoint 响应、
+   frame guard、terminal extrapolation 和报告生成。PX4 body-rate/thrust 参数不能直接迁移到 Betaflight。
+
+3. Betaflight 实机先 log-only
+   当前实机路径是 MSP telemetry + 候选 RC 日志。先确认 UART、姿态、电压、RC 输入、
+   FC identity、AUX gate、failsafe 和 Blackbox，再考虑 RC 注入。
+
+4. RC 注入先无桨
+   只有显式使用 --control-mode msp_raw_rc --allow-control 才发送 MSP_SET_RAW_RC。
+   第一次注入建议使用 CSV 检测回放，不用真实相机闭环。
+
+5. 上机前必须写入配置
+   serial.port、serial.baud、camera 内参/外参、channel_map、roll/pitch/yaw rate limit、
+   throttle min/hover/max、neutral throttle、RC slew、AUX enable、watchdog、低电压阈值。
+
+6. rate_gain_matrix 必须重新标定
+   示例配置默认为全零。RC 输出前必须在无桨和系留测试中确认符号、轴向、增益、最大命令幅度和丢目标策略。
+
+7. 日志是进入下一阶段的门槛
+   必须检查 telemetry_age_s、attitude_age_s、watchdog_age_s、bbox_clipped、los_valid、
+   ttc_valid、rc_clipped_ch*、rc_slew_limited_ch*。持续异常时不进入飞行测试。
+
+8. 不做的事
+   不自动 ARM；不自动切模式；不绕过 Betaflight failsafe；不把 AirSim 碰撞判据当实机命中判据；
+   不在未验证参数下进行高风险自主闭环。

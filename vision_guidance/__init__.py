@@ -1,9 +1,16 @@
-"""Pure-vision guidance evaluation toolkit.
+"""Pure-vision guidance evaluation toolkit."""
 
-This package intentionally stops at logged/supervised evaluation quantities.
-It does not send flight-control commands.
-"""
-
+from .flight_control import (
+    BetaflightSafetyStateMachine,
+    CommandWatchdog,
+    GuidanceSetpoint,
+    RcCommand,
+    RcCommandMapper,
+    RcMappingConfig,
+    SafetyDecision,
+    SafetyInputs,
+    SafetyState,
+)
 from .types import (
     AttitudeSample,
     CameraIntrinsics,
@@ -15,9 +22,18 @@ from .types import (
 
 __all__ = [
     "AttitudeSample",
+    "BetaflightSafetyStateMachine",
     "CameraIntrinsics",
+    "CommandWatchdog",
     "FrameDetection",
     "GuidanceEval",
+    "GuidanceSetpoint",
     "LOSEstimate",
+    "RcCommand",
+    "RcCommandMapper",
+    "RcMappingConfig",
+    "SafetyDecision",
+    "SafetyInputs",
+    "SafetyState",
     "TTCState",
 ]

@@ -1,0 +1,55 @@
+{
+  "serial": {
+    "port": "/dev/ttyUSB0",
+    "baud": 115200,
+    "timeout_s": 0.2
+  },
+  "camera": {
+    "width": 640,
+    "height": 480,
+    "fx": 500.0,
+    "fy": 500.0,
+    "cx": 320.0,
+    "cy": 240.0,
+    "pitch_up_deg": 90.0
+  },
+  "attitude_buffer_s": 2.0,
+  "rc_mapping": {
+    "channel_map": "AETR1234",
+    "channel_count": 8,
+    "roll_rate_limit_deg_s": 120.0,
+    "pitch_rate_limit_deg_s": 120.0,
+    "yaw_rate_limit_deg_s": 90.0,
+    "thrust_min": 0.0,
+    "thrust_hover": 0.5,
+    "thrust_max": 1.0,
+    "throttle_min_us": 1000,
+    "throttle_hover_us": 1500,
+    "throttle_max_us": 2000,
+    "neutral_throttle_us": 1000,
+    "max_delta_us_per_s": 600.0,
+    "aux_values_us": {}
+  },
+  "guidance_command": {
+    "rate_gain_matrix": [
+      [0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0]
+    ],
+    "hover_thrust": 0.5,
+    "yaw_rate_bias_deg_s": 0.0
+  },
+  "safety": {
+    "telemetry_timeout_s": 0.5,
+    "attitude_timeout_s": 0.5,
+    "watchdog_timeout_s": 0.25,
+    "min_vbat_v": 0.0,
+    "require_aux_enable": true,
+    "aux_enable": {
+      "channel_index": 5,
+      "min_us": 1700,
+      "max_us": 2100
+    },
+    "send_neutral_when_inactive": true
+  }
+}
