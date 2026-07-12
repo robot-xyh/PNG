@@ -19,6 +19,7 @@ MSP_STATUS = 101
 MSP_RC = 105
 MSP_ATTITUDE = 108
 MSP_ANALOG = 110
+MSP_BOXNAMES = 116
 MSP_BOXIDS = 119
 MSP_SET_RAW_RC = 200
 
@@ -118,14 +119,23 @@ def decode_msp_frame(data: bytes | bytearray) -> MSPFrame:
     direction = chr(raw[2])
     if direction not in {"<", ">", "!"}:
         raise MSPError("invalid MSP direction")
-    size = int(raw[3])
-    expected_len = 6 + size
+    size_marker = int(raw[3])
+    payload_offset = 5
+    checksum_payload = raw[5:-1]
+    if size_marker == 255:
+        if len(raw) < 8:
+            raise MSPError("MSP jumbo frame too short")
+        size = struct.unpack_from("<H", raw, 5)[0]
+        payload_offset = 7
+    else:
+        size = size_marker
+    expected_len = payload_offset + size + 1
     if len(raw) != expected_len:
         raise MSPError("MSP frame length mismatch")
     command = int(raw[4])
-    payload = raw[5 : 5 + size]
+    payload = raw[payload_offset : payload_offset + size]
     checksum = int(raw[-1])
-    expected = _msp_checksum(size, command, payload)
+    expected = _msp_checksum(size_marker, command, checksum_payload)
     if checksum != expected:
         raise MSPError("MSP checksum mismatch")
     return MSPFrame(direction=direction, command=command, payload=payload)
@@ -196,6 +206,16 @@ def parse_box_ids(payload: bytes | bytearray) -> tuple[int, ...]:
     if not data:
         raise MSPError("MSP_BOXIDS payload must not be empty")
     return tuple(int(value) for value in data)
+
+
+def parse_box_names(payload: bytes | bytearray) -> tuple[str, ...]:
+    data = bytes(payload)
+    if not data:
+        raise MSPError("MSP_BOXNAMES payload must not be empty")
+    names = tuple(name for name in data.decode("ascii", errors="replace").split(";") if name)
+    if not names:
+        raise MSPError("MSP_BOXNAMES payload contains no names")
+    return names
 
 
 def pack_rc_channels(channels: Sequence[int]) -> bytes:
@@ -337,6 +357,9 @@ class BetaflightMSPAdapter:
     def read_box_ids(self) -> tuple[int, ...]:
         return parse_box_ids(self.request(MSP_BOXIDS).payload)
 
+    def read_box_names(self) -> tuple[str, ...]:
+        return parse_box_names(self.request(MSP_BOXNAMES).payload)
+
     def read_telemetry(
         self,
         *,
@@ -382,11 +405,19 @@ class BetaflightMSPAdapter:
             if len(direction) != 1 or len(size_raw) != 1 or len(command_raw) != 1:
                 return None
             size = int(size_raw[0])
+            jumbo_size_raw = b""
+            if size == 255:
+                jumbo_size_raw = self.transport.read(2)
+                if len(jumbo_size_raw) != 2:
+                    return None
+                size = struct.unpack("<H", jumbo_size_raw)[0]
             payload = self.transport.read(size)
             checksum = self.transport.read(1)
             if len(payload) != size or len(checksum) != 1:
                 return None
-            return decode_msp_frame(b"$M" + direction + size_raw + command_raw + payload + checksum)
+            return decode_msp_frame(
+                b"$M" + direction + size_raw + command_raw + jumbo_size_raw + payload + checksum
+            )
         return None
 
 

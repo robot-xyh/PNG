@@ -9,3 +9,6 @@ Blocks/
 logs/
 datasets/
 .airsim_runtime/
+betaflight_diff_all.txt
+betaflight_dump_all.txt
+BTFL_cli_*.txt

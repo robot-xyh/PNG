@@ -21,9 +21,17 @@ def main() -> None:
     parser.add_argument("--msp-baud", type=int, default=0)
     parser.add_argument("--duration-s", type=float, default=5.0)
     parser.add_argument("--rate-hz", type=float, default=5.0)
-    parser.add_argument("--cli-export", default="", help="Configurator-generated diff all or dump all text file.")
+    parser.add_argument(
+        "--cli-export",
+        default="",
+        help="Legacy alias for one Configurator-generated CLI export; cannot be combined with the explicit options.",
+    )
+    parser.add_argument("--cli-diff-all", default="", help="Configurator-generated 'diff all' text file.")
+    parser.add_argument("--cli-dump-all", default="", help="Configurator-generated 'dump all' text file.")
     parser.add_argument("--output-root", default="logs/betaflight_snapshots")
     args = parser.parse_args()
+    if args.cli_export and (args.cli_diff_all or args.cli_dump_all):
+        parser.error("--cli-export cannot be combined with --cli-diff-all or --cli-dump-all")
 
     config_path = Path(args.config).expanduser()
     config = json.loads(config_path.read_text(encoding="utf-8"))
@@ -41,6 +49,8 @@ def main() -> None:
             duration_s=args.duration_s,
             rate_hz=args.rate_hz,
             cli_export=args.cli_export or None,
+            cli_diff_all=args.cli_diff_all or None,
+            cli_dump_all=args.cli_dump_all or None,
             source_reference=ROOT / "config/betaflight.src-reference.json",
         )
     finally:

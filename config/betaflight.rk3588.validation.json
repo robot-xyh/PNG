@@ -1,8 +1,21 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "validated_on_host_date": "2026-07-11",
   "board_clock_valid": false,
   "repository_commit_deployed": "2f2ee2c",
+  "deployment_overlay": "Snapshot schema v2 files copied from the post-238b8b6 working tree; exact content is bound by deployed_file_hashes.",
+  "clock": {
+    "system_clock_manually_calibrated": true,
+    "calibration_source": "NTP-synchronized workstation",
+    "ntp_service": "chrony",
+    "ntp_synchronized": false,
+    "rtc_device": "rtc-hym8563 6-0051",
+    "rtc_matches_system_date": false,
+    "rtc_date_after_reboot": "2021-01-01",
+    "last_reboot": "2026-07-11 22:16:54 +0800",
+    "ntp_blocker": "The isolated LAN has no reachable DNS, Internet, or NTP source.",
+    "rtc_blocker": "RTC returned to 2021-01-01 after reboot; backup power or boot-time recovery is not reliable."
+  },
   "deployment": {
     "platform": "Orange Pi 5 Max",
     "project_root": "/home/orangepi/png_betaflight_python",
@@ -19,18 +32,114 @@
       0, 1, 2, 5, 3, 6, 27, 11, 46, 7, 13, 15, 19, 20, 26, 30, 32, 33,
       34, 35, 36, 37, 39, 45, 40, 41, 48, 49, 51, 52, 53
     ],
+    "box_names": [
+      "ARM", "ANGLE", "HORIZON", "MAG", "ALTHOLD", "HEADFREE", "FAILSAFE",
+      "POS HOLD", "GPS RESCUE", "HEADADJ", "BEEPER", "LEDLOW", "OSD DISABLE",
+      "TELEMETRY", "BLACKBOX", "FPV ANGLE MIX", "CAMERA CONTROL 1",
+      "CAMERA CONTROL 2", "CAMERA CONTROL 3", "FLIP OVER AFTER CRASH", "PREARM",
+      "GPS BEEP SATELLITE COUNT", "VTX PIT MODE", "PARALYZE", "USER1", "USER2",
+      "VTX CONTROL DISABLE", "LAUNCH CONTROL", "STICK COMMANDS DISABLE", "BEEPER MUTE",
+      "READY"
+    ],
+    "box_id_name_count_match": true,
+    "box_mode_findings": {
+      "51": "STICK COMMANDS DISABLE",
+      "52": "BEEPER MUTE",
+      "53": "READY"
+    },
     "msp_override_permanent_id_expected_from_src": 50,
     "msp_override_available": false
   },
   "snapshot": {
-    "raw_path": "logs/betaflight_snapshots/betaflight_snapshot_20260626_024652",
-    "manifest_sha256": "615ad5620388797a7b27a67d96ff4a70d35c09034a2065205507888d9dbd3e62",
-    "telemetry_sha256": "e67b00a3b542321b436de5a55a4d86217360d3363c3b11957e33c32511e26dbd",
+    "schema_version": 2,
+    "raw_path": "logs/betaflight_snapshots/betaflight_snapshot_20260711_222720",
+    "manifest_sha256": "1e714858710fea7ed1923a1f4d1d7de285b32da14400a26b3089aec97eaa3a8e",
+    "telemetry_sha256": "6539310b11f3334a1da3945b64d23bfe4fdea074fe35da827354b7fb6a02a3ae",
+    "configuration_review_sha256": "69b4e52b043dc9ab8ad67998b8fbb9ce59258ec9aaddefd75dc3398a31e7c113",
     "sample_count": 25,
     "error_count": 0,
     "log_only_ready": true,
     "control_ready": false,
-    "cli_export_provided": false
+    "box_names_read": true,
+    "cli_diff_all_provided": true,
+    "cli_dump_all_provided": true,
+    "configuration_evidence_complete": true
+  },
+  "cli_configuration_audit": {
+    "firmware_header": "Betaflight / STM32H743 (H743) 2025.12.2 MSP API 1.47",
+    "diff_all_sha256": "18b6997c082aad1f22764439c97117c2e212eeb8292c4610a1aaad9ff087dd43",
+    "dump_all_sha256": "7641dd6e158a0fc6ab0cb00bc8710be14cb1d7eeeb2eeba3465e400ff853c73f",
+    "categories_complete": true,
+    "malformed_command_count": 0,
+    "duplicate_assignment_count": 0,
+    "cross_export_conflict_count": 0,
+    "serial_ports": {
+      "VCP": [1, 115200, 57600, 0, 115200],
+      "UART1": [1, 115200, 57600, 0, 115200],
+      "UART2": [131073, 230400, 57600, 0, 115200],
+      "UART3": [2, 115200, 57600, 0, 115200],
+      "UART4": [0, 115200, 57600, 0, 115200],
+      "UART5": [0, 115200, 57600, 0, 115200],
+      "UART6": [64, 115200, 57600, 0, 115200],
+      "UART7": [1024, 115200, 57600, 0, 115200],
+      "UART8": [0, 115200, 57600, 0, 115200]
+    },
+    "receiver": {
+      "provider": "CRSF",
+      "channel_map": "AETR1234",
+      "rx_min_usec": 885,
+      "rx_max_usec": 2115,
+      "mid_rc": 1500,
+      "min_check": 1050,
+      "max_check": 1900
+    },
+    "active_modes": [
+      {"name": "ARM", "rc_channel_one_based": 5, "range_us": [900, 1300]},
+      {"name": "ANGLE", "rc_channel_one_based": 8, "range_us": [1700, 2100]},
+      {"name": "BEEPER", "rc_channel_one_based": 6, "range_us": [1300, 1700]}
+    ],
+    "failsafe": {
+      "delay_deciseconds": 15,
+      "procedure": "DROP",
+      "recovery_delay_deciseconds": 5,
+      "switch_mode": "STAGE1",
+      "throttle_us": 1000,
+      "primary_channels": "AUTO",
+      "aux_channels": "HOLD"
+    },
+    "pid_profile_0": {
+      "roll_pidf": [51, 64, 22, 84],
+      "pitch_pidf": [54, 67, 25, 87],
+      "yaw_pidf": [51, 64, 0, 84],
+      "angle_limit_deg": 60,
+      "motor_output_limit_percent": 100,
+      "thrust_linear": 0
+    },
+    "rate_profile_0": {
+      "type": "BETAFLIGHT",
+      "rc_rate_rpy": [100, 100, 100],
+      "expo_rpy": [0, 0, 0],
+      "super_rate_rpy": [70, 70, 70],
+      "rate_limit_rpy_deg_s": [1998, 1998, 1998],
+      "throttle_limit": "OFF"
+    },
+    "blackbox": {"device": "SDCARD", "mode": "NORMAL", "sample_rate": "1/4"},
+    "battery": {
+      "voltage_meter": "ADC",
+      "current_meter": "ADC",
+      "cell_voltage_min_warning_max_full_cv": [330, 350, 430, 410],
+      "vbat_scale": 211,
+      "ibata_scale": 402
+    },
+    "msp_override": {"channels_mask": 0, "failsafe": "OFF", "box_mode_available": false},
+    "control_mapping_findings": {
+      "python_channel_map_matches_fc": true,
+      "python_aux_enable_channel_conflicts_with_arm": true,
+      "python_override_mask": 15,
+      "fc_override_mask": 0,
+      "betaflight_rate_curve_inversion_required": true,
+      "hover_throttle_still_unvalidated": true
+    }
   },
   "joint_log_only_validation": {
     "raw_csv_path": "logs/src_supplement_validation/src_supplement_20260626_024752.csv",
@@ -65,18 +174,23 @@
   },
   "deployed_file_hashes": {
     "examples/run_betaflight_log_only.py": "b8d8d0ce9e580d1b2574802b737ca606330684b9ca448fbfd206da128d0c77e2",
-    "vision_guidance/betaflight_msp.py": "4422d8030de20a52e8ba72bf112886624d07cee2ee89be5173f785e465c1d13e",
+    "vision_guidance/betaflight_msp.py": "548c295fc78ce459526f0e56101d3509559419ad94f8f0bf3f5b9d1687ef95b0",
     "vision_guidance/betaflight_runtime.py": "4e7650ede301f4312040942cded8fcfcac5a24e27df1631a1d89760db3b7241b",
-    "vision_guidance/betaflight_snapshot.py": "68738889e8e8750e35b27bda3c0db76b880b8e7f31f63eef788eac1ea0182a7f",
+    "vision_guidance/betaflight_snapshot.py": "cdf068b08bbb0dbc75b5b03dd6cfc0baf601f41421debc92cf81c7a1441b612d",
     "config/betaflight.rk3588.example.json": "07f23362369e6f9f9506ab7d30a0ee5a050d84373ecf6d8bda15aeb5a6f2c503",
     "config/betaflight.src-reference.json": "0dc41b6c063abebcf9e4e9a062adc1d441e5ea652884a965c7e87072fa6664ee",
     "deploy/systemd/png-betaflight-log-only.service.in": "73981104fa6aa7ad97ba415fa9e0d39d82b2306b0794d1bbe52324e6c548697c",
-    "tools/install_betaflight_log_only_service.sh": "6402650f53b5a74aeb3cd89a1d273152ba4f256543360abf218027aef6b6a948"
+    "tools/install_betaflight_log_only_service.sh": "6402650f53b5a74aeb3cd89a1d273152ba4f256543360abf218027aef6b6a948",
+    "tools/capture_betaflight_snapshot.py": "fd4e4c66ce6d9ece32ca448d3ec7970a724db4ca6a19b91b3cacfa0cc446443b"
   },
   "control_blockers": [
-    "Betaflight CLI diff all or dump all has not been archived.",
     "Actual BOXIDS does not contain src-assumed MSP OVERRIDE permanent ID 50.",
-    "Source throttle, rate, and channel-order conflicts remain unresolved.",
+    "IDs 51, 52, and 53 are confirmed as other modes and cannot replace ID 50.",
+    "Flight-controller msp_override_channels_mask is zero while the Python candidate mask is 15.",
+    "Python AUX enable uses RC channel 5 high, but RC channel 5 is ARM active-low.",
+    "Betaflight 100/0/70 rate curves have not been inverted or bench calibrated for Python RC mapping.",
+    "Hover throttle and propulsion limits remain unvalidated.",
+    "Chrony has no reachable NTP source and the RTC returned to 2021-01-01 after reboot.",
     "No manual control approval manifest exists.",
     "No-prop RC direction and failsafe injection tests have not been run."
   ]

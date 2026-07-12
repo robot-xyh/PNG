@@ -487,8 +487,9 @@ CPU YOLO 被 fail-fast 阻断。只有在供电稳定性问题关闭并重新做
 - 最终同步后再次完成 5 s、25 行联合短测：控制请求/许可/RC 输出均为 0，MSP、发送、worker
   错误和候选截断均为 0；感知约 27.61 Hz，结果帧龄均值/最大 1.24/11.02 ms，RKNN 总耗时
   均值/最大 5.743/7.531 ms，ByteTrack 均值/最大 0.251/0.343 ms。
-- 板端系统时间不正确，且重启后发生约一小时回跳；日志时间戳不能用于跨设备对齐，需在
-  后续实验前配置 NTP/RTC。板端没有持久化 journal，重启原因缺少内核级证据。
+- 板端系统时间曾不正确且重启后回跳。2026-07-11 从同步工作站校准后，Orange Pi 又于
+  22:16:54 重启，`rtc-hym8563` 回到 2021-01-01；当前系统时间不能证明 RTC 可保持。局域网
+  无外部 NTP 源，`chrony` 未同步，且没有前一 boot journal 可定位重启原因。
 - 非视觉能力补充后完成 60 s、300 行 `LOG_ONLY` 联合验证：RAW RC 尝试/成功计数均为 0，
   MSP、发送、相机、感知 worker 错误均为 0。只读快照确认 `BTFL 25.12.2`/API 1.47，但
   实际 BOXIDS 不含 `src` 假设的 OVERRIDE permanent ID 50，因此控制保持硬阻断。完整脱敏
@@ -509,18 +510,59 @@ python3 examples/run_betaflight_log_only.py \
 ```bash
 python3 tools/capture_betaflight_snapshot.py \
   --config config/betaflight.rk3588.example.json \
-  --duration-s 5 --rate-hz 5
+  --duration-s 5 --rate-hz 5 \
+  --cli-diff-all /path/to/betaflight_diff_all.txt \
+  --cli-dump-all /path/to/betaflight_dump_all.txt
 ```
 
-该工具额外读取 MSP API/FC identity 和 BOXIDS，并将 OVERRIDE permanent ID 50 的可用性、
-遥测样本、错误和 artifact SHA256 写入 `logs/betaflight_snapshots/`。Rate/PID/Failsafe/
-Blackbox 仍须通过 Configurator 人工导出的 `diff all`/`dump all` 补齐。
+CLI 文件必须从 Configurator 人工导出；程序不得自动进入 CLI。schema v2 读取 MSP API、
+FC identity、BOXIDS/BOXNAMES 和时钟状态，解析 Ports、Receiver、Modes、Failsafe、PID、
+Rate、Blackbox、Battery，并将原始文件、`configuration_review.json`、遥测和 SHA256 保存到
+`logs/betaflight_snapshots/`。`--cli-export` 仅用于兼容旧单文件命令。
+
+2026-07-11 实机确认 BOXNAMES 使用 350 字节 MSP v1 jumbo frame。31 个名称与 ID 完整对齐；
+ID 51/52/53 是 `STICK COMMANDS DISABLE`、`BEEPER MUTE`、`READY`，不是缺失的 ID 50。
+因此当前固件不支持 `src` 假设的 MSP OVERRIDE 模式，不能通过猜测其他 ID 解除阻断。
+
+同日完成真实 `diff all`/`dump all` 审计：八类配置与结构均完整，解析错误、重复赋值和
+跨导出冲突均为 0。原始文件和最终 manifest 的 SHA256 见
+`config/betaflight.rk3588.validation.json`。确认的主要参数如下：
+
+- UART1 为 mask 1、115200；UART2 为 mask 131073、230400。RK3588 当前 115200 通路与
+  UART1 配置相容，但仍须通过线束/Ports 页面确认物理 UART，不能仅由 baud 反推。
+- Receiver 为 CRSF、`AETR1234`。ARM=RC5/900--1300 us，ANGLE=RC8/1700--2100 us，
+  BEEPER=RC6/1300--1700 us。
+- Failsafe delay=15（0.1 s 单位）、procedure=`DROP`、throttle=1000 us；主通道为 AUTO，
+  AUX 为 HOLD。必须做无桨接收机断链实测，不能只依据 CLI 宣称 failsafe 已验收。
+- PID profile 0 的 R/P/Y PIDF 分别为 `51/64/22/84`、`54/67/25/87`、`51/64/0/84`。
+  Rate profile 0 为 Betaflight `100/0/70`，RPY rate limit 为 1998 deg/s。
+- Blackbox 为 SDCARD、NORMAL、1/4；电压/电流计均为 ADC，缩放值尚未用功率电池校验。
+
+审计关闭了“缺少 CLI 配置”的 blocker，但没有开放控制。飞控 override mask 为 0 且无
+MSP OVERRIDE mode；Python mask 15 与其不一致。Python AUX gate 当前使用 RC5 高位，而
+RC5 是低位 ARM，两者互斥。Python rate 限值不能直接代表 `100/0/70` 曲线对应的实际角速度；
+完成曲线反算/LUT、无桨方向测试和 hover throttle 标定前必须保持 `control_ready=false`。
+
+### 与 src 实现的差异
+
+Orange Pi 原 `/home/orangepi/src/circle_pilot` 会锁存接管前物理 R/P/Y/T、保留未覆盖 AUX，
+并用 armed、OVERRIDE、状态 watchdog 和新鲜检测联合门控；这些设计已在 Python worker 中
+采用。它还显式把 MSP_RC 的 R/P/Y/T 逻辑顺序转换为 SET_RAW_RC 的 A/E/T/R，和当前
+`AETR1234` 一致。
+
+但 `src` 不能作为当前飞控的可运行解法：ID 50 缺失时它回退到 bit 27，而当前 bit 27 是
+`LAUNCH CONTROL`；它假设 override mask 15，但飞控实际为 0；Rate 只按 100/0/70 中心斜率
+线性近似；hover 参数存在 0.078 与 0.283 冲突。其 dry-run 默认仍回写 RC，也没有电池、
+低电压、NTP/RTC 或 Blackbox 门禁。因此不得用启动 `src` 服务绕过当前 blocker。
 
 验收标准：
 - CSV 中 `telemetry_error` 为空或偶发可解释。
 - `roll_deg/pitch_deg/yaw_deg` 随机体姿态变化。
 - `vbat_v`、`mode_flags`、`sensor_flags`、`rc_in_ch*` 有合理值。
 - `*_meta.json` 中记录到 FC variant/version/API 信息，或明确记录读取错误。
+- manifest 中 `capture.error_count=0`、BOX 名称/ID 数量一致，且所有 artifact 哈希可复算。
+- `clock.ntp_synchronized=true`；仅人工校准 RTC 不等于跨设备对时完成。
+- `clock.rtc_matches_system_date=true`，且至少经过一次断电/重启保持验证。
 
 RK3588 首轮建议把配置另存为未跟踪的 `config/betaflight.rk3588.local.json`，串口使用
 udev 稳定名称。此阶段保持 `rate_gain_matrix` 全零，不传 `--allow-control`。

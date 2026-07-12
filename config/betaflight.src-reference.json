@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "runtime_loadable": false,
   "captured_on": "2026-07-11",
   "source": {
@@ -16,9 +16,14 @@
     "config/strike_png_bf_flight_high_speed.yaml": "8795d703e1f60e4ebcb7e5d68e47865e7545098d0f9038f92ba2ef9dcc9b7510",
     "adapters/bf/common/include/circle/bf/msp_client.hpp": "af86505fb6e1e5e6366d18036a3e8fb43c8a0e3037c5a8707289efabbf832e96",
     "adapters/bf/common/src/msp_client.cpp": "114dce7b2d28746133520648377b3a29ab100ef226c929ba748a5d3e67017d4c",
+    "adapters/bf/common/include/circle/bf/bf_fc_adapters.hpp": "859f7b4790c60bd861e89e267ba2bae66cc4d5cc997330ab0dfa0f1ddf1b63e8",
+    "adapters/bf/common/src/bf_fc_adapters.cpp": "65652f2ee714424a6e6ba8ceb337cdbea548857f905185ae598c554901ef6a2f",
     "adapters/bf/common/src/bf_rc_mapper.cpp": "74e17222c970021018c38a41225694cf75c6af47dccb5c61cb365f366bb3e840",
+    "adapters/bf/common/src/logger.cpp": "4fbe008f22cb2fa132ac239df7121b357e309121b5581f97ec71e3cb247b2a98",
     "adapters/bf/bf_runtime/src/bf_gating.cpp": "6681c009b5fc8bccb357c29533714f72340e4a51b930f09ff5b2be55df4b630f",
     "adapters/bf/bf_runtime/src/bf_control_host.cpp": "35173d67246d61100ee73c680a2f55a7f5d3610671a33674b7e984b04180bfa9",
+    "adapters/bf/tests/bf_runtime_test.cpp": "483a7cfac849638fb06aeb505111c9f47bfc995c51b2118a5a82727b25d9ff78",
+    "core/include/circle/types/time.hpp": "aee461c4c5ffc75c2a1f65e57178b9c4cdfcdb9269a4b6f71af4999b8e4fed66",
     "adapters/bf/systemd/bf_flight.service.in": "c58fe37d6a0e6a23f22782c93434324421101e6939534db486b0b5eed0417304",
     "adapters/bf/systemd/bf_deploy.sh": "17e6243ac5be9bc24de9c17f4d4d7ca7a8112f545e9658671bcb37a5bd4bef02"
   },
@@ -32,6 +37,7 @@
       "status_poll_divisor": 5,
       "override_grace_hold_s": 0.35,
       "override_mode_permanent_id": 50,
+      "override_mode_flag_fallback": 134217728,
       "override_channels_mask": 15,
       "passthrough_channel_count": 16
     },
@@ -43,7 +49,8 @@
       "engage_detection_fresh_timeout_s": 0.3
     },
     "rc": {
-      "channel_order": "AETR",
+      "msp_rc_logical_order": "RPYT",
+      "set_raw_rc_wire_order": "AETR",
       "roll_channel_zero_based": 0,
       "pitch_channel_zero_based": 1,
       "yaw_channel_zero_based": 2,
@@ -83,15 +90,38 @@
       }
     }
   },
-  "conflicts": [
+  "mitigations": [
+    "Algorithm output requires armed, MSP OVERRIDE active, fresh state, fresh detection, and a healthy watchdog.",
+    "Only mask bits 0-3 are algorithm-owned; ARM and other AUX values are copied from the physical receiver.",
+    "Physical R/P/Y/T values are latched on override entry and used for hold and throttle handover.",
+    "MSP_RC logical RPYT channels are explicitly converted to SET_RAW_RC AETR wire order.",
+    "Control timing and freshness use steady_clock and are not affected by RTC jumps."
+  ],
+  "remaining_risks": [
     "Default PNG throttle 0.078/0.082 conflicts with low/mid/high 0.283/0.50.",
     "Active RC max rate 3.491 rad/s conflicts with bf_runtime_test expectation 5.236 rad/s.",
-    "Source comments say AETR while active indices are roll=0,pitch=1,yaw=2,throttle=3; channel order requires bench confirmation.",
+    "The current Betaflight 100/0/70 rate profile matches the source center-slope assumption, but the source still uses a linear approximation instead of exact curve inversion.",
     "Source flight profiles set dry_run=false and are not safe deployment defaults.",
-    "Source has no Betaflight CLI dump, Blackbox file, or calibration provenance."
+    "Source dry_run defaults to MSP_RC passthrough and can still send MSP_SET_RAW_RC.",
+    "When permanent ID 50 is absent, source falls back to mode flag 0x08000000; on the actual BOXIDS this is index 27, LAUNCH CONTROL, not MSP OVERRIDE.",
+    "Source assumes override mask 15 but does not verify the actual flight-controller msp_override_channels_mask, which is zero.",
+    "Source has no voltage/current polling, low-voltage gate, NTP/RTC setup, Betaflight CLI dump, Blackbox file, or calibration provenance.",
+    "Runtime uses monotonic time, but human-readable logs use system_clock and can show incorrect wall time.",
+    "Existing bf_runtime_test currently fails two stale 5.236 rad/s expectations."
   ],
+  "actual_fc_compatibility": {
+    "box_id_50_present": false,
+    "fallback_mode_bit_index": 27,
+    "fallback_mode_permanent_id": 49,
+    "fallback_mode_name": "LAUNCH CONTROL",
+    "flight_controller_override_channels_mask": 0,
+    "source_override_channels_mask": 15,
+    "channel_order_conversion_matches_aetr1234": true,
+    "rate_profile_matches_source_scheme_c": true,
+    "safe_to_run_live": false
+  },
   "approval": {
     "parameters_approved_for_control": false,
-    "reason": "Source values are uncalibrated and internally inconsistent."
+    "reason": "Source has useful fail-closed gates and physical AUX preservation, but is incompatible with the actual OVERRIDE mode/mask and retains uncalibrated throttle/rate parameters."
   }
 }

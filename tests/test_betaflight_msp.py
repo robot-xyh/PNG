@@ -7,6 +7,7 @@ from vision_guidance.betaflight_msp import (
     MSP_ANALOG,
     MSP_API_VERSION,
     MSP_ATTITUDE,
+    MSP_BOXNAMES,
     MSP_RC,
     MSP_SET_RAW_RC,
     MSP_STATUS,
@@ -19,6 +20,7 @@ from vision_guidance.betaflight_msp import (
     parse_api_version,
     parse_attitude,
     parse_box_ids,
+    parse_box_names,
     parse_rc_channels,
     parse_status,
 )
@@ -67,6 +69,19 @@ class BetaflightMSPTest(unittest.TestCase):
         with self.assertRaisesRegex(MSPError, "checksum"):
             decode_msp_frame(frame)
 
+    def test_decodes_msp_v1_jumbo_frame(self):
+        payload = (b"ARM;ANGLE;" * 35)[:350]
+        size_raw = struct.pack("<H", len(payload))
+        checksum = 255 ^ MSP_BOXNAMES
+        for value in size_raw + payload:
+            checksum ^= value
+        frame = b"$M>" + bytes([255, MSP_BOXNAMES]) + size_raw + payload + bytes([checksum])
+
+        decoded = decode_msp_frame(frame)
+
+        self.assertEqual(decoded.command, MSP_BOXNAMES)
+        self.assertEqual(decoded.payload, payload)
+
     def test_parses_common_telemetry_payloads(self):
         api = parse_api_version(b"\x00\x02\x05")
         self.assertEqual((api.protocol_version, api.api_major, api.api_minor), (0, 2, 5))
@@ -93,10 +108,31 @@ class BetaflightMSPTest(unittest.TestCase):
         self.assertEqual(rc, (1000, 1500, 1600, 2000))
 
         self.assertEqual(parse_box_ids(bytes([0, 1, 50, 27])), (0, 1, 50, 27))
+        self.assertEqual(parse_box_names(b"ARM;ANGLE;MSP OVERRIDE;"), ("ARM", "ANGLE", "MSP OVERRIDE"))
 
     def test_box_ids_rejects_empty_payload(self):
         with self.assertRaisesRegex(MSPError, "must not be empty"):
             parse_box_ids(b"")
+
+        with self.assertRaisesRegex(MSPError, "must not be empty"):
+            parse_box_names(b"")
+
+    def test_adapter_reads_box_names(self):
+        response = encode_msp_frame(MSP_BOXNAMES, b"ARM;ANGLE;", direction=">")
+        adapter = BetaflightMSPAdapter("/dev/null", transport=FakeTransport([response]))
+
+        self.assertEqual(adapter.read_box_names(), ("ARM", "ANGLE"))
+
+    def test_adapter_reads_jumbo_box_names(self):
+        payload = b";".join(f"MODE{index}".encode("ascii") for index in range(50)) + b";"
+        size_raw = struct.pack("<H", len(payload))
+        checksum = 255 ^ MSP_BOXNAMES
+        for value in size_raw + payload:
+            checksum ^= value
+        response = b"$M>" + bytes([255, MSP_BOXNAMES]) + size_raw + payload + bytes([checksum])
+        adapter = BetaflightMSPAdapter("/dev/null", transport=FakeTransport([response]))
+
+        self.assertEqual(len(adapter.read_box_names()), 50)
 
     def test_adapter_request_writes_command_and_reads_response(self):
         response = encode_msp_frame(MSP_API_VERSION, b"\x00\x02\x01", direction=">")
