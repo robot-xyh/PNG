@@ -154,7 +154,7 @@ Baseline upward-camera YOLO+ByteTrack closed-loop with target S maneuver: ranges
 
 #### 3. 总览图
 
-![summary](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/summary_upward_baseline_s_maneuver_30_50_20260701_231523.png)
+![summary](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/summary_upward_baseline_s_maneuver_30_50_20260701_231523.png)
 
 #### 4. 汇总表
 
@@ -182,11 +182,11 @@ Baseline upward-camera YOLO+ByteTrack closed-loop with target S maneuver: ranges
 
 每个距离一张图，包含真实中心距离、真实 LOS 与 YOLO 检测 LOS 分量、bbox 面积、TTC 估计、实际过载/需用过载和检测 FPS。
 
-![30m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_030m.png)
-![35m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_035m.png)
-![40m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_040m.png)
-![45m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_045m.png)
-![50m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_050m.png)
+![30m](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_030m.png)
+![35m](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_035m.png)
+![40m](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_040m.png)
+![45m](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_045m.png)
+![50m](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_050m.png)
 
 #### 7. LOS KF 与失败原因诊断
 
@@ -211,7 +211,7 @@ Baseline upward-camera YOLO+ByteTrack closed-loop with target S maneuver: ranges
 
 #### 8. 相机光心真值影子测试诊断
 
-![shadow_summary](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/shadow_summary_upward_baseline_s_maneuver_30_50_20260701_231523.png)
+![shadow_summary](../完整方案/assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/shadow_summary_upward_baseline_s_maneuver_30_50_20260701_231523.png)
 
 影子测试不参与导引，只用日志中的相机光心 `camera_world_*` 与目标真值位置离线计算经典 `N*Vc` 和固定 `N*Vm` PNG 理论需用过载，并和视觉 LOS、检测连续性对齐。
 
@@ -401,7 +401,7 @@ thrust_raw = mass * dot(required_specific_force_I, z_B_I) / max_total_thrust
 |M14|55|15|20|7.0|2.0|`upward_yolo_matrix15_20260701_202024_M14`|`ok`|
 |M15|25|20|40|3.0|2.0|`upward_yolo_matrix15_20260701_202024_M15`|`ok`|
 
-![matrix15_parameters](assets/YOLO_ByteTrack_upward_matrix15_多工况性能测试报告/matrix15_parameters.png)
+![matrix15_parameters](../完整方案/assets/YOLO_ByteTrack_upward_matrix15_多工况性能测试报告/matrix15_parameters.png)
 
 #### 3. 总体结果
 
@@ -410,7 +410,7 @@ thrust_raw = mass * dot(required_specific_force_I, z_B_I) / max_total_thrust
 |TTC|12/15|8/15|3|0.95-58.43|70.5|9.27|
 |VM|5/15|3/15|10|1.19-9.42|53.3|8.84|
 
-![matrix15_summary](assets/YOLO_ByteTrack_upward_matrix15_多工况性能测试报告/matrix15_summary.png)
+![matrix15_summary](../完整方案/assets/YOLO_ByteTrack_upward_matrix15_多工况性能测试报告/matrix15_summary.png)
 
 #### 4. 明细结果
 

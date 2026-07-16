@@ -50,7 +50,15 @@
   - `logs/yolo_sitl_ttc_vm/yolo_sitl_*_upward_final_yolo_35_40_20260628_173525_r*_h30.csv`
   - `logs/yolo_sitl_ttc_vm/yolo_sitl_*_upward_final_yolo_more_20260628_174009_r*_h30.csv`
 
-## 5. 复现实验命令
+## 5. 直线目标成功案例 3D 轨迹
+
+下图使用 YOLO+ByteTrack 闭环日志中的拦截机与目标真值位置绘制，目标为 world/NED `+Y` 方向直线运动，速度 `5 m/s`。Z 轴显示为 `Altitude=-z`；红色星标为碰撞时两机中心点中点，红色虚线为碰撞帧两机中心连线。
+
+![TTC 30m straight trajectory](../完整方案/assets/upward_camera_yolo_bytetrack_baseline/3d_trajectories/trajectory_3d_straight_TTC_30m_hit.png)
+
+![TTC 35m straight trajectory](../完整方案/assets/upward_camera_yolo_bytetrack_baseline/3d_trajectories/trajectory_3d_straight_TTC_35m_hit.png)
+
+## 6. 复现实验命令
 
 运行前先检查端口和残留进程：
 
@@ -93,7 +101,7 @@ ASSET_DIR="$PWD/完整方案/assets/YOLO_ByteTrack_upward_final_more_25_30_45_50
 bash run_upward_body_rate_ttc_vm_smoke.sh
 ```
 
-## 6. 使用规则
+## 7. 使用规则
 
 - 后续改动必须至少报告 TTC 和 VM 的 25/30/35/40/45/50m collision 命中率。
 - VM 的 near-hit 不计成功；只有 AirSim collision 才算命中。
