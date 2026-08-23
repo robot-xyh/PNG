@@ -98,6 +98,14 @@ Baseline upward-camera YOLO+ByteTrack closed-loop with target S maneuver: ranges
 ![45m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_045m.png)
 ![50m](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/yolo_sitl_ttc_vm_050m.png)
 
+### 6.1 成功案例 3D 轨迹
+
+S 机动批次中，碰撞命中案例为 TTC 30m 和 TTC 35m。下图使用日志中的拦截机与目标真值位置绘制，Z 轴显示为 `Altitude=-z`；红色星标为碰撞时两机中心点中点，红色虚线为碰撞帧两机中心连线。
+
+![TTC 30m 3D trajectory](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/3d_trajectories/trajectory_3d_TTC_30m_hit.png)
+
+![TTC 35m 3D trajectory](assets/YOLO_ByteTrack_upward_baseline_S机动_30_50测试报告/3d_trajectories/trajectory_3d_TTC_35m_hit.png)
+
 ## 7. LOS KF 与失败原因诊断
 
 |组别|距离m|最近距离m|最近点状态|主要失败/降级原因|检测率|有效率|
