@@ -1,0 +1,10 @@
+--extra-index-url https://download.pytorch.org/whl/cu126
+torch==2.7.1+cu126
+torchvision==0.22.1+cu126
+ultralytics==8.3.170
+numpy==1.26.4
+opencv-python==4.10.0.84
+lapx==0.5.11
+matplotlib==3.8.4
+pymavlink==2.4.49
+airsim==1.8.1

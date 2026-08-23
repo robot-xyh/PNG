@@ -1,0 +1,49 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/main/docs/settings_json.md",
+  "SettingsVersion": 1.2,
+  "SimMode": "Multirotor",
+  "ApiServerPort": 41451,
+  "ClockType": "ScalableClock",
+  "ClockSpeed": 1.0,
+  "ViewMode": "NoDisplay",
+  "OriginGeopoint": {
+    "Latitude": 47.641468,
+    "Longitude": -122.140165,
+    "Altitude": 122.0
+  },
+  "CameraDefaults": {
+    "Pitch": -90,
+    "Roll": 0,
+    "Yaw": 0,
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 640,
+        "Height": 480,
+        "FOV_Degrees": 120,
+        "MotionBlurAmount": 0
+      }
+    ]
+  },
+  "SubWindows": [
+    {"WindowID": 0, "CameraName": "0", "ImageType": 0, "Visible": false, "External": false}
+  ],
+  "Vehicles": {
+    "Interceptor": {
+      "VehicleType": "SimpleFlight",
+      "DefaultVehicleState": "Armed",
+      "AutoCreate": true,
+      "EnableCollisionPassthrogh": false,
+      "EnableCollisions": true,
+      "AllowAPIAlways": true,
+      "EnableTrace": false,
+      "X": 200,
+      "Y": 0,
+      "Z": -5,
+      "IsFpvVehicle": true,
+      "Cameras": {
+        "0": {"X": 0, "Y": 0, "Z": 0, "Pitch": -90, "Roll": 0, "Yaw": 0}
+      }
+    }
+  }
+}
