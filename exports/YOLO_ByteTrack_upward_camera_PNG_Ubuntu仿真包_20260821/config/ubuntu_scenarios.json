@@ -1,0 +1,109 @@
+{
+  "schema_version": 1,
+  "airsim_rpc_host": "127.0.0.2",
+  "px4_tag": "v1.11.3",
+  "blocks_relative_path": "runtime/Blocks/LinuxBlocks1.8.1/LinuxNoEditor/Blocks.sh",
+  "settings": {
+    "fast": "config/airsim_blocks_simpleflight_actor_upward_ubuntu.json",
+    "sitl": "config/airsim_blocks_px4_actor_upward_ubuntu.json"
+  },
+  "blocks_args": ["-RenderOffscreen", "-NoSplash", "-NoVSync", "-BENCHMARK", "-FPS=60", "-nohmd"],
+  "presets": {
+    "smoke": {
+      "fast": {"scenario_ids": ["M01", "S35"], "repeats": 1},
+      "sitl": {"scenario_ids": ["M01"], "repeats": 1}
+    },
+    "standard": {
+      "fast": {"scenario_ids": ["M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08", "M09", "M10", "M11", "M12", "M13", "M14", "M15", "S30", "S35", "S40", "S45", "S50"], "repeats": 3},
+      "sitl": {"scenario_ids": ["M01", "M05", "M10", "M14", "S35", "S40"], "repeats": 2}
+    },
+    "overnight": {
+      "fast": {"scenario_ids": ["M01", "M02", "M03", "M04", "M05", "M06", "M07", "M08", "M09", "M10", "M11", "M12", "M13", "M14", "M15", "S30", "S35", "S40", "S45", "S50"], "repeats": 10},
+      "sitl": {"scenario_ids": ["M01", "M05", "M10", "M14", "S35", "S40"], "repeats": 5}
+    }
+  },
+  "thresholds": {
+    "fast": {"min_frames": 20, "min_detector_fps": 18.0, "min_loop_fps": 15.0, "min_sim_clock_ratio": 0.75, "max_deadline_miss_ratio": 0.35, "timeout_s": 150},
+    "sitl": {"min_frames": 20, "min_detector_fps": 10.0, "min_loop_fps": 6.5, "min_sim_clock_ratio": 0.65, "max_deadline_miss_ratio": 0.60, "timeout_s": 240}
+  },
+  "runner_common_args": [
+    "--enable-motion", "--intruder", "Intruder", "--intruder-actor", "--intruder-actor-name", "IntruderActor",
+    "--intruder-actor-asset", "1M_Cube_Chamfer", "--intruder-actor-scale", "1.5", "--intruder-actor-respawn",
+    "--mesh", "IntruderActor", "--speed-ratio", "2.0", "--intercept-altitude-m", "50",
+    "--camera-x", "0", "--camera-y", "0", "--camera-z", "0", "--camera-pitch-deg", "-90",
+    "--camera-roll-deg", "0", "--camera-yaw-deg", "0", "--upward-centering",
+    "--upward-centering-gain", "8.0", "--upward-centering-max-accel-mps2", "4.0",
+    "--detector-source", "yolo_bytetrack", "--yolo-class-id", "0", "--yolo-conf", "0.05", "--yolo-iou", "0.70",
+    "--yolo-imgsz", "640", "--yolo-device", "0", "--yolo-tracker", "bytetrack.yaml", "--yolo-allow-untracked-fallback",
+    "--yolo-single-target-mode", "--yolo-single-target-max-center-jump-px", "360", "--airsim-image-transport", "raw",
+    "--yolo-half", "--yolo-warmup-iterations", "2", "--no-shadow-airsim-detect", "--los-filter",
+    "--los-filter-process-lambda", "5e-4", "--los-filter-process-lambda-dot", "2e-2",
+    "--los-filter-measurement-noise", "8e-3", "--los-filter-innovation-reject", "0.75",
+    "--los-filter-terminal-innovation-reject", "1.20", "--los-delay-compensation-s", "0.18",
+    "--frame-guard", "--frame-guard-enter-error-ratio", "0.70", "--frame-guard-exit-error-ratio", "0.45",
+    "--frame-guard-area-mid-ratio", "0.004", "--frame-guard-area-ratio", "0.018",
+    "--frame-guard-ttc-mid-s", "1.6", "--frame-guard-ttc-terminal-s", "0.7",
+    "--frame-guard-min-speed-ratio", "1.80", "--frame-guard-mid-speed-ratio", "2.00",
+    "--frame-guard-lateral-scale", "0.85", "--frame-guard-vertical-scale", "1.00",
+    "--frame-centering", "--frame-centering-enter-error-ratio", "0.62",
+    "--frame-centering-terminal-error-ratio", "0.85", "--frame-centering-area-ratio", "0.020",
+    "--frame-centering-loss-hold-s", "1.10", "--frame-centering-speed-ratio", "2.00",
+    "--terminal-capture-speed-ratio", "1.80", "--frame-centering-min-forward-ratio", "0.70",
+    "--frame-centering-max-lateral-speed", "2.50", "--terminal-capture-max-lateral-speed", "1.50",
+    "--frame-centering-lateral-scale", "0.40", "--terminal-capture-lateral-scale", "0.25",
+    "--frame-centering-loss-hold-last-velocity", "--yaw-control", "--yaw-error-gain", "1.6", "--max-yaw-rate-deg", "60",
+    "--ttc-soft-guidance", "--terminal-extrapolation", "--terminal-enter-area-ratio", "0.008",
+    "--terminal-soft-enter-area-ratio", "0.004", "--terminal-cutoff-area-ratio", "0.030",
+    "--terminal-cutoff-miss-count", "1", "--terminal-min-tracking-time-s", "0.10",
+    "--terminal-confidence-min-score", "0.20", "--terminal-max-measurement-age-s", "0.25",
+    "--terminal-blind-duration-s", "1.0", "--terminal-command-average-window-s", "0.35",
+    "--terminal-command-decay-tau-s", "0.60", "--no-terminal-velocity-blind-push", "--terminal-accel-hold",
+    "--terminal-blind-requires-visual-loss", "--terminal-clipped-los-kf-predict",
+    "--terminal-accel-hold-window-s", "0.35", "--terminal-accel-decay-tau-s", "0.60",
+    "--terminal-accel-hold-max-mps2", "20.0", "--terminal-image-kf", "--terminal-image-kf-max-predict-s", "1.0",
+    "--terminal-image-kf-innovation-reject-rad", "0.35", "--terminal-image-kf-max-rate-rad-s", "12.0",
+    "--terminal-image-kf-soft-reject-predict", "--terminal-image-kf-guidance", "--diagnostic-truth",
+    "--no-show-window", "--no-record-preview", "--preview-max-frames", "0", "--no-plot", "--print-every-n", "0"
+  ],
+  "runner_tier_args": {
+    "fast": [
+      "--rate-hz", "20", "--guidance-output-mode", "accel_integral", "--max-guidance-accel-mps2", "20.0",
+      "--min-speed-ratio", "0.60", "--intercept-altitude-m", "5", "--no-climb-to-altitude",
+      "--start-geometry-settle-s", "0.2", "--reset"
+    ],
+    "sitl": [
+      "--rate-hz", "8", "--px4-interceptor", "--no-reset", "--px4-command-mode", "mavlink_body_rate",
+      "--guidance-output-mode", "accel_body_rate", "--max-guidance-accel-mps2", "20.0",
+      "--thrust-model", "empirical", "--body-rate-hover-thrust", "0.5", "--body-rate-thrust-gain", "0.5",
+      "--body-rate-min-thrust", "0.25", "--body-rate-max-thrust", "0.85", "--body-rate-max-tilt-deg", "35",
+      "--body-rate-max-roll-rate-deg", "120", "--body-rate-max-pitch-rate-deg", "120",
+      "--body-rate-speed-hold-gain", "1.2", "--body-rate-speed-hold-max-accel-mps2", "8.0",
+      "--body-rate-total-accel-limit-mps2", "28.0", "--px4-max-vertical-speed", "6.0",
+      "--max-vision-lateral-speed", "6.0", "--max-vision-vertical-speed", "6.0", "--climb-timeout-s", "90",
+      "--no-px4-command-join", "--min-command-duration-s", "0.12", "--command-duration-margin-s", "0.04",
+      "--max-command-duration-s", "0.25"
+    ]
+  },
+  "scenarios": [
+    {"id": "M01", "range_m": 40, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M02", "range_m": 25, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M03", "range_m": 55, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M04", "range_m": 40, "lateral_m": 0, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M05", "range_m": 40, "lateral_m": -20, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M06", "range_m": 40, "lateral_m": 20, "height_m": 30, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M07", "range_m": 40, "lateral_m": -10, "height_m": 20, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M08", "range_m": 40, "lateral_m": -10, "height_m": 40, "speed_mps": 5, "maneuver": "straight"},
+    {"id": "M09", "range_m": 30, "lateral_m": -10, "height_m": 30, "speed_mps": 3, "maneuver": "straight"},
+    {"id": "M10", "range_m": 30, "lateral_m": -10, "height_m": 30, "speed_mps": 7, "maneuver": "straight"},
+    {"id": "M11", "range_m": 50, "lateral_m": -10, "height_m": 30, "speed_mps": 3, "maneuver": "straight"},
+    {"id": "M12", "range_m": 50, "lateral_m": -10, "height_m": 30, "speed_mps": 7, "maneuver": "straight"},
+    {"id": "M13", "range_m": 45, "lateral_m": -20, "height_m": 40, "speed_mps": 7, "maneuver": "straight"},
+    {"id": "M14", "range_m": 55, "lateral_m": 15, "height_m": 20, "speed_mps": 7, "maneuver": "straight"},
+    {"id": "M15", "range_m": 25, "lateral_m": 20, "height_m": 40, "speed_mps": 3, "maneuver": "straight"},
+    {"id": "S30", "range_m": 30, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "sine_s", "amplitude_m": 4, "period_s": 8},
+    {"id": "S35", "range_m": 35, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "sine_s", "amplitude_m": 4, "period_s": 8},
+    {"id": "S40", "range_m": 40, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "sine_s", "amplitude_m": 4, "period_s": 8},
+    {"id": "S45", "range_m": 45, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "sine_s", "amplitude_m": 4, "period_s": 8},
+    {"id": "S50", "range_m": 50, "lateral_m": -10, "height_m": 30, "speed_mps": 5, "maneuver": "sine_s", "amplitude_m": 4, "period_s": 8}
+  ]
+}
