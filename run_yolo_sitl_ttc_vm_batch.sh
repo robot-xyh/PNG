@@ -268,9 +268,21 @@ fi
 
 mkdir -p "$LOG_DIR" "$TRAJECTORY_DIR"
 
+KEEP_SIM_AFTER_RUN="${KEEP_SIM_AFTER_RUN:-0}"
+SHOW_WINDOW="${SHOW_WINDOW:-0}"
+WINDOW_SCALE="${WINDOW_SCALE:-0.75}"
+BLOCKS_ARGS="${BLOCKS_ARGS:-}"
+
 stop_sim() {
   pkill -f 'Blocks/Binaries/Linux/Blocks|Blocks.sh|px4-simulator|PX4-Autopilot.*px4|sitl_run.sh|make px4_sitl_default|cmake --build .*/px4_sitl_default' 2>/dev/null || true
   sleep 2
+}
+
+cleanup_on_exit() {
+  if [[ "$KEEP_SIM_AFTER_RUN" == "1" || "$KEEP_SIM_AFTER_RUN" == "true" || "$KEEP_SIM_AFTER_RUN" == "TRUE" ]]; then
+    return 0
+  fi
+  stop_sim
 }
 
 wait_for_px4() {
@@ -332,14 +344,28 @@ start_stack() {
   AIRSIM_RUNTIME_ENV="$LOG_DIR/airsim_${run_tag}.env"
   CURRENT_AIRSIM_SETTINGS_PATH="$SETTINGS_PATH"
 
-  stop_sim
+  if [[ "$KEEP_SIM_AFTER_RUN" != "1" && "$KEEP_SIM_AFTER_RUN" != "true" && "$KEEP_SIM_AFTER_RUN" != "TRUE" ]]; then
+    stop_sim
+  fi
   echo "Starting PX4 SITL for ${run_tag}"
-  script -q -f -c "$SCRIPT_DIR/run_px4_sitl.sh" "$PX4_LOG" >/dev/null 2>&1 &
+  if [[ "$KEEP_SIM_AFTER_RUN" == "1" || "$KEEP_SIM_AFTER_RUN" == "true" || "$KEEP_SIM_AFTER_RUN" == "TRUE" ]]; then
+    nohup script -q -f -c "$SCRIPT_DIR/run_px4_sitl.sh" "$PX4_LOG" >/dev/null 2>&1 &
+  else
+    script -q -f -c "$SCRIPT_DIR/run_px4_sitl.sh" "$PX4_LOG" >/dev/null 2>&1 &
+  fi
   PX4_PID=$!
   wait_for_px4 "$PX4_LOG"
 
   echo "Starting Blocks for ${run_tag}"
-  AIRSIM_PORT_ENV_PATH="$AIRSIM_RUNTIME_ENV" AIRSIM_INSTANCE_LABEL="$run_tag" SETTINGS_PATH="$SETTINGS_PATH" "$SCRIPT_DIR/run_blocks_px4_actor.sh" >"$BLOCKS_LOG" 2>&1 &
+  local blocks_args=()
+  if [[ -n "$BLOCKS_ARGS" ]]; then
+    read -r -a blocks_args <<<"$BLOCKS_ARGS"
+  fi
+  if [[ "$KEEP_SIM_AFTER_RUN" == "1" || "$KEEP_SIM_AFTER_RUN" == "true" || "$KEEP_SIM_AFTER_RUN" == "TRUE" ]]; then
+    nohup env AIRSIM_PORT_ENV_PATH="$AIRSIM_RUNTIME_ENV" AIRSIM_INSTANCE_LABEL="$run_tag" SETTINGS_PATH="$SETTINGS_PATH" "$SCRIPT_DIR/run_blocks_px4_actor.sh" "${blocks_args[@]}" >"$BLOCKS_LOG" 2>&1 &
+  else
+    AIRSIM_PORT_ENV_PATH="$AIRSIM_RUNTIME_ENV" AIRSIM_INSTANCE_LABEL="$run_tag" SETTINGS_PATH="$SETTINGS_PATH" "$SCRIPT_DIR/run_blocks_px4_actor.sh" "${blocks_args[@]}" >"$BLOCKS_LOG" 2>&1 &
+  fi
   BLOCKS_PID=$!
   wait_for_airsim "$AIRSIM_RUNTIME_ENV"
   if [[ -f "$AIRSIM_RUNTIME_ENV" ]]; then
@@ -438,6 +464,10 @@ run_case() {
   local upward_centering_args=(--no-upward-centering)
   if [[ "$UPWARD_CENTERING" == "1" || "$UPWARD_CENTERING" == "true" || "$UPWARD_CENTERING" == "TRUE" ]]; then
     upward_centering_args=(--upward-centering)
+  fi
+  local window_args=(--no-show-window --no-record-preview --preview-max-frames 0)
+  if [[ "$SHOW_WINDOW" == "1" || "$SHOW_WINDOW" == "true" || "$SHOW_WINDOW" == "TRUE" ]]; then
+    window_args=(--show-window --window-scale "$WINDOW_SCALE" --no-record-preview --preview-max-frames 0)
   fi
   local frame_centering_args=(--no-frame-centering)
   if [[ "$FRAME_CENTERING" == "1" || "$FRAME_CENTERING" == "true" || "$FRAME_CENTERING" == "TRUE" ]]; then
@@ -541,9 +571,7 @@ run_case() {
     --trajectory-dir "$TRAJECTORY_DIR" \
     --trajectory-prefix "$prefix" \
     --settings-path "${CURRENT_AIRSIM_SETTINGS_PATH:-$SETTINGS_PATH}" \
-    --no-show-window \
-    --no-record-preview \
-    --preview-max-frames 0 \
+    "${window_args[@]}" \
     --no-plot \
     --print-every-n 0 \
     --reset \
@@ -693,7 +721,9 @@ PY
     echo "case_failed label=${label} range=${range_m}m rc=${rc} reason=blocks_crash log=${BLOCKS_LOG}" >&2
   fi
 
-  stop_sim
+  if [[ "$KEEP_SIM_AFTER_RUN" != "1" && "$KEEP_SIM_AFTER_RUN" != "true" && "$KEEP_SIM_AFTER_RUN" != "TRUE" ]]; then
+    stop_sim
+  fi
   if [[ "$rc" -ne 0 ]]; then
     echo "case_failed label=${label} range=${range_m}m rc=${rc} timeout_s=${CASE_TIMEOUT_S}" >&2
   fi
@@ -708,7 +738,7 @@ summarize_label() {
     --summarize-prefix "$prefix"
 }
 
-trap stop_sim EXIT
+trap cleanup_on_exit EXIT
 
 echo "YOLO SITL TTC/Vm stamp: ${STAMP}"
 echo "Ranges: ${RANGES[*]}"

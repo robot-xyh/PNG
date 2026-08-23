@@ -1,0 +1,54 @@
+{
+  "SeeDocsAt": "https://github.com/Microsoft/AirSim/blob/main/docs/settings_json.md",
+  "SettingsVersion": 1.2,
+  "SimMode": "ComputerVision",
+  "ClockSpeed": 1.0,
+  "ViewMode": "Fpv",
+  "OriginGeopoint": {
+    "Latitude": 47.641468,
+    "Longitude": -122.140165,
+    "Altitude": 122.0
+  },
+  "CameraDirector": {
+    "FollowDistance": -45,
+    "X": -35,
+    "Y": -20,
+    "Z": -18,
+    "Pitch": -15,
+    "Roll": 0,
+    "Yaw": 25
+  },
+  "SubWindows": [
+    {
+      "WindowID": 0,
+      "CameraName": "0",
+      "ImageType": 0,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 1,
+      "CameraName": "0",
+      "ImageType": 0,
+      "Visible": false,
+      "External": false
+    },
+    {
+      "WindowID": 2,
+      "CameraName": "0",
+      "ImageType": 0,
+      "Visible": false,
+      "External": false
+    }
+  ],
+  "CameraDefaults": {
+    "CaptureSettings": [
+      {
+        "ImageType": 0,
+        "Width": 1280,
+        "Height": 720,
+        "FOV_Degrees": 90
+      }
+    ]
+  }
+}
