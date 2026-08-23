@@ -72,6 +72,23 @@ python3 -m unittest discover -s tests -v
 python3 examples/run_synthetic.py
 ```
 
+## uv Environment
+
+Use `uv` with Python 3.10 for simulation and YOLO training:
+
+```bash
+uv venv --python 3.10
+uv sync --group sim
+uv run python examples/check_yolo_training_env.py
+```
+
+For GPU training with YOLOv8 and ByteTrack:
+
+```bash
+uv sync --group sim --group train
+uv run python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
+```
+
 ## AirSim Blocks Example
 
 The AirSim path uses the built-in detection API by default. It only converts
@@ -83,9 +100,14 @@ YOLOv8 + ByteTrack, asynchronous YOLOv8 + ByteTrack, or YOLOv8 with KCF tracking
 between sparse YOLO corrections:
 
 ```bash
-python3 -m pip install torch ultralytics lap opencv-contrib-python
+uv sync --group sim --group train
+```
 
-python3 examples/run_airsim_strapdown_vision_png.py \
+KCF tracking requires `opencv-contrib-python` instead of `opencv-python`;
+install it into the uv environment before using the KCF detector source.
+
+```bash
+uv run python examples/run_airsim_strapdown_vision_png.py \
   --enable-motion \
   --detector-source yolo_bytetrack \
   --yolo-model /path/to/uav_yolov8.pt \
@@ -265,6 +287,46 @@ the window hold to generate yaw rate during clipped boxes or blind push; pass
 target loss immediately returns yaw rate to the current visual command. It
 writes `strapdown_vision_png_*.csv`, `strapdown_vision_png_*_meta.json`, and
 `strapdown_vision_png_*.png` to `logs/`.
+
+## AirSim YOLO Dataset Capture And Training
+
+Create the dataset layout once:
+
+```bash
+uv run python examples/prepare_airsim_cv_yolo_dataset.py
+```
+
+Capture a smoke subset before the full train/val/test run:
+
+```bash
+uv run python examples/capture_airsim_cv_yolo_dataset.py \
+  --split train \
+  --count 100 \
+  --max-attempts 400 \
+  --output-dir datasets/airsim_cv_intruder_yolo
+```
+
+The capture script writes standard YOLO folders under
+`datasets/airsim_cv_intruder_yolo/` and appends metadata to `manifest.jsonl`.
+
+Train on a single NVIDIA GPU:
+
+```bash
+uv run python examples/train_airsim_cv_yolo.py \
+  --dataset-root datasets/airsim_cv_intruder_yolo \
+  --model yolov8n.pt \
+  --imgsz 640 \
+  --epochs 100 \
+  --batch 24 \
+  --workers 8 \
+  --device 0
+```
+
+The trained detector weight is written to:
+
+```text
+runs/airsim_yolo/intruder_yolov8n/weights/best.pt
+```
 
 ## Safety Boundary
 
