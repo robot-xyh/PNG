@@ -1,0 +1,16 @@
+case_id,start_horizontal_range_m,start_lateral_offset_m,altitude_offset_m,intruder_speed_mps,speed_ratio,stamp,status
+M01,40,-10,30,5,2.0,upward_yolo_matrix15_20260701_202024_M01,ok
+M02,25,-10,30,5,2.0,upward_yolo_matrix15_20260701_202024_M02,ok
+M03,55,-10,30,5,2.0,upward_yolo_matrix15_20260701_202024_M03,ok
+M04,40,0,30,5,2.0,upward_yolo_matrix15_20260701_202024_M04,ok
+M05,40,-20,30,5,2.0,upward_yolo_matrix15_20260701_202024_M05,ok
+M06,40,20,30,5,2.0,upward_yolo_matrix15_20260701_202024_M06,ok
+M07,40,-10,20,5,2.0,upward_yolo_matrix15_20260701_202024_M07,ok
+M08,40,-10,40,5,2.0,upward_yolo_matrix15_20260701_202024_M08,ok
+M09,30,-10,30,3,2.0,upward_yolo_matrix15_20260701_202024_M09,ok
+M10,30,-10,30,7,2.0,upward_yolo_matrix15_20260701_202024_M10,ok
+M11,50,-10,30,3,2.0,upward_yolo_matrix15_20260701_202024_M11,ok
+M12,50,-10,30,7,2.0,upward_yolo_matrix15_20260701_202024_M12,ok
+M13,45,-20,40,7,2.0,upward_yolo_matrix15_20260701_202024_M13,ok
+M14,55,15,20,7,2.0,upward_yolo_matrix15_20260701_202024_M14,ok
+M15,25,20,40,3,2.0,upward_yolo_matrix15_20260701_202024_M15,ok
