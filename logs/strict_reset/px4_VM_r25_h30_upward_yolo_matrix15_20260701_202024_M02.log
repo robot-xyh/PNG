@@ -1,0 +1,63 @@
+Script started on 2026-07-01 20:22:58-07:00 [COMMAND="/home/linux/Documents/PNG-px4-upward-camera/run_px4_sitl.sh" <not executed on terminal>]
+Starting PX4 SITL from: /home/linux/PX4/PX4-Autopilot
+Target/model: px4_sitl_default none_iris
+Keep this terminal open; start AirSim Blocks after PX4 prints that it is waiting on TCP port 4560.
+[0/1] cd /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default/tmp && /home/linux/PX4/PX4-Autopilot/Tools/sitl_run.sh /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default/bin/px4 none none iris none /home/linux/PX4/PX4-Autopilot /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default[K
+SITL ARGS
+sitl_bin: /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default/bin/px4
+debugger: none
+program: none
+model: iris
+world: none
+src_path: /home/linux/PX4/PX4-Autopilot
+build_path: /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default
+SITL COMMAND: "/home/linux/PX4/PX4-Autopilot/build/px4_sitl_default/bin/px4" "/home/linux/PX4/PX4-Autopilot"/ROMFS/px4fmu_common -s etc/init.d-posix/rcS -t "/home/linux/PX4/PX4-Autopilot"/test_data
+[0mINFO  [37m[px4] [0mCreating symlink /home/linux/PX4/PX4-Autopilot/ROMFS/px4fmu_common -> /home/linux/PX4/PX4-Autopilot/build/px4_sitl_default/tmp/rootfs/etc[0m
+
+______  __   __    ___ 
+| ___ \ \ \ / /   /   |
+| |_/ /  \ V /   / /| |
+|  __/   /   \  / /_| |
+| |     / /^\ \ \___  |
+\_|     \/   \/     |_/
+
+px4 starting.
+
+[0mINFO  [37m[px4] [0mCalling startup script: /bin/sh etc/init.d-posix/rcS 0[0m
+[0mINFO  [37m[param] [0mselected parameter default file eeprom/parameters_10016[0m
+[param] Loaded: eeprom/parameters_10016
+[0mINFO  [37m[dataman] [0mUnknown restart, data manager file './dataman' size is 11798680 bytes[0m
+[0mINFO  [37m[simulator] [0mWaiting for simulator to accept connection on TCP port 4560[0m
+[0mINFO  [37m[simulator] [0mSimulator connected on TCP port 4560.[0m
+[0mINFO  [37m[commander] [0mLED: open /dev/led0 failed (22)[0m
+INFO  [init] Mixer: etc/mixers/quad_w.main.mix on /dev/pwm_output0
+[0mINFO  [37m[mavlink] [0mmode: Normal, data rate: 4000000 B/s on udp port 18570 remote port 14550[0m
+[0mINFO  [37m[mavlink] [0mmode: Onboard, data rate: 4000000 B/s on udp port 14580 remote port 14540[0m
+[0mINFO  [37m[mavlink] [0mmode: Onboard, data rate: 4000 B/s on udp port 14280 remote port 14030[0m
+[0mINFO  [37m[logger] [0mlogger started (mode=all)[0m
+[0mINFO  [37m[logger] [0mStart file log (type: full)[0m
+[0mINFO  [37m[logger] [0m[logger] ./log/2026-07-02/03_23_01.ulg[0m
+[0mINFO  [37m[logger] [0mOpened full log file: ./log/2026-07-02/03_23_01.ulg[0m
+[0mINFO  [37m[mavlink] [0mMAVLink only on localhost (set param MAV_BROADCAST = 1 to enable network)[0m
+[0mINFO  [37m[px4] [0mStartup script returned successfully[0m
+pxh> [0mINFO  [37m[mavlink] [0mpartner IP: 127.0.0.1[0m
+[0mINFO  [37m[ecl/EKF] [0m2550054: EKF aligned, (baro hgt, IMU buf: 18, OBS buf: 14)[0m
+[0mINFO  [37m[ecl/EKF] [0m2550054: reset position to last known position[0m
+[0mINFO  [37m[ecl/EKF] [0m2550054: reset velocity to zero[0m
+[0mINFO  [37m[ecl/EKF] [0m3720079: GPS checks passed[0m
+[0mINFO  [37m[mavlink] [0mpartner IP: 127.0.0.1[0m
+[0mINFO  [37m[commander] [0mArmed by external command[0m
+[33mWARN  [37m[mc_pos_control] [33mOffboard activation failed with error: Activation Failed[0m
+[33mWARN  [37m[mc_pos_control] [33mPosition-Ctrl activation failed with error: Activation Failed[0m
+[33mWARN  [37m[mc_pos_control] [33mAltitude-Ctrl activation failed with error: Activation Failed[0m
+[0mINFO  [37m[ecl/EKF] [0m8241175: reset position to GPS[0m
+[0mINFO  [37m[ecl/EKF] [0m8241175: reset velocity to GPS[0m
+[0mINFO  [37m[ecl/EKF] [0m8241175: starting GPS fusion[0m
+[0mINFO  [37m[commander] [0mTakeoff detected[0m
+
+PX4 Exiting...
+[2Kpxh> Exiting NOW.
+make: *** [Makefile:219: px4_sitl_default] Terminated
+ninja: build stopped: interrupted by user.
+
+Script done on 2026-07-01 20:24:08-07:00 [COMMAND_EXIT_CODE="143"]
