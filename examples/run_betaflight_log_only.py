@@ -5,7 +5,10 @@ import csv
 import hashlib
 import importlib
 import json
+import multiprocessing
 import platform
+import queue
+import signal
 import subprocess
 import sys
 import threading
@@ -57,7 +60,11 @@ from vision_guidance.flight_control import (  # noqa: E402
     aux_range_enabled,
     guidance_eval_to_setpoint,
 )
-from vision_guidance.fusion import PureVisionGuidancePipeline, VisionGuidanceResult  # noqa: E402
+from vision_guidance.fusion import (  # noqa: E402
+    DeferredAttitudeFusion,
+    PureVisionGuidancePipeline,
+    VisionGuidanceResult,
+)
 from vision_guidance.geometry import camera_to_body_mount  # noqa: E402
 from vision_guidance.platform_health import PlatformHealthSampler  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
@@ -67,7 +74,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 5
+LOG_SCHEMA_VERSION = 6
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
@@ -116,6 +123,11 @@ def parse_args() -> argparse.Namespace:
         "--disable-web-preview",
         action="store_true",
         help="Disable MJPEG encoding while retaining JSON/SSE telemetry.",
+    )
+    parser.add_argument(
+        "--isolate-rknn-process",
+        action="store_true",
+        help="Run RKNN+ByteTrack in a spawned process so perception cannot hold the MSP worker GIL.",
     )
     return parser.parse_args()
 
@@ -590,6 +602,178 @@ class OpenCvRknnByteTrackSource:
                 self._worker_error = str(exc)
 
 
+class IsolatedRknnByteTrackSource:
+    def __init__(self, args: argparse.Namespace, config: dict[str, Any]) -> None:
+        tracker_values = dict(config.get("rknn_bytetrack", {}))
+        override_rate_hz = float(getattr(args, "rknn_perception_rate_hz", 0.0) or 0.0)
+        self.perception_rate_hz = override_rate_hz or float(tracker_values.get("perception_rate_hz", 0.0))
+        if self.perception_rate_hz <= 0.0:
+            raise ValueError("isolated RKNN perception requires a positive perception rate")
+        context = multiprocessing.get_context("spawn")
+        self._stop_event = context.Event()
+        self._result_queue = context.Queue(maxsize=1)
+        self._startup_queue = context.Queue(maxsize=1)
+        self._error_queue = context.Queue(maxsize=1)
+        self._metadata: dict[str, Any] = {}
+        self._process = context.Process(
+            target=_isolated_rknn_bytetrack_main,
+            args=(
+                dict(vars(args)),
+                config,
+                self.perception_rate_hz,
+                self._stop_event,
+                self._result_queue,
+                self._startup_queue,
+                self._error_queue,
+            ),
+            name="rknn-bytetrack-process",
+            daemon=True,
+        )
+        self._process.start()
+        try:
+            status, payload = self._startup_queue.get(timeout=20.0)
+        except queue.Empty as exc:
+            self.close()
+            raise RuntimeError("isolated RKNN process startup timed out") from exc
+        if status != "ready":
+            self.close()
+            raise RuntimeError(f"isolated RKNN process failed to start: {payload}")
+        self._metadata = dict(payload)
+        self._metadata.update(process_isolation=True, perception_rate_hz=self.perception_rate_hz)
+
+    def close(self) -> None:
+        self._stop_event.set()
+        process = getattr(self, "_process", None)
+        if process is not None:
+            process.join(timeout=5.0)
+            if process.is_alive():
+                process.terminate()
+                process.join(timeout=2.0)
+        for channel_name in ("_result_queue", "_startup_queue", "_error_queue"):
+            channel = getattr(self, channel_name, None)
+            if channel is not None:
+                channel.close()
+                channel.join_thread()
+
+    def metadata(self) -> dict[str, Any]:
+        return dict(self._metadata)
+
+    def detect(
+        self,
+        *,
+        timestamp: float,
+        frame_id: int,
+        active_track_id: int | None,
+    ) -> tuple[FrameDetection | None, dict[str, Any]]:
+        del frame_id, active_track_id
+        error = _queue_latest(self._error_queue)
+        if error is not None:
+            raise RuntimeError(f"isolated RKNN process failed: {error}")
+        latest = _queue_latest(self._result_queue)
+        if latest is None:
+            if not self._process.is_alive():
+                raise RuntimeError("isolated RKNN process exited unexpectedly")
+            return None, {
+                "detector_source": "rknn_bytetrack",
+                "detector_reject_reason": "perception_no_new_result",
+                "bbox_measurement_source": "none",
+                "perception_new_result": 0,
+                "perception_worker_rate_hz": self.perception_rate_hz,
+                "perception_worker_error": "",
+            }
+        detection, stats = latest
+        stats = dict(stats)
+        capture_ts = stats.get("camera_capture_ts")
+        stats["perception_result_age_ms"] = (
+            "" if capture_ts in (None, "") else max(0.0, 1000.0 * (float(timestamp) - float(capture_ts)))
+        )
+        return detection, stats
+
+
+def _isolated_rknn_bytetrack_main(
+    args_values: dict[str, Any],
+    config: dict[str, Any],
+    perception_rate_hz: float,
+    stop_event: Any,
+    result_queue: Any,
+    startup_queue: Any,
+    error_queue: Any,
+) -> None:
+    source = None
+    try:
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        child_args = argparse.Namespace(**args_values)
+        child_args.rknn_perception_rate_hz = 0.0
+        child_config = dict(config)
+        tracker_values = dict(child_config.get("rknn_bytetrack", {}))
+        tracker_values["perception_rate_hz"] = 0.0
+        child_config["rknn_bytetrack"] = tracker_values
+        source = OpenCvRknnByteTrackSource(child_args, child_config, preview_sink=None)
+        startup_queue.put(("ready", source.metadata()))
+        period_s = 1.0 / float(perception_rate_hz)
+        sequence = 0
+        dropped_count = 0
+        while not stop_event.is_set():
+            loop_start = time.monotonic()
+            sequence += 1
+            detection, stats = source.detect(
+                timestamp=loop_start,
+                frame_id=sequence,
+                active_track_id=None,
+            )
+            stats = dict(stats)
+            stats.update(
+                perception_seq=sequence,
+                perception_new_result=1,
+                perception_worker_rate_hz=perception_rate_hz,
+                perception_worker_error="",
+            )
+            if _queue_replace(result_queue, (detection, stats)):
+                dropped_count += 1
+            stats["perception_queue_dropped"] = dropped_count
+            stop_event.wait(max(0.0, period_s - (time.monotonic() - loop_start)))
+    except Exception as exc:
+        message = f"{type(exc).__name__}: {exc}"
+        if source is None:
+            _queue_replace(startup_queue, ("error", message))
+        _queue_replace(error_queue, message)
+    finally:
+        if source is not None:
+            source.close()
+
+
+def _queue_latest(channel: Any) -> Any:
+    latest = None
+    while True:
+        try:
+            latest = channel.get_nowait()
+        except queue.Empty:
+            return latest
+
+
+def _queue_replace(channel: Any, value: Any) -> bool:
+    dropped = False
+    while True:
+        try:
+            channel.get_nowait()
+            dropped = True
+        except queue.Empty:
+            break
+    try:
+        channel.put_nowait(value)
+    except queue.Full:
+        try:
+            channel.get(timeout=0.01)
+            dropped = True
+        except queue.Empty:
+            return True
+        try:
+            channel.put_nowait(value)
+        except queue.Full:
+            return True
+    return dropped
+
+
 def _publish_preview(
     preview_sink: Any,
     image_bgr: Any,
@@ -671,6 +855,12 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         R_BC=_camera_mount(config),
         attitude_buffer=attitude_buffer,
     )
+    fusion_cfg = dict(config.get("attitude_fusion", {}))
+    deferred_fusion = DeferredAttitudeFusion(
+        pipeline,
+        max_wait_s=float(fusion_cfg.get("max_wait_s", 0.20)),
+        max_pending=int(fusion_cfg.get("max_pending", 8)),
+    )
 
     log_path = _log_path(args.log_dir, args.log_prefix)
     events_path = _events_path(log_path)
@@ -702,6 +892,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         },
         control_authorization=asdict(authorization),
         msp_runtime={"config": asdict(msp_runtime_config)},
+        attitude_fusion={
+            "max_wait_s": deferred_fusion.max_wait_s,
+            "max_pending": deferred_fusion.max_pending,
+        },
         platform_health={} if platform_health is None else platform_health.metadata(),
         web_telemetry=web_service.metadata(),
     )
@@ -758,7 +952,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                             last_attitude_buffer_sample_s = attitude_sample_s
                         last_attitude_s = attitude_sample_s
 
-                detection, detector_stats = _read_detection(
+                raw_detection, detector_stats = _read_detection(
                     detection_source,
                     args,
                     elapsed_s=elapsed,
@@ -770,13 +964,37 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     "perception_new_result",
                     int(detector_stats.get("detector_reject_reason") != "perception_no_new_result"),
                 )
+                fusion_state = deferred_fusion.update(
+                    raw_detection,
+                    timestamp=loop_start,
+                    context=detector_stats,
+                    perception_new_result=bool(detector_stats["perception_new_result"]),
+                )
+                detection = fusion_state.detection
+                if fusion_state.context is not None:
+                    detector_stats = dict(fusion_state.context)
+                detector_stats.update(
+                    fusion_status=fusion_state.status,
+                    fusion_pending_count=fusion_state.pending_count,
+                    fusion_dropped_count=fusion_state.dropped_count,
+                    fusion_wait_ms="" if fusion_state.wait_ms is None else fusion_state.wait_ms,
+                )
+                if fusion_state.status == "waiting_for_attitude":
+                    detector_stats["detector_reject_reason"] = "fusion_waiting_for_attitude"
+                    detector_stats["perception_new_result"] = 0
+                capture_ts = detector_stats.get("camera_capture_ts")
+                if detection is not None and capture_ts not in (None, ""):
+                    detector_stats["perception_result_age_ms"] = max(
+                        0.0,
+                        1000.0 * (loop_start - float(capture_ts)),
+                    )
                 detector_stats["detection_attitude_offset_ms"] = (
                     ""
                     if detection is None or last_attitude_buffer_sample_s is None
                     else 1000.0 * (detection.exposure_ts - last_attitude_buffer_sample_s)
                 )
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
-                result = _process_detection(pipeline, detection)
+                result = fusion_state.result
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
                     watchdog.kick(loop_start)
@@ -826,9 +1044,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 setpoint = setpoint_hold.update(
                     raw_setpoint,
                     timestamp=loop_start,
-                    allow_hold=(
-                        detector_stats.get("detector_reject_reason") == "perception_no_new_result"
-                    ),
+                    allow_hold=detector_stats.get("detector_reject_reason")
+                    in {"perception_no_new_result", "fusion_waiting_for_attitude"},
                     gate_open=bool(
                         control_requested
                         and allow_control
@@ -1105,6 +1322,8 @@ def _create_detection_source(
     *,
     preview_sink: Any = None,
 ):
+    if args.isolate_rknn_process and args.detector_source != "rknn_bytetrack":
+        raise RuntimeError("--isolate-rknn-process requires --detector-source rknn_bytetrack")
     if args.detector_source == "none":
         return None
     if args.detector_source == "csv":
@@ -1118,6 +1337,10 @@ def _create_detection_source(
     if args.detector_source == "rknn_native":
         return OpenCvRknnSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_bytetrack":
+        if args.isolate_rknn_process:
+            if not args.disable_web_preview:
+                raise RuntimeError("--isolate-rknn-process requires --disable-web-preview")
+            return IsolatedRknnByteTrackSource(args, config)
         return OpenCvRknnByteTrackSource(args, config, preview_sink=preview_sink)
     raise ValueError(f"unsupported detector source: {args.detector_source}")
 
@@ -1415,6 +1638,7 @@ def _write_run_meta(
     fc_configuration: dict[str, Any] | None = None,
     control_authorization: dict[str, Any] | None = None,
     msp_runtime: dict[str, Any] | None = None,
+    attitude_fusion: dict[str, Any] | None = None,
     platform_health: dict[str, Any] | None = None,
     web_telemetry: dict[str, Any] | None = None,
 ) -> None:
@@ -1447,6 +1671,7 @@ def _write_run_meta(
         "fc_configuration": fc_configuration or {},
         "control_authorization": control_authorization or {},
         "msp_runtime": msp_runtime or {},
+        "attitude_fusion": attitude_fusion or {},
         "platform_health": platform_health or {},
         "web_telemetry": web_telemetry or {},
         "detector": detector_metadata or {},
@@ -1608,6 +1833,10 @@ def _log_fields(channel_count: int) -> list[str]:
         "perception_queue_dropped",
         "perception_worker_error",
         "detection_attitude_offset_ms",
+        "fusion_status",
+        "fusion_pending_count",
+        "fusion_dropped_count",
+        "fusion_wait_ms",
         "loop_period_s",
         "camera_device",
         "camera_frame_ok",
@@ -1925,6 +2154,10 @@ def _log_row(
         "detection_attitude_offset_ms": _stats_float(
             detector_stats, "detection_attitude_offset_ms", precision=3
         ),
+        "fusion_status": detector_stats.get("fusion_status", ""),
+        "fusion_pending_count": detector_stats.get("fusion_pending_count", ""),
+        "fusion_dropped_count": detector_stats.get("fusion_dropped_count", ""),
+        "fusion_wait_ms": _stats_float(detector_stats, "fusion_wait_ms", precision=3),
         "loop_period_s": _stats_float(detector_stats, "loop_period_s", precision=6),
         "camera_device": detector_stats.get("camera_device", ""),
         "camera_frame_ok": detector_stats.get("camera_frame_ok", ""),

@@ -157,6 +157,10 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["vision"]["tracker_association_stage"], "low")
         self.assertEqual(payload["vision"]["tracker_match_iou"], 0.63)
         self.assertEqual(payload["vision"]["target_selector_reason"], "no_tracked_output")
+        self.assertEqual(
+            payload["vision"]["fusion"],
+            {"status": None, "pending_count": None, "dropped_count": None, "wait_ms": None},
+        )
         self.assertEqual(payload["rc"]["input_us"][0], 1500)
         self.assertEqual(payload["rc"]["input_order"], "AERT1234")
         self.assertEqual(payload["rc"]["wire_order"], "AETR1234")
@@ -217,6 +221,22 @@ class BetaflightWebTest(unittest.TestCase):
             self.assertFalse(gap["vision"]["new_result"])
             self.assertTrue(gap["vision"]["display_held"])
             self.assertAlmostEqual(gap["vision"]["result_age_ms"], 90.0)
+
+            fusion_gap = hub.publish(
+                {
+                    "vision": {
+                        "detector_reason": "fusion_waiting_for_attitude",
+                        "track_id": None,
+                        "tracker_state": None,
+                        "tracker_confirmed": None,
+                        "result_age_ms": None,
+                    }
+                },
+                timestamp_s=10.075,
+            )
+            self.assertEqual(fusion_gap["vision"]["track_id"], 206)
+            self.assertFalse(fusion_gap["vision"]["new_result"])
+            self.assertTrue(fusion_gap["vision"]["display_held"])
 
             cleared = hub.publish(
                 {

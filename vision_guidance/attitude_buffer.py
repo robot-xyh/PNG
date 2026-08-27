@@ -64,5 +64,13 @@ class AttitudeHistoryBuffer:
 
         return AttitudeLookup(self._samples[-1], True)
 
+    @property
+    def oldest_timestamp(self) -> float | None:
+        return None if not self._samples else self._samples[0].timestamp
+
+    @property
+    def latest_timestamp(self) -> float | None:
+        return None if not self._samples else self._samples[-1].timestamp
+
     def __len__(self) -> int:
         return len(self._samples)

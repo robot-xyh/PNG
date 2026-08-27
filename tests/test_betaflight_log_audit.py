@@ -95,6 +95,21 @@ class BetaflightLogAuditTest(unittest.TestCase):
                 {item["code"] for item in result["violations"]},
             )
 
+    def test_schema_v6_allows_hold_while_waiting_for_attitude(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                sp_source="guidance_hold",
+                detector_reject_reason="fusion_waiting_for_attitude",
+                perception_new_result="0",
+                watchdog_ok="1",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=6)
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertTrue(result["passed"])
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)

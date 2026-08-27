@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 3
+WEB_SCHEMA_VERSION = 4
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -291,6 +291,12 @@ def telemetry_payload_from_log_row(
             "tracker_fps": _number(row.get("tracker_actual_fps")),
             "result_age_ms": _number(row.get("perception_result_age_ms")),
             "attitude_offset_ms": _number(row.get("detection_attitude_offset_ms")),
+            "fusion": {
+                "status": _text(row.get("fusion_status")),
+                "pending_count": _integer(row.get("fusion_pending_count")),
+                "dropped_count": _integer(row.get("fusion_dropped_count")),
+                "wait_ms": _number(row.get("fusion_wait_ms")),
+            },
             "queue_dropped": _integer(row.get("perception_queue_dropped")),
             "worker_error": _text(row.get("perception_worker_error")),
         },
@@ -430,7 +436,10 @@ class TelemetryHub:
         vision = snapshot.get("vision")
         if not isinstance(vision, dict):
             return
-        gap = vision.get("detector_reason") == "perception_no_new_result"
+        gap = vision.get("detector_reason") in {
+            "perception_no_new_result",
+            "fusion_waiting_for_attitude",
+        }
         vision["new_result"] = not gap
         vision["display_held"] = False
         if not gap:

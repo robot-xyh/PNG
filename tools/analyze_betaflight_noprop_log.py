@@ -53,7 +53,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -87,8 +87,11 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             else:
                 legacy_algorithm_rows.append(row)
         if schema_version is not None and schema_version >= 4 and row.get("sp_source") == "guidance_hold":
+            allowed_gap_reasons = {"perception_no_new_result"}
+            if schema_version >= 6:
+                allowed_gap_reasons.add("fusion_waiting_for_attitude")
             if (
-                row.get("detector_reject_reason") != "perception_no_new_result"
+                row.get("detector_reject_reason") not in allowed_gap_reasons
                 or _integer(row.get("perception_new_result")) != 0
                 or _integer(row.get("watchdog_ok")) != 1
             ):

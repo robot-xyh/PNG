@@ -1,5 +1,6 @@
 import importlib.util
 import json
+import queue
 import tempfile
 import time
 import unittest
@@ -90,6 +91,13 @@ class _FakeCv2:
 
 
 class BetaflightLoggingTest(unittest.TestCase):
+    def test_latest_queue_replaces_stale_perception_result(self):
+        channel = queue.Queue(maxsize=1)
+        self.assertFalse(runner._queue_replace(channel, "first"))
+        self.assertTrue(runner._queue_replace(channel, "second"))
+        self.assertEqual(runner._queue_latest(channel), "second")
+        self.assertIsNone(runner._queue_latest(channel))
+
     def test_camera_only_source_configures_resizes_and_logs_frame(self):
         image = np.zeros((1024, 1280, 3), dtype=np.uint8)
         capture = _FakeCapture(image)
@@ -506,7 +514,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 5)
+            self.assertEqual(data["log_schema_version"], 6)
 
     def test_edge_event_logger_writes_only_state_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

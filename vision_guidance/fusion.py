@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
-from typing import Optional
+from typing import Any, Deque, Optional
 
 import numpy as np
 
@@ -19,6 +20,24 @@ class VisionGuidanceResult:
     los: Optional[LOSEstimate]
     ttc: Optional[TTCState]
     guidance: GuidanceEval
+
+
+@dataclass(frozen=True)
+class DeferredFusionResult:
+    detection: FrameDetection | None
+    context: Any
+    result: VisionGuidanceResult | None
+    status: str
+    pending_count: int
+    dropped_count: int
+    wait_ms: float | None = None
+
+
+@dataclass(frozen=True)
+class _PendingDetection:
+    detection: FrameDetection
+    context: Any
+    queued_at: float
 
 
 class PureVisionGuidancePipeline:
@@ -62,3 +81,100 @@ class PureVisionGuidancePipeline:
     def _reject(self, detection: FrameDetection, reason: str) -> VisionGuidanceResult:
         guidance = GuidanceEval(detection.exposure_ts, np.zeros(3), False, 0.0, reason)
         return VisionGuidanceResult(detection, None, None, guidance)
+
+
+class DeferredAttitudeFusion:
+    """Wait briefly for attitude samples that bracket asynchronous detections."""
+
+    def __init__(
+        self,
+        pipeline: PureVisionGuidancePipeline,
+        *,
+        max_wait_s: float = 0.20,
+        max_pending: int = 8,
+    ) -> None:
+        if max_wait_s <= 0.0:
+            raise ValueError("max_wait_s must be positive")
+        if max_pending <= 0:
+            raise ValueError("max_pending must be positive")
+        self.pipeline = pipeline
+        self.max_wait_s = float(max_wait_s)
+        self.max_pending = int(max_pending)
+        self._pending: Deque[_PendingDetection] = deque()
+        self._dropped_count = 0
+
+    def update(
+        self,
+        detection: FrameDetection | None,
+        *,
+        timestamp: float,
+        context: Any = None,
+        perception_new_result: bool = True,
+    ) -> DeferredFusionResult:
+        now = float(timestamp)
+        if perception_new_result and detection is None:
+            self._dropped_count += len(self._pending)
+            self._pending.clear()
+            return self._state(None, context, None, "no_detection")
+
+        if detection is not None:
+            self._pending.append(_PendingDetection(detection, context, now))
+            while len(self._pending) > self.max_pending:
+                self._pending.popleft()
+                self._dropped_count += 1
+
+        if not self._pending:
+            status = "no_new_result" if not perception_new_result else "idle"
+            return self._state(None, context, None, status)
+
+        pending = self._pending[0]
+        latest_attitude = self.pipeline.attitude_buffer.latest_timestamp
+        wait_s = max(0.0, now - pending.queued_at)
+        if latest_attitude is not None and pending.detection.exposure_ts <= latest_attitude:
+            self._pending.popleft()
+            result = self.pipeline.process(pending.detection)
+            return self._state(
+                pending.detection,
+                pending.context,
+                result,
+                "processed",
+                wait_ms=1000.0 * wait_s,
+            )
+
+        if wait_s >= self.max_wait_s:
+            self._pending.popleft()
+            result = self.pipeline.process(pending.detection)
+            return self._state(
+                pending.detection,
+                pending.context,
+                result,
+                "attitude_wait_timeout",
+                wait_ms=1000.0 * wait_s,
+            )
+
+        return self._state(
+            None,
+            context,
+            None,
+            "waiting_for_attitude",
+            wait_ms=1000.0 * wait_s,
+        )
+
+    def _state(
+        self,
+        detection: FrameDetection | None,
+        context: Any,
+        result: VisionGuidanceResult | None,
+        status: str,
+        *,
+        wait_ms: float | None = None,
+    ) -> DeferredFusionResult:
+        return DeferredFusionResult(
+            detection=detection,
+            context=context,
+            result=result,
+            status=status,
+            pending_count=len(self._pending),
+            dropped_count=self._dropped_count,
+            wait_ms=wait_ms,
+        )

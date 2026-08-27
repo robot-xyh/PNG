@@ -121,6 +121,10 @@
     "allow_cpu_inference": false
   },
   "attitude_buffer_s": 2.0,
+  "attitude_fusion": {
+    "max_wait_s": 0.2,
+    "max_pending": 8
+  },
   "rc_mapping": {
     "channel_map": "AETR1234",
     "channel_count": 8,
