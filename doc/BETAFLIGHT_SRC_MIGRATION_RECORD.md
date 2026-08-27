@@ -460,3 +460,42 @@ match IoU 和 selector reason。Web schema v3 将这些字段组成可读的感�
 为 `logs/archives/noprop_control_validation_20260827.tar.gz`，SHA256
 `1dcd780489fa73c69f118796a9a9a94c300d6c242409ec84f5586b15838822fa`。当前放桨仍被“降载配置下
 带目标 algorithm 发送间隔未通过”和 `timestamp_after_buffer` 高频拒绝共同阻断。
+
+## 2026-08-27 延迟融合、感知进程隔离与再次无桨实控
+
+为消除图像时间戳晚于最新姿态样本造成的系统性拒绝，schema v6 增加有界延迟融合。检测结果
+最多等待 200 ms，直到姿态缓存形成前后包围样本；待处理队列上限为 8，真实无检测会立即清空
+队列，超时结果仍进入原有 fail-closed 时间戳检查。Web schema v4 同步发布融合状态、等待时间、
+队列深度和丢弃计数。该机制没有外推姿态，也没有放宽 watchdog、TTC 或控制门禁。
+
+runner 新增 `--isolate-rknn-process`，使用 spawned 子进程承载相机、RKNN 和完整 ByteTrack，避免
+感知负载持有 MSP worker 所在进程的 Python GIL。隔离模式必须同时使用
+`--disable-web-preview`；父进程仍负责 MSP、安全状态机、导引、CSV/Web JSON 和退出顺序。子进程
+忽略终端 SIGINT，通过父进程 stop event 清理，现场退出未再产生子进程 traceback。
+
+板端验证结果如下：
+
+- `betaflight_noprop_isolated_perception_20260827_200055.csv`：411.39 s、16058/16058 次成功发送、
+  错误 0，最大成功间隔 49.714 ms，审计通过；覆盖持续真实目标跟踪，但未 ARM/RC7。
+- `betaflight_noprop_isolated_algorithm_final_20260827_201202.csv`：552.85 s、21167 次成功发送、
+  错误 0、1262 个 algorithm 行；唯一审计违规为一次 65.964 ms 发送间隔。
+- `betaflight_log_20260827_202613.csv`：动力电池、拆桨、15 Hz 隔离感知下运行 1548.36 s，
+  60284/60284 次成功发送、错误 0、522 个 algorithm 行。ARM、RC7、`ACTIVE/algorithm`、目标
+  无效后 `FAILSAFE/passthrough` 及“先 RC7 人工、再 DISARM”均由日志确认。实际 A/E/T/R 范围
+  为 1497--1503/1498--1502/990--1078/1500 us，最高温度 68.384 C。审计仍仅因一次
+  68.568 ms 发送间隔失败；当时为 armed+OVERRIDE 下的 `DEGRADED/passthrough`，没有 RC 错误、
+  885 us 或算法包线越界。
+
+静止目标可维持 confirmed ByteTrack，但因面积不扩张会触发 `area_not_expanding` 或
+`ttc_out_of_range`，因此不应期待持续算法输出。目标靠近且横移时产生有效 TTC 和 R/P/T 命令；
+ID 4、8 分别连续记录 2531、1702 个主循环，后续 ID 变化与目标出框、顶部裁切和重新进入对应，
+不能仅凭页面瞬时 ID 认定 ByteTrack 自发跳变。
+
+延迟融合已消除本轮的 `timestamp_after_buffer` 主导拒绝，感知进程隔离也把此前百毫秒级缺口
+降为单次 65--69 ms 尖峰。剩余瓶颈是 115200 baud 单 UART 上同步 SET_RAW_RC 与 STATUS、
+RAW_IMU、RC、ATTITUDE、ANALOG 轮询共享时隙；本轮各命令最坏 RTT 为 28.695--36.143 ms。
+在提高并验证 MSP baud、降低/重排轮询预算、改用独立遥测链路或重新定义可证明的发布频率前，
+不得安装桨叶。三轮证据已归档为
+`logs/archives/noprop_isolated_algorithm_validation_20260827.tar.gz`，SHA256 为
+`49a55c3cd3641a30188cac24584bbd2910ffc3f47a9e2a8cbd0eae84f3f407b9`。修改后本地
+`python3 -m unittest discover -s tests -v` 为 234/234 通过。

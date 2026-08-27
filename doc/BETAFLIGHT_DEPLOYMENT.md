@@ -406,8 +406,10 @@ schema v2 已补充以下诊断：
 - rate/expo/PID profile、RC 到角速度曲线、hover throttle 和命令限幅未标定。
 - CSV 与 Blackbox 不能通过公共事件对齐，或缺少帧龄、RC 发送周期和热状态证据。
 - `rate_gain_matrix` 仍为全零、轴向不确定，或测试中出现持续 clipping/slew limiting。
-- 15 Hz/无 MJPEG 降载配置下，带真实目标的算法发送最大间隔尚未连续满足 60 ms 审计门限。
-- `timestamp_after_buffer` 仍频繁拒绝有效检测，图像曝光时刻与姿态缓存同步未关闭。
+- 15 Hz/无 MJPEG/隔离感知配置下，带真实目标的算法发送最大间隔仍出现单次 65--69 ms，尚未
+  连续满足 60 ms 审计门限。
+- 图像仍使用接近 `capture.read()` 返回时刻的软件时间戳；200 ms 有界延迟融合已经消除本轮
+  `timestamp_after_buffer` 主导拒绝，但硬件曝光时间与 Blackbox 对时仍未完成。
 
 ## 部署前准备
 
@@ -762,6 +764,7 @@ python3 tools/create_betaflight_noprop_approval.py \
 进程均已退出。运行真实视觉 PNG：
 
 ```bash
+OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 \
 python3 examples/run_betaflight_log_only.py \
   --config config/betaflight.rk3588.noprop.local.json \
   --duration-s 0 --rate-hz 20 \
@@ -769,12 +772,14 @@ python3 examples/run_betaflight_log_only.py \
   --allow-control \
   --detector-source rknn_bytetrack \
   --rknn-perception-rate-hz 15 \
-  --disable-web-preview
+  --disable-web-preview \
+  --isolate-rknn-process
 ```
 
-这两个降载参数不改变批准 JSON 或控制包线，并会写入 meta。关闭 MJPEG 后根页面的 JSON/SSE
-状态仍可读，但视频流不可用；目标位置需在接管前通过 log-only 预览确认。降载无目标基线已经
-通过 60 ms 发送间隔审计，带目标 algorithm 复验仍是放桨阻断项。
+线程限制、15 Hz 感知和进程隔离不改变批准 JSON 或控制包线，并会写入 meta。隔离模式要求
+关闭 MJPEG；根页面的 JSON/SSE 状态仍可读，但视频流不可用，目标位置需在接管前通过 log-only
+预览确认。感知进程隔离后无目标压力测试已通过 60 ms 间隔审计；两轮带目标 algorithm 测试
+仍分别出现一次 65.964 ms 和 68.568 ms 间隔，因此仍是放桨阻断项。
 
 严格按以下顺序操作：
 
@@ -791,6 +796,19 @@ python3 examples/run_betaflight_log_only.py \
 
 CSV 的 `rc_ch*` 是 mapper 候选，`rc_sent_ch*` 才是 worker 实际写入飞控的 AETR 帧。只有
 实际发送值、计数、状态变化和 Blackbox 均可解释，才算通过 Python PNG 无桨测试。
+
+### 3.1 2026-08-27 当前无桨验收状态
+
+最新完整测试日志为 `logs/betaflight_log_20260827_202613.csv`：动力电池、桨叶拆除、RC5 ARM、
+RC7 MSP OVERRIDE 和移动目标流程均已执行。60284 次 SET_RAW_RC 全部成功，522 个主循环记录
+`publish=algorithm`，实际 A/E/T/R 为 1497--1503/1498--1502/990--1078/1500 us；目标丢失、
+静止无闭合率或 bbox 裁切时退回 `FAILSAFE/passthrough`。退出顺序已确认
+`RC7=1000 -> RC5=2000 -> Ctrl-C`。
+
+该轮不构成放桨许可。审计唯一违规是一次 68.568 ms 成功发送间隔，门限为 60 ms；前一轮带
+目标测试也出现一次 65.964 ms。问题发生于单 UART 的同步 MSP 轮询/发送调度，不是 RC 错误或
+控制包线越界。下一步应优先验证更高 MSP baud、减少非关键轮询、或拆分控制与遥测串口，并在
+相同 ARM+RC7+动态目标流程下取得至少连续多轮 `passed=true`，再讨论系留测试。
 
 ### 4. 系留或低速悬停
 
