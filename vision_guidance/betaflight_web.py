@@ -16,8 +16,32 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 1
+WEB_SCHEMA_VERSION = 3
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
+VISION_MEASUREMENT_KEYS = (
+    "camera_ok",
+    "camera_read_ms",
+    "camera_size",
+    "camera_failed_frames",
+    "detector_source",
+    "detector_best_score",
+    "detector_counts",
+    "track_id",
+    "tracker_state",
+    "tracker_confirmed",
+    "tracker_hits",
+    "tracker_association_stage",
+    "tracker_match_iou",
+    "target_selector_reason",
+    "score",
+    "bbox_xyxy",
+    "bbox_area_ratio",
+    "rknn_ms",
+    "tracker_update_ms",
+    "tracker_fps",
+    "result_age_ms",
+    "attitude_offset_ms",
+)
 
 
 @dataclass(frozen=True)
@@ -135,7 +159,7 @@ def telemetry_payload_from_log_row(
             "override_available": _boolean(row.get("msp_override_available")),
             "override_active": _boolean(row.get("msp_override_active")),
             "prefill_ready": _boolean(row.get("msp_prefill_ready")),
-            "target_valid": _boolean(row.get("guidance_valid")),
+            "target_valid": _boolean(row.get("sp_valid")),
             "publish_mode": _text(row.get("msp_publish_mode")),
             "telemetry_fresh": _boolean(row.get("telemetry_fresh")),
             "attitude_synced": _boolean(row.get("attitude_synced")),
@@ -175,6 +199,18 @@ def telemetry_payload_from_log_row(
             "set_raw_rc_attempt_count": _integer(row.get("msp_set_raw_rc_attempt_count")),
             "set_raw_rc_success_count": _integer(row.get("msp_set_raw_rc_success_count")),
             "publish_deadline_miss_count": _integer(row.get("msp_publish_deadline_miss_count")),
+            "last_publish_gates": {
+                "output_enabled": _boolean(row.get("msp_last_publish_output_enabled")),
+                "algorithm_authorized": _boolean(
+                    row.get("msp_last_publish_algorithm_authorized")
+                ),
+                "override_active": _boolean(row.get("msp_last_publish_override_active")),
+                "prefill_ready": _boolean(row.get("msp_last_publish_prefill_ready")),
+                "physical_rc_fresh": _boolean(
+                    row.get("msp_last_publish_physical_rc_fresh")
+                ),
+                "command_fresh": _boolean(row.get("msp_last_publish_command_fresh")),
+            },
             "worker_error": _text(row.get("msp_worker_error")),
             "telemetry_error": _text(row.get("telemetry_error")),
             "send_error": _text(row.get("send_error")),
@@ -216,6 +252,8 @@ def telemetry_payload_from_log_row(
             },
         },
         "vision": {
+            "new_result": _boolean(row.get("perception_new_result")),
+            "display_held": False,
             "camera_ok": _boolean(row.get("camera_frame_ok")),
             "camera_read_ms": _number(row.get("camera_read_ms")),
             "camera_size": [
@@ -225,9 +263,21 @@ def telemetry_payload_from_log_row(
             "camera_failed_frames": _integer(row.get("camera_failed_frames")),
             "detector_source": _text(row.get("detector_source")),
             "detector_reason": _text(row.get("detector_reject_reason")),
+            "detector_best_score": _number(row.get("detector_best_score")),
+            "detector_counts": {
+                "raw": _integer(row.get("detector_raw_count")),
+                "class_filtered": _integer(row.get("detector_class_filtered_count")),
+                "high": _integer(row.get("tracker_high_count")),
+                "low": _integer(row.get("tracker_low_count")),
+                "tracker_output": _integer(row.get("tracker_output_count")),
+            },
             "track_id": _integer(row.get("track_id")),
             "tracker_state": _text(row.get("tracker_state")),
             "tracker_confirmed": _boolean(row.get("tracker_confirmed")),
+            "tracker_hits": _integer(row.get("tracker_hits")),
+            "tracker_association_stage": _text(row.get("tracker_association_stage")),
+            "tracker_match_iou": _number(row.get("tracker_match_iou")),
+            "target_selector_reason": _text(row.get("target_selector_reason")),
             "score": _number(row.get("detection_score")),
             "bbox_xyxy": _vector(row, ("bbox_x1", "bbox_y1", "bbox_x2", "bbox_y2")),
             "bbox_area_ratio": _number(row.get("bbox_area_ratio")),
@@ -240,6 +290,7 @@ def telemetry_payload_from_log_row(
             "tracker_update_ms": _number(row.get("tracker_update_ms")),
             "tracker_fps": _number(row.get("tracker_actual_fps")),
             "result_age_ms": _number(row.get("perception_result_age_ms")),
+            "attitude_offset_ms": _number(row.get("detection_attitude_offset_ms")),
             "queue_dropped": _integer(row.get("perception_queue_dropped")),
             "worker_error": _text(row.get("perception_worker_error")),
         },
@@ -312,6 +363,8 @@ class TelemetryHub:
         self._history: deque[dict[str, Any]] = deque(maxlen=config.history_capacity)
         self._latest: dict[str, Any] | None = None
         self._last_history_s: float | None = None
+        self._last_vision_measurement: dict[str, Any] | None = None
+        self._last_vision_measurement_s: float | None = None
         self._sequence = 0
         self._running = False
         self._preview_pending: tuple[Any, dict[str, Any]] | None = None
@@ -359,6 +412,7 @@ class TelemetryHub:
         now = time.monotonic() if timestamp_s is None else float(timestamp_s)
         snapshot = copy.deepcopy(dict(payload))
         with self._lock:
+            self._stabilize_vision(snapshot, now)
             self._sequence += 1
             snapshot["schema_version"] = WEB_SCHEMA_VERSION
             snapshot["sequence"] = self._sequence
@@ -371,6 +425,30 @@ class TelemetryHub:
                 self._history.append(copy.deepcopy(snapshot))
                 self._last_history_s = now
             return copy.deepcopy(snapshot)
+
+    def _stabilize_vision(self, snapshot: dict[str, Any], now: float) -> None:
+        vision = snapshot.get("vision")
+        if not isinstance(vision, dict):
+            return
+        gap = vision.get("detector_reason") == "perception_no_new_result"
+        vision["new_result"] = not gap
+        vision["display_held"] = False
+        if not gap:
+            self._last_vision_measurement = {
+                key: copy.deepcopy(vision.get(key)) for key in VISION_MEASUREMENT_KEYS
+            }
+            self._last_vision_measurement_s = now
+            return
+        if self._last_vision_measurement is None or self._last_vision_measurement_s is None:
+            return
+        for key, value in self._last_vision_measurement.items():
+            vision[key] = copy.deepcopy(value)
+        base_age_ms = vision.get("result_age_ms")
+        if isinstance(base_age_ms, (int, float)) and math.isfinite(float(base_age_ms)):
+            vision["result_age_ms"] = float(base_age_ms) + 1000.0 * max(
+                0.0, now - self._last_vision_measurement_s
+            )
+        vision["display_held"] = True
 
     def latest(self, *, timestamp_s: float | None = None) -> dict[str, Any]:
         now = time.monotonic() if timestamp_s is None else float(timestamp_s)

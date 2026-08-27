@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping, Protocol, Sequence
 
@@ -57,6 +57,48 @@ class GuidanceSetpoint:
             source=source,
             reject_reason=reject_reason,
         )
+
+
+class GuidanceSetpointHold:
+    """Bridge asynchronous perception gaps without masking real rejections."""
+
+    def __init__(self, timeout_s: float):
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be positive")
+        self.timeout_s = float(timeout_s)
+        self._last_valid: GuidanceSetpoint | None = None
+        self._last_valid_s: float | None = None
+
+    def reset(self) -> None:
+        self._last_valid = None
+        self._last_valid_s = None
+
+    def update(
+        self,
+        setpoint: GuidanceSetpoint,
+        *,
+        timestamp: float,
+        allow_hold: bool,
+        gate_open: bool,
+    ) -> GuidanceSetpoint:
+        now = float(timestamp)
+        if not gate_open:
+            self.reset()
+            return setpoint
+        if setpoint.valid:
+            self._last_valid = setpoint
+            self._last_valid_s = now
+            return setpoint
+        age_s = None if self._last_valid_s is None else max(0.0, now - self._last_valid_s)
+        if allow_hold and self._last_valid is not None and age_s is not None and age_s <= self.timeout_s:
+            return replace(
+                self._last_valid,
+                timestamp=now,
+                source="guidance_hold",
+                reject_reason="",
+            )
+        self.reset()
+        return setpoint
 
 
 @dataclass(frozen=True)

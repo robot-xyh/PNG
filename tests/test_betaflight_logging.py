@@ -234,6 +234,40 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertTrue(camera.closed)
         self.assertTrue(detector.closed)
 
+    def test_rknn_bytetrack_runtime_rate_override_is_explicit_and_recorded(self):
+        class FakeCamera:
+            last_stats = {"camera_frame_ok": 0}
+
+            def read_image(self):
+                return None
+
+            def close(self):
+                self.closed = True
+
+        class FakeDetector:
+            def metadata(self):
+                return {"backend": "rknn_bytetrack"}
+
+            def close(self):
+                self.closed = True
+
+        args = SimpleNamespace(
+            rknn_library="bridge.so",
+            rknn_model="model.rknn",
+            rknn_perception_rate_hz=15.0,
+        )
+        source = runner.OpenCvRknnByteTrackSource(
+            args,
+            {"rknn_bytetrack": {"perception_rate_hz": 30.0}},
+            camera_source=FakeCamera(),
+            detector=FakeDetector(),
+        )
+        try:
+            self.assertEqual(source.perception_rate_hz, 15.0)
+            self.assertEqual(source.metadata()["perception_rate_hz"], 15.0)
+        finally:
+            source.close()
+
     def test_direct_rc_path_never_sends_without_msp_worker(self):
         class RejectingAdapter:
             def send_raw_rc(self, _command):
@@ -357,6 +391,7 @@ class BetaflightLoggingTest(unittest.TestCase):
                 "detector_raw_count": 2,
                 "detector_class_filtered_count": 1,
                 "detector_track_filtered_count": 1,
+                "detector_best_score": 0.875,
                 "rknn_selected_index": 0,
                 "rknn_preprocess_ms": 1.0,
                 "rknn_inference_ms": 4.0,
@@ -394,6 +429,7 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["camera_read_ms"], "2.500")
         self.assertEqual(row["loop_period_s"], "0.050000")
         self.assertEqual(row["rknn_inference_ms"], "4.000")
+        self.assertEqual(row["detector_best_score"], "0.875000")
         self.assertEqual(row["rc_in_ch5"], 1800)
         self.assertEqual(row["rc_in_all"], "1000,1100,1200,1300,1800,1500,1500,1500")
         self.assertEqual(row["rc_sent_all"], ",".join(str(value) for value in range(1000, 1016)))
@@ -470,7 +506,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 3)
+            self.assertEqual(data["log_schema_version"], 5)
 
     def test_edge_event_logger_writes_only_state_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -53,13 +53,15 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
     exact_885_rows = []
     algorithm_throttle_rows = []
     gate_rows = []
+    legacy_algorithm_rows = []
+    invalid_hold_rows = []
     rate_rows: dict[str, list[dict[str, str]]] = {axis: [] for axis in rate_limits}
     for row in rows:
         sent = [_number(row.get(f"rc_sent_ch{index}")) for index in range(1, 5)]
@@ -71,15 +73,26 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             throttle = _number(row.get(f"rc_sent_ch{throttle_channel}"))
             if throttle is not None and throttle > throttle_max_us:
                 algorithm_throttle_rows.append(row)
-            required_worker_gates = (
-                "msp_output_enabled",
-                "msp_algorithm_authorized",
-                "msp_worker_override_active",
-                "msp_prefill_ready",
-                "physical_rc_fresh",
-            )
-            if any(_integer(row.get(field)) != 1 for field in required_worker_gates):
-                gate_rows.append(row)
+            if schema_version is not None and schema_version >= 4:
+                required_publish_gates = (
+                    "msp_last_publish_output_enabled",
+                    "msp_last_publish_algorithm_authorized",
+                    "msp_last_publish_override_active",
+                    "msp_last_publish_prefill_ready",
+                    "msp_last_publish_physical_rc_fresh",
+                    "msp_last_publish_command_fresh",
+                )
+                if any(_integer(row.get(field)) != 1 for field in required_publish_gates):
+                    gate_rows.append(row)
+            else:
+                legacy_algorithm_rows.append(row)
+        if schema_version is not None and schema_version >= 4 and row.get("sp_source") == "guidance_hold":
+            if (
+                row.get("detector_reject_reason") != "perception_no_new_result"
+                or _integer(row.get("perception_new_result")) != 0
+                or _integer(row.get("watchdog_ok")) != 1
+            ):
+                invalid_hold_rows.append(row)
         for axis, limit in rate_limits.items():
             value = _number(row.get(f"map_limited_{axis}_rate_deg_s"))
             if value is not None and abs(value) > limit + 1.0e-6:
@@ -89,6 +102,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "sent_885_us", exact_885_rows)
     _append_violation(violations, "algorithm_throttle_envelope", algorithm_throttle_rows)
     _append_violation(violations, "algorithm_without_worker_gates", gate_rows)
+    _append_violation(violations, "publish_gate_timebase_unavailable", legacy_algorithm_rows)
+    _append_violation(violations, "guidance_hold_outside_perception_gap", invalid_hold_rows)
     for axis, failed_rows in rate_rows.items():
         _append_violation(violations, f"{axis}_rate_limit", failed_rows)
 
@@ -138,6 +153,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "rows": len(rows),
         "duration_s": _maximum(rows, "elapsed_s"),
         "algorithm_rows": sum(row.get("msp_publish_mode") == "algorithm" for row in rows),
+        "guidance_hold_rows": sum(row.get("sp_source") == "guidance_hold" for row in rows),
         "set_raw_rc_success_count": _integer(final.get("msp_set_raw_rc_success_count")) or 0,
         "set_raw_rc_error_count": set_errors,
         "max_send_gap_s": max_send_gap_s,

@@ -41,12 +41,14 @@ class RknnByteTrackDetector:
     ) -> tuple[FrameDetection | None, dict[str, Any]]:
         batch = self.bridge.infer_all(_packed_rgb(image_rgb), capacity=self.rknn_config.max_det)
         update = self.tracker.update(batch.detections, timestamp=exposure_ts)
+        best_score = max((float(item.score) for item in batch.detections), default=None)
         stats = {
             "detector_source": self.source,
             "detector_reject_reason": "",
             "detector_raw_count": batch.total_count,
             "detector_class_filtered_count": len(batch.detections),
             "detector_track_filtered_count": int(update.selected is not None),
+            "detector_best_score": best_score,
             "rknn_batch_truncated": int(batch.truncated),
             "rknn_preprocess_ms": batch.preprocess_ms,
             "rknn_inference_ms": batch.inference_ms,

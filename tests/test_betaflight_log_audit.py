@@ -41,6 +41,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
                 rc_sent_ch3="1200",
                 map_limited_roll_rate_deg_s="4.0",
                 msp_worker_override_active="0",
+                msp_last_publish_override_active="0",
                 msp_send_success_max_interval_s="0.10",
                 msp_worker_send_error_count="1",
                 msp_cmd_set_raw_rc_error_count="1",
@@ -75,6 +76,37 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertIn("web_no_telemetry_published", codes)
             self.assertIn("web_runtime_errors", codes)
 
+    def test_schema_v4_rejects_guidance_hold_outside_worker_gap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                sp_source="guidance_hold",
+                detector_reject_reason="area_not_expanding",
+                perception_new_result="1",
+                watchdog_ok="1",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=4)
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertFalse(result["passed"])
+            self.assertIn(
+                "guidance_hold_outside_perception_gap",
+                {item["code"] for item in result["violations"]},
+            )
+
+    def test_schema_v3_cannot_prove_publish_time_gates(self):
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertFalse(result["passed"])
+            self.assertIn(
+                "publish_gate_timebase_unavailable",
+                {item["code"] for item in result["violations"]},
+            )
+
     @staticmethod
     def _safe_row():
         return {
@@ -89,6 +121,12 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "msp_worker_override_active": "1",
             "msp_prefill_ready": "1",
             "physical_rc_fresh": "1",
+            "msp_last_publish_output_enabled": "1",
+            "msp_last_publish_algorithm_authorized": "1",
+            "msp_last_publish_override_active": "1",
+            "msp_last_publish_prefill_ready": "1",
+            "msp_last_publish_physical_rc_fresh": "1",
+            "msp_last_publish_command_fresh": "1",
             "map_limited_roll_rate_deg_s": "3.0",
             "map_limited_pitch_rate_deg_s": "-3.0",
             "map_limited_yaw_rate_deg_s": "0.0",
@@ -107,7 +145,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
         }
 
     @staticmethod
-    def _write_log(directory: Path, row, *, web_enabled=False):
+    def _write_log(directory: Path, row, *, web_enabled=False, schema_version=4):
         csv_path = directory / "bench.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(row))
@@ -129,7 +167,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
                 },
                 "telemetry_web": {"enabled": web_enabled},
             },
-            "log_schema_version": 3,
+            "log_schema_version": schema_version,
             "log_events_jsonl": "",
         }
         csv_path.with_name("bench_meta.json").write_text(json.dumps(meta), encoding="utf-8")

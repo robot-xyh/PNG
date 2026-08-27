@@ -217,6 +217,19 @@
         </div>
       </section>
       <section class="section">
+        <h2 class="section-title">Perception Diagnostics</h2>
+        <div class="metric-grid">
+          <div class="metric"><label>Best candidate</label><output id="bestCandidateScore">--</output></div>
+          <div class="metric"><label>Raw / class</label><output id="detectorCounts">--</output></div>
+          <div class="metric"><label>High / low</label><output id="trackerCandidateCounts">--</output></div>
+          <div class="metric"><label>Tracker output</label><output id="trackerOutputCount">--</output></div>
+          <div class="metric"><label>Track hits</label><output id="trackerHits">--</output></div>
+          <div class="metric"><label>Association</label><output id="trackerAssociation">--</output></div>
+          <div class="metric"><label>Match IoU</label><output id="trackerMatchIou">--</output></div>
+          <div class="metric"><label>Selector</label><output id="targetSelectorReason">--</output></div>
+        </div>
+      </section>
+      <section class="section">
         <h2 class="section-title">RC Input / Sent</h2>
         <div id="channels" class="channels"></div>
       </section>
@@ -225,6 +238,7 @@
         <table class="detail-table">
           <tr><th>Safety</th><td id="safetyReason">--</td><th>Publish</th><td id="publishMode">--</td></tr>
           <tr><th>Detector</th><td id="detectorReason">--</td><th>Worker</th><td id="workerState">--</td></tr>
+          <tr><th>Perception</th><td id="perceptionState">--</td><th>Vision / attitude</th><td id="attitudeOffset">--</td></tr>
           <tr><th>Orange Pi</th><td id="hostState">--</td><th>Web</th><td id="webState">--</td></tr>
         </table>
         <div id="errorLine" class="error-line">No active errors</div>
@@ -345,7 +359,8 @@
       setGate("gateTelemetry", safety.telemetry_fresh, "FRESH", "STALE", "fail");
       setGate("gateAttitude", safety.attitude_synced, "SYNCED", "STALE", "fail");
       setGate("gateVoltage", safety.voltage_ok, "OK", "LOW", "fail");
-      setGate("gateTracker", vision.tracker_confirmed, `TRACK ${text(vision.track_id)}`, "NO TRACK");
+      const trackerLabel = `${vision.display_held ? "HELD" : "TRACK"} ${text(vision.track_id)}`;
+      setGate("gateTracker", vision.tracker_confirmed, trackerLabel, "NO TRACK");
       setGate("gateLos", guidance.los_valid, "VALID", "INVALID");
       $("gateLos").title = text(guidance.los_reason);
       setGate("gateTtc", guidance.ttc_valid, number(guidance.ttc_s, 2, " s"), "INVALID");
@@ -354,7 +369,7 @@
       setGate("gateGuidance", guidance.valid, "VALID", "INVALID");
       $("gateGuidance").title = text(guidance.reason);
       setGate("gateCommand", command.valid, "VALID", "INVALID");
-      $("gateCommand").title = text(command.reason);
+      $("gateCommand").title = `${text(command.source)} / ${text(command.reason)}`;
       setGate("gatePublish", publish === "algorithm", publish.toUpperCase(), publish.toUpperCase());
       setGate("gateControlState", state === "ACTIVE", state, state, state === "FAILSAFE" || state === "DISABLED" ? "fail" : "wait");
 
@@ -392,8 +407,9 @@
       setPill("armPill", safety.armed ? "ARMED" : "DISARMED", safety.armed ? "ok" : "warn");
       setPill("overridePill", safety.override_active ? "OVERRIDE ON" : "OVERRIDE OFF", safety.override_active ? "ok" : "warn");
       const trackerConfirmed = path(data, ["vision", "tracker_confirmed"]);
+      const trackerHeld = Boolean(path(data, ["vision", "display_held"], false));
       const commandValid = path(data, ["command", "valid"]);
-      setPill("trackerPill", trackerConfirmed ? "TRACKED" : "NO TRACK", trackerConfirmed ? "ok" : "warn");
+      setPill("trackerPill", trackerConfirmed ? (trackerHeld ? "TRACK HELD" : "TRACKED") : "NO TRACK", trackerConfirmed ? (trackerHeld ? "info" : "ok") : "warn");
       setPill("commandPill", commandValid ? "COMMAND VALID" : "NO COMMAND", commandValid ? "ok" : "warn");
       setPill("linkPill", stale ? "STALE" : "LIVE", stale ? "bad" : "ok");
       $("sampleAge").textContent = number(data.sample_age_ms, 0, " ms");
@@ -403,18 +419,29 @@
       setMetric("pitch", number(attitude[1], 1, " deg"));
       setMetric("yaw", number(attitude[2], 1, " deg"));
       setMetric("vbat", number(path(data, ["flight_controller", "vbat_v"]), 2, " V"));
-      setMetric("trackId", text(path(data, ["vision", "track_id"])));
+      const trackId = text(path(data, ["vision", "track_id"]));
+      setMetric("trackId", trackerHeld ? `${trackId} held` : trackId);
       setMetric("score", number(path(data, ["vision", "score"]), 2));
       setMetric("ttc", number(path(data, ["guidance", "ttc_s"]), 2, " s"));
       setMetric("guidance", boolText(path(data, ["guidance", "valid"]), "VALID", "INVALID"));
       setMetric("rknn", number(path(data, ["vision", "rknn_ms", "total"]), 1, " ms"));
       setMetric("trackerFps", number(path(data, ["vision", "tracker_fps"]), 1, " fps"));
+      setMetric("bestCandidateScore", number(path(data, ["vision", "detector_best_score"]), 3));
+      setMetric("detectorCounts", `${text(path(data, ["vision", "detector_counts", "raw"]))} / ${text(path(data, ["vision", "detector_counts", "class_filtered"]))}`);
+      setMetric("trackerCandidateCounts", `${text(path(data, ["vision", "detector_counts", "high"]))} / ${text(path(data, ["vision", "detector_counts", "low"]))}`);
+      setMetric("trackerOutputCount", text(path(data, ["vision", "detector_counts", "tracker_output"])));
+      setMetric("trackerHits", text(path(data, ["vision", "tracker_hits"])));
+      setMetric("trackerAssociation", text(path(data, ["vision", "tracker_association_stage"])));
+      setMetric("trackerMatchIou", number(path(data, ["vision", "tracker_match_iou"]), 3));
+      setMetric("targetSelectorReason", text(path(data, ["vision", "target_selector_reason"])));
       setMetric("mspAge", number(path(data, ["msp", "telemetry_age_s"]), 3, " s"));
       setMetric("loopPeriod", number(path(data, ["run", "loop_period_s"]), 3, " s"));
       setMetric("safetyReason", text(safety.reason));
       setMetric("publishMode", text(safety.publish_mode));
       setMetric("detectorReason", text(path(data, ["vision", "detector_reason"])));
       setMetric("workerState", text(path(data, ["vision", "tracker_state"])));
+      setMetric("perceptionState", path(data, ["vision", "new_result"]) === false ? "HELD BETWEEN RESULTS" : "NEW RESULT");
+      setMetric("attitudeOffset", number(path(data, ["vision", "attitude_offset_ms"]), 1, " ms"));
       const temp = path(data, ["host", "thermal_max_c"]);
       const rss = path(data, ["host", "rss_mb"]);
       setMetric("hostState", `${number(temp, 0, " C")} / ${number(rss, 0, " MB")}`);

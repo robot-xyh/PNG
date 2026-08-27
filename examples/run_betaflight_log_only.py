@@ -49,6 +49,7 @@ from vision_guidance.flight_control import (  # noqa: E402
     BetaflightSafetyStateMachine,
     CommandWatchdog,
     GuidanceSetpoint,
+    GuidanceSetpointHold,
     RcCommand,
     RcCommandMapper,
     RcMappingConfig,
@@ -66,7 +67,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 3
+LOG_SCHEMA_VERSION = 5
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
@@ -105,6 +106,17 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yolo-allow-untracked-fallback", action="store_true")
     parser.add_argument("--rknn-library", default="", help="Override rknn_detector.library.")
     parser.add_argument("--rknn-model", default="", help="Override rknn_detector.model.")
+    parser.add_argument(
+        "--rknn-perception-rate-hz",
+        type=float,
+        default=0.0,
+        help="Override rknn_bytetrack.perception_rate_hz; 0 uses the config value.",
+    )
+    parser.add_argument(
+        "--disable-web-preview",
+        action="store_true",
+        help="Disable MJPEG encoding while retaining JSON/SSE telemetry.",
+    )
     return parser.parse_args()
 
 
@@ -470,7 +482,11 @@ class OpenCvRknnByteTrackSource:
             rknn_config=RknnDetectorConfig.from_mapping(detector_values),
             tracker_config=ByteTrackConfig.from_mapping(tracker_values),
         )
-        self.perception_rate_hz = float(tracker_values.get("perception_rate_hz", 0.0))
+        configured_rate_hz = float(tracker_values.get("perception_rate_hz", 0.0))
+        override_rate_hz = float(getattr(args, "rknn_perception_rate_hz", 0.0) or 0.0)
+        if override_rate_hz < 0.0:
+            raise ValueError("--rknn-perception-rate-hz must be non-negative")
+        self.perception_rate_hz = override_rate_hz or configured_rate_hz
         self._stop_event = threading.Event()
         self._result_lock = threading.Lock()
         self._latest_result: tuple[int, FrameDetection | None, dict[str, Any]] | None = None
@@ -491,7 +507,9 @@ class OpenCvRknnByteTrackSource:
         self.camera.close()
 
     def metadata(self) -> dict[str, Any]:
-        return self.detector.metadata()
+        metadata = dict(self.detector.metadata())
+        metadata["perception_rate_hz"] = self.perception_rate_hz
+        return metadata
 
     def detect(
         self,
@@ -511,6 +529,7 @@ class OpenCvRknnByteTrackSource:
                     "detector_source": "rknn_bytetrack",
                     "detector_reject_reason": "perception_no_new_result",
                     "bbox_measurement_source": "none",
+                    "perception_new_result": 0,
                     "perception_worker_error": worker_error,
                     "perception_queue_dropped": self._queue_dropped,
                 }
@@ -520,6 +539,7 @@ class OpenCvRknnByteTrackSource:
             self._latest_consumed_seq = latest[0]
             _sequence, detection, stored_stats = latest
             stats = dict(stored_stats)
+            stats["perception_new_result"] = 1
         if worker_error:
             raise RuntimeError(f"RKNN ByteTrack perception worker failed: {worker_error}")
         capture_ts = stats.get("camera_capture_ts")
@@ -593,13 +613,20 @@ def _publish_preview(
 def main() -> None:
     args = parse_args()
     config = _load_config(args.config)
-    web_config = TelemetryWebConfig.from_mapping(dict(config.get("telemetry_web", {})))
+    web_values = dict(config.get("telemetry_web", {}))
+    if args.disable_web_preview:
+        preview_values = dict(web_values.get("preview", {}))
+        preview_values["enabled"] = False
+        web_values["preview"] = preview_values
+    web_config = TelemetryWebConfig.from_mapping(web_values)
     web_service = TelemetryWebService(web_config)
     web_service.start()
     if web_config.enabled:
         print(f"Browser telemetry: {web_service.url}")
     try:
         _run(args, config, web_service)
+    except KeyboardInterrupt:
+        print("Shutdown requested; closing Betaflight runtime.")
     finally:
         web_service.close()
 
@@ -614,7 +641,9 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
 
     rc_mapper = RcCommandMapper(_rc_mapping_config(config))
     safety_cfg = dict(config.get("safety", {}))
-    watchdog = CommandWatchdog(float(safety_cfg.get("watchdog_timeout_s", 0.25)))
+    watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
+    watchdog = CommandWatchdog(watchdog_timeout_s)
+    setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
     safety = BetaflightSafetyStateMachine()
     adapter = BetaflightMSPAdapter(port, baudrate, timeout_s=timeout_s)
     adapter.open()
@@ -737,12 +766,21 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     frame_id=frame_id,
                     active_track_id=pipeline.active_track_id,
                 )
+                detector_stats.setdefault(
+                    "perception_new_result",
+                    int(detector_stats.get("detector_reject_reason") != "perception_no_new_result"),
+                )
+                detector_stats["detection_attitude_offset_ms"] = (
+                    ""
+                    if detection is None or last_attitude_buffer_sample_s is None
+                    else 1000.0 * (detection.exposure_ts - last_attitude_buffer_sample_s)
+                )
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
                 result = _process_detection(pipeline, detection)
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
                     watchdog.kick(loop_start)
-                setpoint = _guidance_setpoint(config, guidance, loop_start)
+                raw_setpoint = _guidance_setpoint(config, guidance, loop_start)
 
                 telemetry_age_s = (
                     worker_snapshot.telemetry_age_s
@@ -785,11 +823,35 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     if worker_snapshot is not None
                     else not msp_runtime_config.prefill_enabled
                 )
+                setpoint = setpoint_hold.update(
+                    raw_setpoint,
+                    timestamp=loop_start,
+                    allow_hold=(
+                        detector_stats.get("detector_reject_reason") == "perception_no_new_result"
+                    ),
+                    gate_open=bool(
+                        control_requested
+                        and allow_control
+                        and authorization.approved
+                        and authorization.config_conflict_free
+                        and override_available
+                        and override_active
+                        and prefill_ready
+                        and armed
+                        and physical_rc_fresh
+                        and telemetry_fresh
+                        and attitude_synced
+                        and voltage_ok
+                        and aux_enabled
+                        and watchdog_ok
+                    ),
+                )
+                target_valid = bool(setpoint.valid)
                 decision = safety.update(
                     SafetyInputs(
                         control_requested=control_requested,
                         allow_control=allow_control,
-                        target_valid=bool(guidance is not None and guidance.valid),
+                        target_valid=target_valid,
                         aux_enabled=aux_enabled,
                         telemetry_fresh=telemetry_fresh,
                         attitude_synced=attitude_synced,
@@ -842,7 +904,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 if platform_health is not None:
                     detector_stats.update(_platform_health_log_stats(platform_health.snapshot(), loop_start))
                 detector_stats.update(web_service.log_stats())
-                target_valid = bool(guidance is not None and guidance.valid)
                 event_logger.update(
                     {
                         "armed": int(armed),
@@ -1145,6 +1206,12 @@ def _msp_log_stats(
         "msp_stale_command_count": "",
         "msp_staged_command_age_s": "",
         "msp_publish_mode": "",
+        "msp_last_publish_output_enabled": "",
+        "msp_last_publish_algorithm_authorized": "",
+        "msp_last_publish_override_active": "",
+        "msp_last_publish_prefill_ready": "",
+        "msp_last_publish_physical_rc_fresh": "",
+        "msp_last_publish_command_fresh": "",
         "msp_last_sent_channels": (),
         "msp_status_age_s": "",
         "msp_attitude_age_s": "",
@@ -1198,6 +1265,16 @@ def _msp_log_stats(
                 "" if worker_snapshot.staged_command_age_s is None else worker_snapshot.staged_command_age_s
             ),
             msp_publish_mode=worker_snapshot.publish_mode,
+            msp_last_publish_output_enabled=int(worker_snapshot.last_publish_output_enabled),
+            msp_last_publish_algorithm_authorized=int(
+                worker_snapshot.last_publish_algorithm_authorized
+            ),
+            msp_last_publish_override_active=int(worker_snapshot.last_publish_override_active),
+            msp_last_publish_prefill_ready=int(worker_snapshot.last_publish_prefill_ready),
+            msp_last_publish_physical_rc_fresh=int(
+                worker_snapshot.last_publish_physical_rc_fresh
+            ),
+            msp_last_publish_command_fresh=int(worker_snapshot.last_publish_command_fresh),
             msp_last_sent_channels=worker_snapshot.last_sent_channels,
             msp_status_age_s=worker_snapshot.status_age_s,
             msp_attitude_age_s=worker_snapshot.attitude_age_s,
@@ -1438,6 +1515,12 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_stale_command_count",
         "msp_staged_command_age_s",
         "msp_publish_mode",
+        "msp_last_publish_output_enabled",
+        "msp_last_publish_algorithm_authorized",
+        "msp_last_publish_override_active",
+        "msp_last_publish_prefill_ready",
+        "msp_last_publish_physical_rc_fresh",
+        "msp_last_publish_command_fresh",
         "msp_status_age_s",
         "msp_attitude_age_s",
         "msp_analog_age_s",
@@ -1493,6 +1576,7 @@ def _log_fields(channel_count: int) -> list[str]:
         "detector_raw_count",
         "detector_class_filtered_count",
         "detector_track_filtered_count",
+        "detector_best_score",
         "rknn_selected_index",
         "rknn_preprocess_ms",
         "rknn_inference_ms",
@@ -1518,10 +1602,12 @@ def _log_fields(channel_count: int) -> list[str]:
         "target_selector_reason",
         "bbox_measurement_source",
         "perception_seq",
+        "perception_new_result",
         "perception_worker_rate_hz",
         "perception_result_age_ms",
         "perception_queue_dropped",
         "perception_worker_error",
+        "detection_attitude_offset_ms",
         "loop_period_s",
         "camera_device",
         "camera_frame_ok",
@@ -1722,6 +1808,24 @@ def _log_row(
         "msp_stale_command_count": detector_stats.get("msp_stale_command_count", ""),
         "msp_staged_command_age_s": _stats_float(detector_stats, "msp_staged_command_age_s", precision=6),
         "msp_publish_mode": detector_stats.get("msp_publish_mode", ""),
+        "msp_last_publish_output_enabled": detector_stats.get(
+            "msp_last_publish_output_enabled", ""
+        ),
+        "msp_last_publish_algorithm_authorized": detector_stats.get(
+            "msp_last_publish_algorithm_authorized", ""
+        ),
+        "msp_last_publish_override_active": detector_stats.get(
+            "msp_last_publish_override_active", ""
+        ),
+        "msp_last_publish_prefill_ready": detector_stats.get(
+            "msp_last_publish_prefill_ready", ""
+        ),
+        "msp_last_publish_physical_rc_fresh": detector_stats.get(
+            "msp_last_publish_physical_rc_fresh", ""
+        ),
+        "msp_last_publish_command_fresh": detector_stats.get(
+            "msp_last_publish_command_fresh", ""
+        ),
         "msp_status_age_s": _stats_float(detector_stats, "msp_status_age_s", precision=6),
         "msp_attitude_age_s": _stats_float(detector_stats, "msp_attitude_age_s", precision=6),
         "msp_analog_age_s": _stats_float(detector_stats, "msp_analog_age_s", precision=6),
@@ -1787,6 +1891,7 @@ def _log_row(
         "detector_raw_count": detector_stats.get("detector_raw_count", ""),
         "detector_class_filtered_count": detector_stats.get("detector_class_filtered_count", ""),
         "detector_track_filtered_count": detector_stats.get("detector_track_filtered_count", ""),
+        "detector_best_score": _stats_float(detector_stats, "detector_best_score", precision=6),
         "rknn_selected_index": detector_stats.get("rknn_selected_index", ""),
         "rknn_preprocess_ms": _stats_float(detector_stats, "rknn_preprocess_ms", precision=3),
         "rknn_inference_ms": _stats_float(detector_stats, "rknn_inference_ms", precision=3),
@@ -1812,10 +1917,14 @@ def _log_row(
         "target_selector_reason": detector_stats.get("target_selector_reason", ""),
         "bbox_measurement_source": detector_stats.get("bbox_measurement_source", ""),
         "perception_seq": detector_stats.get("perception_seq", ""),
+        "perception_new_result": detector_stats.get("perception_new_result", ""),
         "perception_worker_rate_hz": _stats_float(detector_stats, "perception_worker_rate_hz", precision=3),
         "perception_result_age_ms": _stats_float(detector_stats, "perception_result_age_ms", precision=3),
         "perception_queue_dropped": detector_stats.get("perception_queue_dropped", ""),
         "perception_worker_error": detector_stats.get("perception_worker_error", ""),
+        "detection_attitude_offset_ms": _stats_float(
+            detector_stats, "detection_attitude_offset_ms", precision=3
+        ),
         "loop_period_s": _stats_float(detector_stats, "loop_period_s", precision=6),
         "camera_device": detector_stats.get("camera_device", ""),
         "camera_frame_ok": detector_stats.get("camera_frame_ok", ""),

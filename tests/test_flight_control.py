@@ -6,6 +6,7 @@ from vision_guidance.flight_control import (
     BetaflightSafetyStateMachine,
     CommandWatchdog,
     GuidanceSetpoint,
+    GuidanceSetpointHold,
     RcCommandMapper,
     RcMappingConfig,
     SafetyInputs,
@@ -230,6 +231,42 @@ class FlightControlTest(unittest.TestCase):
         self.assertAlmostEqual(watchdog.age_s(1.4), 0.4)
         self.assertFalse(watchdog.fresh(1.6))
         self.assertAlmostEqual(watchdog.age_s(1.6), 0.6)
+
+    def test_setpoint_hold_only_bridges_explicit_perception_gaps(self):
+        hold = GuidanceSetpointHold(timeout_s=0.25)
+        valid = GuidanceSetpoint(
+            timestamp=1.0,
+            roll_rate_deg_s=2.0,
+            thrust=0.078,
+            source="guidance_eval",
+        )
+        missing = GuidanceSetpoint(
+            timestamp=1.05,
+            valid=False,
+            source="guidance_eval",
+            reject_reason="guidance_missing",
+        )
+
+        self.assertIs(hold.update(valid, timestamp=1.0, allow_hold=False, gate_open=True), valid)
+        bridged = hold.update(missing, timestamp=1.05, allow_hold=True, gate_open=True)
+        self.assertTrue(bridged.valid)
+        self.assertEqual(bridged.source, "guidance_hold")
+        self.assertEqual(bridged.roll_rate_deg_s, 2.0)
+
+        rejected = hold.update(missing, timestamp=1.10, allow_hold=False, gate_open=True)
+        self.assertFalse(rejected.valid)
+        self.assertFalse(hold.update(missing, timestamp=1.15, allow_hold=True, gate_open=True).valid)
+
+    def test_setpoint_hold_expires_and_resets_when_gate_closes(self):
+        hold = GuidanceSetpointHold(timeout_s=0.25)
+        valid = GuidanceSetpoint(timestamp=1.0, pitch_rate_deg_s=-1.0, source="guidance_eval")
+        missing = GuidanceSetpoint(timestamp=1.1, valid=False, reject_reason="guidance_missing")
+
+        hold.update(valid, timestamp=1.0, allow_hold=False, gate_open=True)
+        self.assertFalse(hold.update(missing, timestamp=1.30, allow_hold=True, gate_open=True).valid)
+        hold.update(valid, timestamp=2.0, allow_hold=False, gate_open=True)
+        self.assertFalse(hold.update(missing, timestamp=2.05, allow_hold=True, gate_open=False).valid)
+        self.assertFalse(hold.update(missing, timestamp=2.10, allow_hold=True, gate_open=True).valid)
 
     def test_control_authorization_gates_fail_closed(self):
         base = {

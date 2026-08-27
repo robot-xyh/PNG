@@ -138,6 +138,12 @@ class MspWorkerSnapshot:
     staged_command_age_s: float | None
     publish_mode: str
     last_sent_channels: tuple[int, ...]
+    last_publish_output_enabled: bool
+    last_publish_algorithm_authorized: bool
+    last_publish_override_active: bool
+    last_publish_prefill_ready: bool
+    last_publish_physical_rc_fresh: bool
+    last_publish_command_fresh: bool
     publish_tick_interval_s: float | None
     publish_tick_max_interval_s: float | None
     publish_deadline_miss_count: int
@@ -413,6 +419,12 @@ class BetaflightMspIoWorker:
         self._stale_command_count = 0
         self._publish_mode = "disabled"
         self._last_sent_channels: tuple[int, ...] = ()
+        self._last_publish_output_enabled = False
+        self._last_publish_algorithm_authorized = False
+        self._last_publish_override_active = False
+        self._last_publish_prefill_ready = False
+        self._last_publish_physical_rc_fresh = False
+        self._last_publish_command_fresh = False
         self._last_publish_tick_s: float | None = None
         self._publish_tick_interval_s: float | None = None
         self._publish_tick_max_interval_s: float | None = None
@@ -528,6 +540,12 @@ class BetaflightMspIoWorker:
                 staged_command_age_s=command_age,
                 publish_mode=self._publish_mode,
                 last_sent_channels=self._last_sent_channels,
+                last_publish_output_enabled=self._last_publish_output_enabled,
+                last_publish_algorithm_authorized=self._last_publish_algorithm_authorized,
+                last_publish_override_active=self._last_publish_override_active,
+                last_publish_prefill_ready=self._last_publish_prefill_ready,
+                last_publish_physical_rc_fresh=self._last_publish_physical_rc_fresh,
+                last_publish_command_fresh=self._last_publish_command_fresh,
                 publish_tick_interval_s=self._publish_tick_interval_s,
                 publish_tick_max_interval_s=self._publish_tick_max_interval_s,
                 publish_deadline_miss_count=self._publish_deadline_miss_count,
@@ -767,6 +785,7 @@ class BetaflightMspIoWorker:
         command_fresh = command_age is not None and command_age <= self.config.staged_command_timeout_s
         use_algorithm = bool(
             algorithm_authorized
+            and override_active
             and command is not None
             and command_fresh
             and (prefill_ready or not self.config.prefill_enabled)
@@ -820,6 +839,12 @@ class BetaflightMspIoWorker:
                 self._worker_error = ""
                 self._last_sent_channels = tuple(channels)
                 self._publish_mode = publish_mode
+                self._last_publish_output_enabled = output_enabled
+                self._last_publish_algorithm_authorized = algorithm_authorized
+                self._last_publish_override_active = override_active
+                self._last_publish_prefill_ready = prefill_ready or not self.config.prefill_enabled
+                self._last_publish_physical_rc_fresh = fresh
+                self._last_publish_command_fresh = command_fresh
                 if use_algorithm:
                     self._algorithm_send_count += 1
                 else:

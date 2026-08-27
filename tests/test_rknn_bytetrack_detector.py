@@ -65,6 +65,7 @@ class RknnByteTrackDetectorTest(unittest.TestCase):
         self.assertEqual(detection.bbox_xyxy, (10.0, 20.0, 30.0, 50.0))
         self.assertEqual(bridge.call[1], 300)
         self.assertEqual(stats["detector_source"], "rknn_bytetrack")
+        self.assertAlmostEqual(stats["detector_best_score"], 0.8)
         self.assertEqual(stats["rknn_total_ms"], 6.5)
         self.assertEqual(stats["bbox_measurement_source"], "detector_update")
 

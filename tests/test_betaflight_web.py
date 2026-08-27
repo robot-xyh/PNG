@@ -66,6 +66,15 @@ class BetaflightWebTest(unittest.TestCase):
             "setRawRcCount",
             "setRawRcErrors",
             "deadlineMisses",
+            "perceptionState",
+            "attitudeOffset",
+            "bestCandidateScore",
+            "detectorCounts",
+            "trackerCandidateCounts",
+            "trackerOutputCount",
+            "trackerHits",
+            "trackerAssociation",
+            "targetSelectorReason",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('["rc", "physical_us", 0]', dashboard)
@@ -98,12 +107,24 @@ class BetaflightWebTest(unittest.TestCase):
             "msp_override_available": "1",
             "msp_override_active": "0",
             "guidance_valid": "1",
+            "sp_valid": "1",
+            "perception_new_result": "1",
             "roll_deg": "2.5",
             "pitch_deg": "-1.0",
             "yaw_deg": "90.0",
             "vbat_v": "4.20",
             "track_id": "7",
             "detection_score": "0.75",
+            "detector_best_score": "0.22",
+            "detector_raw_count": "2",
+            "detector_class_filtered_count": "1",
+            "tracker_high_count": "0",
+            "tracker_low_count": "1",
+            "tracker_output_count": "0",
+            "tracker_hits": "2",
+            "tracker_association_stage": "low",
+            "tracker_match_iou": "0.63",
+            "target_selector_reason": "no_tracked_output",
             "bbox_x1": "1",
             "bbox_y1": "2",
             "bbox_x2": "3",
@@ -124,8 +145,18 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["safety"]["state"], "LOG_ONLY")
         self.assertFalse(payload["safety"]["armed"])
         self.assertTrue(payload["safety"]["target_valid"])
+        self.assertTrue(payload["vision"]["new_result"])
         self.assertEqual(payload["flight_controller"]["attitude_deg"], [2.5, -1.0, 90.0])
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(payload["vision"]["detector_best_score"], 0.22)
+        self.assertEqual(
+            payload["vision"]["detector_counts"],
+            {"raw": 2, "class_filtered": 1, "high": 0, "low": 1, "tracker_output": 0},
+        )
+        self.assertEqual(payload["vision"]["tracker_hits"], 2)
+        self.assertEqual(payload["vision"]["tracker_association_stage"], "low")
+        self.assertEqual(payload["vision"]["tracker_match_iou"], 0.63)
+        self.assertEqual(payload["vision"]["target_selector_reason"], "no_tracked_output")
         self.assertEqual(payload["rc"]["input_us"][0], 1500)
         self.assertEqual(payload["rc"]["input_order"], "AERT1234")
         self.assertEqual(payload["rc"]["wire_order"], "AETR1234")
@@ -146,6 +177,60 @@ class BetaflightWebTest(unittest.TestCase):
             self.assertFalse(hub.latest(timestamp_s=10.7)["stale"])
             self.assertTrue(hub.latest(timestamp_s=11.2)["stale"])
             self.assertEqual([item["value"] for item in hub.history(timestamp_s=10.7)["samples"]], [1, 3])
+        finally:
+            hub.close()
+
+    def test_hub_holds_visual_display_across_no_new_result_only(self):
+        hub = TelemetryHub(TelemetryWebConfig())
+        hub.start()
+        try:
+            first = hub.publish(
+                {
+                    "vision": {
+                        "detector_reason": None,
+                        "track_id": 206,
+                        "tracker_state": "tracked",
+                        "tracker_confirmed": True,
+                        "score": 0.8,
+                        "bbox_xyxy": [1.0, 2.0, 30.0, 40.0],
+                        "result_age_ms": 40.0,
+                    }
+                },
+                timestamp_s=10.0,
+            )
+            gap = hub.publish(
+                {
+                    "vision": {
+                        "detector_reason": "perception_no_new_result",
+                        "track_id": None,
+                        "tracker_state": None,
+                        "tracker_confirmed": None,
+                        "result_age_ms": None,
+                    }
+                },
+                timestamp_s=10.05,
+            )
+
+            self.assertTrue(first["vision"]["new_result"])
+            self.assertFalse(first["vision"]["display_held"])
+            self.assertEqual(gap["vision"]["track_id"], 206)
+            self.assertFalse(gap["vision"]["new_result"])
+            self.assertTrue(gap["vision"]["display_held"])
+            self.assertAlmostEqual(gap["vision"]["result_age_ms"], 90.0)
+
+            cleared = hub.publish(
+                {
+                    "vision": {
+                        "detector_reason": "no_detection_candidates",
+                        "track_id": None,
+                        "tracker_state": "none",
+                        "tracker_confirmed": False,
+                    }
+                },
+                timestamp_s=10.1,
+            )
+            self.assertIsNone(cleared["vision"]["track_id"])
+            self.assertFalse(cleared["vision"]["display_held"])
         finally:
             hub.close()
 

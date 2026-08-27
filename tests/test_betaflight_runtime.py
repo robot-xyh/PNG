@@ -251,10 +251,32 @@ class BetaflightRuntimeTest(unittest.TestCase):
         adapter = _Adapter()
         worker = BetaflightMspIoWorker(adapter, MspRuntimeConfig(throttle_handover_s=0.0))
         worker._poll(1.0)
-        worker.stage(RcCommand(1.0, (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000), True), authorized=True)
+        worker.stage(
+            RcCommand(1.0, (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000), True),
+            authorized=True,
+            override_active=True,
+        )
         worker._publish(1.01)
         self.assertEqual(adapter.sent[0][:4], (1600, 1400, 1200, 1550))
         self.assertEqual(adapter.sent[0][4:], adapter.telemetry.rc_channels[4:])
+        snapshot = worker.snapshot(1.01)
+        self.assertTrue(snapshot.last_publish_algorithm_authorized)
+        self.assertTrue(snapshot.last_publish_override_active)
+        self.assertTrue(snapshot.last_publish_physical_rc_fresh)
+
+    def test_worker_refuses_algorithm_when_override_is_inactive(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(adapter, MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=1))
+        worker._poll(1.0)
+        command = RcCommand(1.0, (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000), True)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.01)
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=False)
+
+        worker._publish(1.02)
+
+        self.assertEqual(worker.snapshot(1.02).publish_mode, "passthrough")
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
 
     def test_worker_prefills_physical_rc_before_algorithm_authorization(self):
         adapter = _Adapter()
