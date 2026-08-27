@@ -5,12 +5,18 @@
 不是 PX4 Offboard 复用路径。默认运行模式为只读日志；任何 RC 输出都必须显式使用
 `--control-mode msp_raw_rc --allow-control`。
 
+完整飞行前需要专家确认的控制入口、RC/Rate/油门、供电、视觉、日志和分阶段放行标准见
+`doc/BETAFLIGHT_FULL_FLIGHT_EXPERT_CHECKLIST.md`；不得以 bench 程序能运行替代飞行验收。
+
 ## 当前能力边界
 
 - 已实现 Betaflight MSP v1 帧收发、常用遥测读取和 `MSP_SET_RAW_RC` 输出。
 - 已实现 8 通道 RC 映射、限幅、斜率限制、watchdog、AUX gate 和安全状态机。
 - 已实现 `examples/run_betaflight_log_only.py`，可记录 MSP、视觉、导引、候选 setpoint、
   输出 RC 和安全状态。
+- 已新增 `config/betaflight.rk3588.noprop.example.json` 无桨受限配置：程序在 RC7 切入前
+  预填物理 RC，拒绝 885 us 初始值，roll/pitch 限制为 3 deg/s、yaw 为 0、throttle 限制为
+  1000--1100 us。该配置只用于拆桨台架，不是带桨飞行参数。
 - 已实现运行 meta JSON：每次 CSV 日志旁边保存参数、配置、字段列表和 FC identity。
 - 已在 Orange Pi 5 Max + Betaflight 上完成无功率电池、无桨的 MSP、USB 相机和 RKNN NPU
   `log_only` 联调；未实现 CRSF/SBUS/ELRS 外部注入，未自动 ARM 或切换飞行模式。
@@ -90,8 +96,9 @@ thrust = hover_thrust
 `RcCommandMapper` 将 `GuidanceSetpoint` 转为 8 通道 RC microseconds：
 
 ```text
-rate_norm = rate_deg_s / rate_limit_deg_s
-rc_rate_us = mid_us + rate_norm * (max_us - min_us) / 2
+Betaflight rate inverse:
+  find stick x in [-1,1] such that applyBetaflightRates(x, rc_rate, super, expo)=rate_deg_s
+  rc_rate_us = mid_us + x * one_side_pwm_span
 
 thrust <= hover:
   throttle_us = throttle_min_us
@@ -107,12 +114,17 @@ thrust > hover:
 优化点：
 
 - 支持 `AETR1234` 等通道顺序，按角色查找 roll/pitch/throttle/yaw。
+- `MSP_RC` 回读是逻辑 R/P/Y/T；发送前按 src 相同规则重排为当前飞控
+  `MSP_SET_RAW_RC` 的 A/E/T/R wire order。接收机 `map AETR1234` 与 MSP 回读逻辑顺序不是
+  同一个概念。
+- `rate_mapping_type=betaflight` 使用 Betaflight `applyBetaflightRates` 的数值反函数，分别
+  绑定三轴 RC Rate、Super Rate 和 Expo；无桨 profile 再施加独立 3/3/0 deg/s 硬限幅。
 - 对 rate 和 throttle 先产生 `rc_raw_ch*`，再裁剪到 `min_us/max_us`，记录
   `rc_clipped_ch*`。
 - `max_delta_us_per_s` 对最终通道做斜率限制，记录 `rc_slew_limited_ch*`，避免视觉
   抖动或矩阵调参错误直接形成阶跃 RC。
-- inactive 或 setpoint 无效时走中性命令，throttle 使用 `neutral_throttle_us`，
-  不继续保持上一帧控制量。
+- mapper 在 inactive 时生成中性候选；实际 MSP worker 在 OVERRIDE 前发送实时物理杆透传，
+  OVERRIDE 后门禁不满足或命令过期时发送接管前锁存的人工 R/P/Y/T，避免突然切到中性值。
 - `aux_values_us` 可固定输出额外 AUX 通道值，但仍经过 RC us 裁剪。
 
 ### 3. 安全状态机和 watchdog
@@ -122,6 +134,10 @@ thrust > hover:
 ```text
 control_requested = (--control-mode msp_raw_rc)
 allow_control     = (--allow-control)
+snapshot_approved = approval scope、FC identity、快照 SHA 和当前 JSON SHA 全部匹配
+override_available/active = BOXIDS 含 permanent ID 50，且 RC7/AUX3 已切入
+prefill_ready      = RC7 人工侧已成功发送至少 10 帧有效物理 RC
+physical_rc_fresh = MSP_RC 未超过 msp_runtime.physical_rc_timeout_s
 telemetry_fresh   = telemetry_age_s <= safety.telemetry_timeout_s
 attitude_synced   = attitude_age_s <= safety.attitude_timeout_s
 voltage_ok        = vbat_v >= safety.min_vbat_v，或阈值为 0
@@ -130,9 +146,10 @@ aux_enabled       = rc_in_ch[aux_enable.channel_index] 在配置区间内
 target_valid      = guidance.valid
 ```
 
-状态转移是单向 gate 逻辑：`LOG_ONLY`、`DISABLED`、`READY`、`DEGRADED` 和
-`FAILSAFE` 都不激活 RC；只有 `ACTIVE` 会发送有效 setpoint。若 `send_neutral_when_inactive`
-为真，非 active 状态仍发送中性 RC，用于让 Receiver tab 和日志确认失效策略。
+只有 `ACTIVE` 允许 PNG setpoint 覆盖 R/P/Y/T。获准的无桨进程即使尚未 ACTIVE，也会以
+`prefill` 或 `passthrough` 模式发送完整人工 RC 帧，这是避免 RC7 首次切入时四通道落到
+`rx_min_usec=885` 的必要条件。程序在 RC7 已打开且没有有效人工锁存值时输出
+`manual_rc_unavailable`/`physical_rc_invalid` 并拒绝发送，不能用软件修复错误的操作顺序。
 
 ### 4. MSP 遥测和姿态同步
 
@@ -143,9 +160,11 @@ target_valid      = guidance.valid
 - `MSP_ATTITUDE` 的 roll/pitch/yaw 转为 `R_IB`，写入 `AttitudeHistoryBuffer`，供
   `PureVisionGuidancePipeline` 按图像曝光时间查姿态。
 - `MSP_SET_RAW_RC` 只在 `--control-mode msp_raw_rc --allow-control` 下使用。
+- 单串口 worker 以 50 Hz 发布最新命令；接管时对物理油门到算法油门做 0.4 s 线性交接，
+  staged command 超过 0.15 s 时退回锁存人工 RC，正常退出前发送 3 帧人工透传。
 
 因此 Betaflight 侧优化的核心不是重新设计 PNG，而是把纯视觉导引约束成“可审计、
-可限幅、可随时退回中性 RC”的飞控输入。
+可限幅、可在门禁失败时退回锁存人工 RC”的飞控输入。
 
 ## 日志记录代码实现
 
@@ -154,13 +173,22 @@ target_valid      = guidance.valid
 - `_log_fields(channel_count)` 定义 CSV 字段。
 - `_log_row(...)` 将 MSP、检测、LOS/TTC、setpoint、RC 和安全 gate 展开到同一行。
 - `_write_run_meta(...)` 保存运行参数、配置、字段列表和 FC identity。
-- `_send_neutral_stop(...)` 在允许控制的运行结束时连续发送 5 次中性 RC。
+- `EdgeEventLogger` 生成同名前缀的 `events.jsonl`，只在 ARM、OVERRIDE、prefill、安全状态、
+  目标、watchdog、RC freshness 或 MSP 错误发生边沿时写入并立即 flush。
+- `PlatformHealthSampler` 在独立 1 Hz 线程读取 RK3588 温度、频率、内存、磁盘和进程 RSS；
+  MSP 串口线程不读取 sysfs。
+- `BetaflightMspIoWorker` 记录预填、透传、算法、命令过期和最后实际发送通道；正常退出发送
+  锁存人工 RC，而不是主动发送 ARM/AUX 或中性油门。
 
 主循环每帧执行：
 
 ```text
-read_telemetry()
-  -> push MSP attitude into AttitudeHistoryBuffer
+50 Hz MSP worker
+  -> SET_RAW_RC first
+  -> at most one scheduled STATUS/RAW_IMU/ATTITUDE/RC/ANALOG request
+  -> merge independent sample timestamps into telemetry snapshot
+main loop
+  -> push only new MSP attitude samples into AttitudeHistoryBuffer
 read_detection()
   -> PureVisionGuidancePipeline.process()
 guidance_eval_to_setpoint()
@@ -175,11 +203,12 @@ CSV 字段按用途分组如下。
 |类别|字段|
 |---|---|
 |运行与安全|`timestamp`, `elapsed_s`, `safety_state`, `safety_reason`, `control_requested`, `allow_control`|
-|gate 诊断|`telemetry_fresh`, `attitude_synced`, `watchdog_ok`, `voltage_ok`, `aux_enabled`|
+|gate 诊断|`telemetry_fresh`, `attitude_synced`, `watchdog_ok`, `voltage_ok`, `aux_enabled`, `msp_prefill_ready`|
 |age 与错误|`telemetry_age_s`, `attitude_age_s`, `watchdog_age_s`, `telemetry_error`, `send_error`|
 |MSP status|`cycle_time_us`, `i2c_error_count`, `sensor_flags`, `mode_flags`, `profile`|
 |电源与姿态|`vbat_v`, `mah_drawn`, `rssi`, `amperage_a`, `roll_deg`, `pitch_deg`, `yaw_deg`|
-|输入 RC|`rc_in_count`, `rc_in_ch1..rc_in_ch8`|
+|RAW IMU|`acc_raw_*`, `gyro_roll/pitch/yaw_deg_s`, `mag_raw_*`, `msp_raw_imu_age_s`|
+|输入 RC|`rc_in_count`, `rc_in_all`（完整MSP通道）, `rc_in_ch1..rc_in_ch8`|
 |检测|`detector_source`, `detector_reject_reason`, `detector_*_count`, `frame_id`, `detection_exposure_ts`, `detection_score`, `track_id`|
 |RKNN 性能|`rknn_selected_index`, `rknn_preprocess_ms`, `rknn_inference_ms`, `rknn_postprocess_ms`, `rknn_total_ms`|
 |ByteTrack|`tracker_state/id/age/hits/lost_frames`, `tracker_high/low_count`, `tracker_match_iou`, `tracker_switch/fragment_count`, `tracker_update_ms`|
@@ -189,10 +218,19 @@ CSV 字段按用途分组如下。
 |TTC|`ttc_valid`, `ttc_reject_reason`, `ttc_quality`, `ttc_s`, `ttc_area_filtered`, `ttc_area_dot_filtered`|
 |导引|`guidance_valid`, `guidance_reject_reason`, `guidance_quality`, `g_eval_x/y/z`|
 |setpoint|`sp_valid`, `sp_source`, `sp_reject_reason`, `sp_roll_rate_deg_s`, `sp_pitch_rate_deg_s`, `sp_yaw_rate_deg_s`, `sp_thrust`|
-|输出 RC|`rc_active`, `rc_reason`, `rc_raw_ch*`, `rc_ch*`, `rc_clipped_ch*`, `rc_slew_limited_ch*`|
+|映射链|`map_requested_*`, `map_limited_*`, `map_*_stick`, `rc_target_ch*`, `throttle_handover_*`|
+|输出 RC|`rc_active`, `rc_reason`, `rc_raw_ch*`, `rc_ch*`, `rc_sent_all`, `rc_sent_ch*`, `rc_clipped_ch*`, `rc_slew_limited_ch*`|
+|MSP 命令|每个 command 的 `attempt/success/error_count`, `last/max_rtt_ms`, `last_success_age_s`, `last_error`|
+|MSP 发布|`msp_publish_mode`, `msp_prefill_success_count`, `msp_passthrough_send_count`, `msp_algorithm_send_count`, `msp_stale_command_count`, `msp_send_success_*`, `msp_publish_deadline_miss_count`|
+|RK3588|`host_*temp_c`, `host_*freq_mhz`, `host_mem_available_mb`, `host_disk_free_gb`, `host_process_rss_mb`|
 
-这些字段足以离线回答三类问题：视觉导引是否有效、Betaflight gate 为什么允许或拒绝控制、
-实际发出的 RC 是否被限幅或斜率限制。
+无桨运行后执行以下命令。审计从 meta 中读取实际 3/3/0 deg/s、1000--1100 us 和 50 Hz
+参数，发现 885 us、越界、门禁不满足时算法发送、连续发送错误或成功帧间隔超过三个周期时
+返回非零退出码：
+
+```bash
+python3 tools/analyze_betaflight_noprop_log.py --csv logs/<betaflight_log.csv>
+```
 
 ## RK3588 上机前仍需完成的工作
 
@@ -292,47 +330,39 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 - MSP v1 当前每轮串行请求 status、attitude、analog、RC，单次超时可阻塞主循环。需要给
   各消息设置独立频率，测量请求往返时间，并由一个串口所有者串行化读写，避免多线程抢占
   同一 UART。
-- 进程级 watchdog 必须独立于 YOLO 主循环；推理阻塞、Python 异常或 RK3588 断电时，应由
-  Betaflight 的 RX/failsafe 机制收敛到已验证状态，不能依赖 `finally` 中的 5 帧中性命令。
+- 进程级 watchdog 必须独立于 YOLO 主循环；推理阻塞、Python异常或RK3588断电时，应由
+  Betaflight的RX/failsafe机制收敛到已验证状态，不能依赖正常退出时的3帧人工透传。
 
 ### 5. 补齐 Betaflight 控制和人工接管闭环
 
-- `RcCommandMapper` 目前按 `rate/rate_limit` 线性换算 RC us，但 Betaflight 实际目标角速度
-  还由 Rates Type、RC Rate、Super Rate、Expo、deadband 和飞行模式决定。需要锁定 profile，
-  实测“RC us -> 期望角速度/实测角速度”，实现对应 rate 曲线反算或查表；未经标定不能把
-  `sp_*_rate_deg_s` 当作飞控实际收到的角速度。
+- `RcCommandMapper` 已实现 Betaflight Rates 的 RC Rate/Super Rate/Expo 数值反算，批准
+  工具会把 profile 0 的三轴 `100/0/70` 与 JSON 绑定。仍需用 Blackbox 实测“RC us ->
+  期望角速度/实测角速度”，因为 deadband、rate limit、飞行模式和机体动态不在反函数内。
 - `guidance_command.rate_gain_matrix` 当前示例为全零。先用日志回放确定轴映射和符号，再做
   小幅阶跃/扫频，标定增益、斜率限制、姿态响应延迟和饱和边界。
 - 标定整机质量、电池、桨和 hover throttle。当前 setpoint 始终使用固定
   `hover_thrust`，没有高度/垂向速度闭环，不能直接承担自动起飞、降落或高度保持。
-- 明确 MSP RC 的接管架构。当前程序发送完整 8 通道，`send_neutral_when_inactive=true` 的
-  “中性 RC”不是人工遥控透传，可能仍影响飞控输入。必须在所用 Betaflight 版本上验证
-  MSP RX/MSP Override、AUX 范围和物理接收机优先级；必要时增加外部 RC mux 或逐通道合并。
+- Python worker 已按 src 实现完整物理 RC 预填、mask内算法合并和mask外AUX保留；门禁失败
+  时发送接管前锁存人工RC，不使用 `send_neutral_when_inactive` 冒充人工透传。仍须实测
+  MSP断流、`SIGKILL`、UART拔出和Orange Pi掉电；这些故障无法由Python `finally` 保证。
 - 人工发射机的 DISARM/接管开关必须在 RK3588 卡死、串口拔出和电源掉电时仍有效。依次做
   AUX 关闭、目标丢失、相机断开、串口断开、进程 `SIGKILL`、RK3588 断电和低电压测试。
-- 当前没有地理围栏、高度限制、显式 armed 状态解析、电机状态或 GPIO 急停输入；若测试
-  方案要求这些 gate，需要增加代码和日志后才能扩大飞行包线。
+- 当前已有基于BOX ID 0的armed解析，但没有地理围栏、高度限制、电机状态或GPIO急停输入；
+  若测试方案要求这些gate，需要增加代码和日志后才能扩大飞行包线。
 
-### 6. 增加 RK3588 运行诊断日志
+### 6. RK3588 运行诊断日志和剩余缺口
 
-现有 CSV 覆盖算法、MSP、RC 和安全 gate，但不足以定位板端掉帧、调度抖动和热降频。
-至少补充以下字段：
+schema v2 已补充以下诊断：
 
-- 帧链路：`camera_seq`、`capture_ts`、`timestamp_source`、`frame_age_ms`、实际 width/height/
-  FPS、丢帧/重复帧计数、队列深度。
-- 分段耗时：capture、preprocess、inference、NMS/筛选、LOS/TTC、MSP telemetry、
-  RC send、CSV write 和总 loop 的 P50/P95/P99。
-- MSP 质量：每类消息请求数、超时数、校验错误数、往返时间、最近成功时间、RC 实际发送
-  周期和连续失败次数。
-- 平台健康：CPU/NPU 使用率、内存、温度、频率/降频状态、供电告警和剩余磁盘空间。
-- 对时证据：相机、RK3588 单调时钟、Blackbox 时间轴的偏移/同步事件。建议在每轮开始做
-  可识别的静态姿态或 AUX 边沿事件，用于 CSV 与 Blackbox 离线对齐。
+- MSP：每命令请求/成功/错误、RTT、最后成功 age、发布 tick、发送间隔和连续失败。
+- 飞控反馈：RAW_IMU 的 gyro deg/s 与 ACC/MAG raw，以及各消息独立时间戳。
+- 控制链：请求/限幅 rate、反算 stick、斜率限制前 PWM、油门交接 source/target/alpha。
+- 平台：独立 1 Hz 缓存的 CPU 频率、SOC/NPU/最高温度、内存、RSS、负载和磁盘。
+- 对时：ARM、RC7/OVERRIDE、prefill、ACTIVE、目标、watchdog 和错误边沿 JSONL。
 
-runner 已记录基础取帧时间、耗时、尺寸、格式、失败帧、循环周期，以及 RKNN 的 preprocess/
-inference/postprocess/total、raw/accepted/selected 候选数。LOS/TTC、MSP 请求、CSV 写入的
-独立耗时，队列深度、MSP 分消息统计、CPU/NPU 温度与频率仍未记录。高带宽原始视频建议
-采用独立环形文件并以 `frame_id/capture_ts`
-关联 CSV，设置磁盘配额，不能让视频写盘阻塞 RC 发送。
+仍未记录硬件曝光时间、NPU真实利用率、板级欠压/降频标志、CSV写入耗时和Blackbox自动
+解析。sysfs不存在或权限不足的字段留空，不伪造数值。高带宽原始视频暂不写入；后续如需
+增加，应使用独立环形文件、磁盘配额和`frame_id/capture_ts`关联，不能阻塞RC发送。
 
 ### 7. 产品化启动和故障恢复
 
@@ -357,7 +387,7 @@ inference/postprocess/total、raw/accepted/selected 候选数。LOS/TTC、MSP �
    目标视频逐帧回归，搜索 high/low/new/match 阈值并冻结模型、配置哈希。
 3. **P0，运行架构**：采集、RKNN 和 ByteTrack 已移入 latest-frame worker；继续分离
    MSP/RC 与写盘，增加陈旧帧硬拒绝、串口统计、平台健康日志与进程 watchdog。
-4. **P1，无桨控制**：锁定 Betaflight rate/PID profile，实现 rate 曲线反算或标定 LUT，
+4. **P1，无桨控制**：受限profile、Rate反算、通道重排和预填代码已完成；下一步在Orange Pi
    验证八通道映射、AUX、接管、failsafe 和所有断链/断电故障注入。
 5. **P1，机载固化**：增加配置校验、依赖锁定、udev、systemd、日志轮转和模型/配置哈希；
    完成 30 min 推理满载和 60 min 联合老化。
@@ -366,12 +396,12 @@ inference/postprocess/total、raw/accepted/selected 候选数。LOS/TTC、MSP �
 
 ### RK3588 放桨前阻断条件
 
-以下任一项未完成时，只允许无桨 `log_only`：
+以下任一项未完成时，只允许无桨 `log_only` 或本文限定的 `noprop_bench`，不得装桨：
 
 - 相机实际分辨率、内外参、畸变和时间戳来源未确认。
 - `.pt`/RKNN 后端的真实视频精度和持续 P99 延迟未验收。
 - MSP 超时、进程崩溃、RK3588 断电后的 Betaflight failsafe 未实测。
-- 人工遥控优先级、DISARM、AUX gate 和中性 RC 行为未实测。
+- Python人工遥控优先级、DISARM、AUX gate 和锁存人工RC回退行为未实测。
 - rate/expo/PID profile、RC 到角速度曲线、hover throttle 和命令限幅未标定。
 - CSV 与 Blackbox 不能通过公共事件对齐，或缺少帧龄、RC 发送周期和热状态证据。
 - `rate_gain_matrix` 仍为全零、轴向不确定，或测试中出现持续 clipping/slew limiting。
@@ -453,10 +483,57 @@ CPU YOLO 被 fail-fast 阻断。只有在供电稳定性问题关闭并重新做
 正式机载路径使用已实现的 `rknn_bytetrack`，`rknn_native` 用于单框诊断，CPU YOLO 只
 保留为受控基线。
 
+### Python 浏览器遥测
+
+Python runner 已内置只读 HTTP 遥测，不复用 `src` 的 C++ 共享内存或 `bf_debugd`。配置
+`telemetry_web.enabled=true` 后，Web 服务先于串口和相机绑定端口；绑定失败会终止启动，
+不会静默改端口。运行期间 Web 线程只消费主循环发布的内存快照，不调用 MSP adapter、
+安全状态机或 RC mapper。
+
+Orange Pi 当前局域网配置为：
+
+```json
+"telemetry_web": {
+  "enabled": true,
+  "bind": "0.0.0.0",
+  "port": 8080,
+  "allowed_subnets": ["127.0.0.0/8", "192.168.124.0/24"],
+  "sample_hz": 5.0,
+  "history_s": 60.0,
+  "stale_after_s": 1.0,
+  "max_sse_clients": 4,
+  "preview": {"enabled": true, "max_fps": 10.0, "jpeg_quality": 70, "max_clients": 2}
+}
+```
+
+PC 访问 `http://192.168.124.42:8080/`。接口固定为 `GET /api/v1/telemetry`、
+`GET /api/v1/history`、`GET /api/v1/stream`、`GET /api/v1/video/mjpeg` 和
+`GET /healthz`；所有写方法返回 405，非允许网段返回 403。SSE 以 5 Hz 发布结构化遥测，
+页面显示安全状态、MSP/RC、姿态/角速度、检测/ByteTrack、LOS/TTC、PNG 命令和平台状态。
+MSP_RC 原始输入是 `A/E/R/T`，当前 SET_RAW_RC wire map 是 `A/E/T/R`；API 保留原始
+`input_us`，并另发按 wire map 重排的 `physical_us`。页面使用后者，避免把 885 us 油门误
+标成 yaw。
+
+预览使用检测线程产出的同一张 640x512 图像和 bbox。独立编码线程采用单槽覆盖队列，只有
+存在 MJPEG 客户端时才编码；慢客户端只造成调试帧丢弃，不能阻塞感知或控制循环。Python
+runner 与 `bf_debugd` 不能同时使用 8080，也不能与 C++ flight 进程并发占用相机和串口。
+当前监督测试不配置 systemd 自动启动，浏览器页面不属于飞行安全闭环。
+
+2026-08-27 已在 `192.168.124.42` 完成 44.96 s 的无动力电池、无桨、`log_only +
+rknn_bytetrack` 联调：PC 可读取健康检查、JSON 和真实 MJPEG，895 行日志中 Web/MSP 错误及
+`MSP_SET_RAW_RC` 计数均为 0，审计通过。`publish_deadline_miss_count=228` 仍需在真实控制前
+处理；详细指标和归档文件名见 `doc/BETAFLIGHT_SRC_MIGRATION_RECORD.md`。
+
 ### 2026-07-11 Orange Pi 5 Max 实测结果
 
-- 部署目录：`/home/orangepi/png_betaflight_python`；原有
-  `/home/orangepi/src/circle_pilot` 未修改、未运行。
+- 部署目录：`/home/orangepi/png_betaflight_python`；初始验证阶段原有
+  `/home/orangepi/src/circle_pilot` 未修改、未运行。后续仅新增独立bench配置，原源码和
+  production配置保持不变。
+- 2026-07-11 后续无桨动力供电bench确认相机实际视频节点为 `/dev/video0`，`/dev/video1`
+  仅为UVC metadata节点。src使用独立bench配置成功完成MSP静默读取、相机和RKNN联合运行；
+  全程 `send_hz=0` 且无 `MSP_SET_RAW_RC`。8080页面必须同时启动 `bf_flight_png` 与
+  `bf_debugd`；bench debug改用MJPEG后，根页面、实时曲线API和预览流均从工作站侧验证
+  可达。完整配置、计数和SHA256见 `doc/BETAFLIGHT_SRC_MIGRATION_RECORD.md`。
 - ARM64 依赖锁定在 `requirements-rk3588-stage1.txt`；CPU YOLO 实验版本记录在
   `requirements-rk3588-yolo-bench.txt`，但受 `allow_cpu_inference=false` 阻断。
 - Betaflight：`/dev/ttyS1@115200`，识别 `BTFL 25.12.2`、MSP API 1.47。
@@ -522,7 +599,14 @@ Rate、Blackbox、Battery，并将原始文件、`configuration_review.json`、�
 
 2026-07-11 实机确认 BOXNAMES 使用 350 字节 MSP v1 jumbo frame。31 个名称与 ID 完整对齐；
 ID 51/52/53 是 `STICK COMMANDS DISABLE`、`BEEPER MUTE`、`READY`，不是缺失的 ID 50。
-因此当前固件不支持 `src` 假设的 MSP OVERRIDE 模式，不能通过猜测其他 ID 解除阻断。
+后续核对 Betaflight 源码确认：只有 `msp_override_channels_mask != 0` 时才将 ID 50 加入 BOX
+列表。2026-07-11 快照中的 mask=0 会隐藏该 mode，因此不能把当时缺失 ID 50 解释为固件
+不支持。2026-08-27已在当前固件重新导出并采集新快照：mask=15、
+`aux 2 50 2 1700 2100 0 0`；MSP同时报告 `MSP OVERRIDE` permanent ID 50，位于BOX index
+28。新快照为 Orange Pi 上的
+`logs/betaflight_snapshots/betaflight_snapshot_20260827_153739/manifest.json`，25次采样无MSP
+错误，CLI结构、八类配置和跨导出一致性检查均通过。旧 manifest 和旧 `aux ... 42 ...`
+记录不得用于当前批准。
 
 同日完成真实 `diff all`/`dump all` 审计：八类配置与结构均完整，解析错误、重复赋值和
 跨导出冲突均为 0。原始文件和最终 manifest 的 SHA256 见
@@ -538,10 +622,19 @@ ID 51/52/53 是 `STICK COMMANDS DISABLE`、`BEEPER MUTE`、`READY`，不是缺�
   Rate profile 0 为 Betaflight `100/0/70`，RPY rate limit 为 1998 deg/s。
 - Blackbox 为 SDCARD、NORMAL、1/4；电压/电流计均为 ADC，缩放值尚未用功率电池校验。
 
-审计关闭了“缺少 CLI 配置”的 blocker，但没有开放控制。飞控 override mask 为 0 且无
-MSP OVERRIDE mode；Python mask 15 与其不一致。Python AUX gate 当前使用 RC5 高位，而
-RC5 是低位 ARM，两者互斥。Python rate 限值不能直接代表 `100/0/70` 曲线对应的实际角速度；
-完成曲线反算/LUT、无桨方向测试和 hover throttle 标定前必须保持 `control_ready=false`。
+该历史审计关闭了“缺少 CLI 配置”的 blocker，但当时没有开放控制。此后飞控已人工改为
+override mask 15，MSP OVERRIDE 分配到 RC7/AUX3，RC5 仅保留低位 ARM。Python 已增加
+`100/0/70` 精确曲线反算、RPYT→AETR 重排、预填门禁和无桨硬限幅；仍需用新快照生成
+`noprop_bench` 批准并完成 Python 无桨实测，才可关闭本阶段 blocker。
+
+无桨批准配置必须显式声明 `msp_runtime.override_mode_cli_id=50`。批准工具将该值与快照CLI的
+AUX3/1700--2100 us范围比对，同时单独校验BOX permanent ID 50；两者任一不一致即拒绝生成
+批准。当前导出文件SHA256为：
+
+- `betaflight_diff_all_20260827.txt`：
+  `f2e60f6bb7f7b2d4cc644612f9f90bdb36027909fb84f33851ea7f22ffe066cc`；
+- `betaflight_dump_all_20260827.txt`：
+  `30d7b1cb71f4bcf52cf4541980acad9a5e5ff7086e93a2a6938c310659c7c144`。
 
 ### 与 src 实现的差异
 
@@ -550,9 +643,9 @@ Orange Pi 原 `/home/orangepi/src/circle_pilot` 会锁存接管前物理 R/P/Y/T
 采用。它还显式把 MSP_RC 的 R/P/Y/T 逻辑顺序转换为 SET_RAW_RC 的 A/E/T/R，和当前
 `AETR1234` 一致。
 
-但 `src` 不能作为当前飞控的可运行解法：ID 50 缺失时它回退到 bit 27，而当前 bit 27 是
-`LAUNCH CONTROL`；它假设 override mask 15，但飞控实际为 0；Rate 只按 100/0/70 中心斜率
-线性近似；hover 参数存在 0.078 与 0.283 冲突。其 dry-run 默认仍回写 RC，也没有电池、
+但 `src` 仍不能替代当前 Python 的授权检查：在旧 mask=0 快照找不到 ID 50 时，它会回退到
+bit 27，而该 bit 是 `LAUNCH CONTROL`；它也不读取 CLI 核验 mask。src 的 Rate 只按
+100/0/70 中心斜率线性近似，hover 参数存在 0.078 与 0.283 冲突。其 dry-run 默认仍回写 RC，也没有电池、
 低电压、NTP/RTC 或 Blackbox 门禁。因此不得用启动 `src` 服务绕过当前 blocker。
 
 验收标准：
@@ -621,24 +714,64 @@ python3 examples/run_betaflight_log_only.py \
 
 ### 3. 无桨 RC 注入验证
 
-仅在确认 Betaflight AUX/failsafe/通道方向后执行。建议先用 CSV 检测回放，避免真实视觉
-抖动进入控制：
+该阶段允许真实 RKNN+ByteTrack+PNG 进入极小输出，但四个桨叶必须物理拆除。先复制配置，
+只修改稳定串口、相机和模型路径，不提高任何限值：
+
+```bash
+cp config/betaflight.rk3588.noprop.example.json \
+  config/betaflight.rk3588.noprop.local.json
+```
+
+在 Configurator 重新导出设置 mask=15 和 RC7 mode 后的 `diff all`、`dump all`。关闭
+Configurator释放串口，再采集新快照；命令会打印新 `manifest.json` 路径：
+
+```bash
+python3 tools/capture_betaflight_snapshot.py \
+  --config config/betaflight.rk3588.noprop.local.json \
+  --duration-s 5 --rate-hz 5 \
+  --cli-diff-all /path/to/betaflight_diff_all.txt \
+  --cli-dump-all /path/to/betaflight_dump_all.txt
+```
+
+批准工具会核验 ID 50、mask 15、RC7/AUX3、AETR、Rate profile 0=`100/0/70`、配置哈希和
+无桨限值。`<manifest>` 必须替换为上一命令实际打印的文件：
+
+```bash
+python3 tools/create_betaflight_noprop_approval.py \
+  --snapshot <manifest.json> \
+  --config config/betaflight.rk3588.noprop.local.json \
+  --output logs/betaflight_noprop_approval.json \
+  --operator orangepi \
+  --acknowledge-props-removed
+```
+
+启动前保持 RC7 在人工侧、RC5 为 DISARM，并确认 Configurator、src、debugd 和其他 MSP
+进程均已退出。运行真实视觉 PNG：
 
 ```bash
 python3 examples/run_betaflight_log_only.py \
-  --config config/betaflight.example.json \
-  --serial-port /dev/ttyUSB0 \
+  --config config/betaflight.rk3588.noprop.local.json \
+  --duration-s 0 --rate-hz 20 \
   --control-mode msp_raw_rc \
   --allow-control \
-  --detector-source csv \
-  --detections-csv /path/to/detections.csv
+  --detector-source rknn_bytetrack
 ```
 
-验收标准：
-- AUX 未使能时不进入 `ACTIVE`。
-- AUX 使能、目标有效、遥测新鲜、watchdog 正常时才允许 `rc_active=1`。
-- Betaflight Receiver tab 或 `rc_in_ch*`/`rc_ch*` 显示方向和通道顺序正确。
-- `rc_raw_ch*`、`rc_clipped_ch*`、`rc_slew_limited_ch*` 可解释，无持续饱和。
+严格按以下顺序操作：
+
+1. 等终端出现 `prefill=1 publish=passthrough`，且 `sent_aetr` 前四通道没有 885；未出现时
+   不得 ARM 或打开 RC7。
+2. RC5 低位 ARM，确认无桨电机只正常怠速；将目标放入视场并移动/靠近，使
+   `target=1`。静止且面积不增长的目标可能因 TTC 无效而保持 `target=0`。
+3. 最后将 RC7 拨到接管侧。`state=ACTIVE publish=algorithm` 时才是 PNG 覆盖；没有有效
+   目标时应为 `DEGRADED/target_invalid` 和 `passthrough`。
+4. 横向及纵向缓慢移动目标，核对实际 `sent_aetr`：A/E 只能约在 1493--1507 us，T 必须
+   在 1000--1100 us，R 固定约 1500 us；同时记录机体姿态和电机响应方向。
+5. 结束时先关闭 RC7 恢复人工，再 RC5 DISARM，最后按 `Ctrl-C`。任何 885、串轴、突跳、
+   `manual_rc_unavailable`、持续 stale/error 都立即按该顺序退出。
+
+CSV 的 `rc_ch*` 是 mapper 候选，`rc_sent_ch*` 才是 worker 实际写入飞控的 AETR 帧。只有
+实际发送值、计数、状态变化和 Blackbox 均可解释，才算通过 Python PNG 无桨测试。
 
 ### 4. 系留或低速悬停
 
@@ -659,6 +792,9 @@ python3 examples/run_betaflight_log_only.py \
 每次运行生成：
 - `logs/betaflight_log_<stamp>.csv`
 - `logs/betaflight_log_<stamp>_meta.json`
+- `logs/betaflight_log_<stamp>_events.jsonl`
+
+执行无桨审计后另生成 `logs/betaflight_log_<stamp>_audit.json`。
 
 CSV 已包含：
 - Betaflight：姿态、电压、电流、RSSI、mode flags、sensor flags、profile、完整输入 RC。
@@ -672,6 +808,17 @@ CSV 已包含：
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
 - MSP 运行：armed、OVERRIDE available/active、物理 RC 帧龄、快照授权、串口请求/错误/
   字节数、RAW RC 尝试/成功计数和 worker poll/stage/skip/error。
+- MSP 接管证据：output/algorithm authorization、worker观察到的override、预填是否完成及成功
+  帧数、透传/算法/过期计数、staged command age、publish mode 和 `rc_sent_ch*` 实际发送值。
+- MSP 时序：STATUS/RAW_IMU/RC/ATTITUDE/ANALOG/SET_RAW_RC 各自的请求、成功、错误、RTT 和
+  最后成功 age；50 Hz 发布 tick、成功发送间隔、最大间隔、deadline miss 和连续发送错误。
+- 映射与反馈：请求/限幅后 rate、Betaflight 反算 stick、斜率限制前 PWM、油门交接参数、
+  RAW_IMU gyro deg/s，以及各类遥测的独立 sample age。
+- 平台与公共事件：RK3588 温度/频率/内存/磁盘/RSS，以及可与 Blackbox ARM/RC7 边沿对齐的
+  JSONL。RAW IMU 本阶段只记录，不反馈到 PNG；相机时间戳仍不是硬件曝光时间。
+- Web 遥测：服务状态、SSE/MJPEG 客户端数、快照发布数、预览投递/编码/丢弃数、HTTP请求/
+  子网拒绝数、错误数和最后错误。schema v3 的审计在启用 Web 时要求至少发布一个快照且
+  `web_error_count=0`，同时继续兼容历史 schema v2。
 
 `src` 参考的单串口 MSP worker 已在 Python 中实现，但 RK3588 示例默认关闭。任何未来 RC
 输出都必须使用 worker；同步日志路径不再允许直接发送，也不会在退出时发送中性 RC。控制
@@ -720,9 +867,21 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `rknn_bytetrack.track_buffer_s` / `frame_rate` / `minimum_confirmed_frames` /
   `perception_rate_hz`
 - `rc_mapping.channel_map`
+- `msp_runtime.set_raw_rc_channel_map`（当前必须与上项同为 `AETR1234`）
+- `msp_runtime.prefill_enabled` / `prefill_min_frames` / `prefill_valid_min_us` /
+  `prefill_valid_max_us`
+- `msp_runtime.staged_command_timeout_s` / `shutdown_passthrough_frames`
+- `msp_runtime.status_poll_hz` / `attitude_poll_hz` / `raw_imu_poll_hz` /
+  `rc_poll_hz` / `analog_poll_hz`（当前无桨默认总计47 Hz）
+- `msp_runtime.control_publish_hz`（当前无桨默认50 Hz）
+- `logging.platform_health_hz`（默认1 Hz；设为0仅用于显式关闭平台采样）
+- `rc_mapping.rate_mapping_type`、`betaflight_rc_rate`、`betaflight_super_rate`、
+  `betaflight_expo`、`betaflight_rate_profile_index`
 - `rc_mapping.roll_rate_limit_deg_s`
 - `rc_mapping.pitch_rate_limit_deg_s`
 - `rc_mapping.yaw_rate_limit_deg_s`
+- `rc_mapping.roll_command_limit_deg_s` / `pitch_command_limit_deg_s` /
+  `yaw_command_limit_deg_s`
 - `rc_mapping.thrust_min`
 - `rc_mapping.thrust_hover`
 - `rc_mapping.thrust_max`
@@ -797,7 +956,7 @@ PyTorch/ByteTrack 基线：
 - `rc_mapping.channel_map` 是否与 Betaflight Receiver tab 一致。
 - roll/pitch/yaw 命令方向和最大幅度。
 - throttle 标定：`thrust_min/thrust_hover/thrust_max` 到 RC us 的映射。
-- RC 斜率限制、watchdog 超时、inactive 状态是否发送中性 RC。
+- RC 斜率限制、watchdog 超时、inactive 状态的锁存人工RC回退策略。
 - 丢目标时的降级策略和恢复条件。
 
 ### 测试包线与安全
