@@ -27,7 +27,8 @@
   `model.track()`，`--yolo-device` 不能把 PyTorch 模型自动切换到 NPU。
 - 已新增 `rknn_bytetrack`：C ABI v2 返回全部 NMS 候选，Python 运行固定版本完整 ByteTrack
   和单目标锁定，不加载 PyTorch。该路径使用独立 latest-frame worker；其他 detector source
-  仍位于同步主循环。长期热稳定性和进程故障验证尚未完成。
+  仍位于同步主循环。无桨实测已证明 30 Hz 感知加 MJPEG 会造成 MSP publish tick 最长
+  164.302 ms；15 Hz 且关闭 MJPEG 的无目标基线最大为 49.769 ms，但带目标降载复验未完成。
 
 ### 从 `src` 复用的修改模型识别链路
 
@@ -405,6 +406,8 @@ schema v2 已补充以下诊断：
 - rate/expo/PID profile、RC 到角速度曲线、hover throttle 和命令限幅未标定。
 - CSV 与 Blackbox 不能通过公共事件对齐，或缺少帧龄、RC 发送周期和热状态证据。
 - `rate_gain_matrix` 仍为全零、轴向不确定，或测试中出现持续 clipping/slew limiting。
+- 15 Hz/无 MJPEG 降载配置下，带真实目标的算法发送最大间隔尚未连续满足 60 ms 审计门限。
+- `timestamp_after_buffer` 仍频繁拒绝有效检测，图像曝光时刻与姿态缓存同步未关闭。
 
 ## 部署前准备
 
@@ -514,10 +517,20 @@ MSP_RC 原始输入是 `A/E/R/T`，当前 SET_RAW_RC wire map 是 `A/E/T/R`；AP
 `input_us`，并另发按 wire map 重排的 `physical_us`。页面使用后者，避免把 885 us 油门误
 标成 yaw。
 
+Web schema v3 区分 `vision.new_result` 和 `vision.display_held`。20 Hz 主循环未取到新的
+感知 worker 结果时，页面保留上一份真实 track/bbox 并累计 `result_age_ms`，避免把
+`perception_no_new_result` 显示成 ByteTrack 换 ID；真实 `no_detection_candidates`、
+`active_track_lost` 等结果仍立即清空。该保持只属于显示层，CSV 原始 detection 和 PNG 输入
+不会重复使用旧框。页面同时显示 `vision.attitude_offset_ms`，正值表示图像时间晚于姿态缓存
+最新样本，持续为正且超过 ATTITUDE 周期时会触发 `timestamp_after_buffer`。页面另显示最佳
+候选分数、raw/class/high/low/output 数量、hits、关联阶段、match IoU 和 selector reason。
+
 预览使用检测线程产出的同一张 640x512 图像和 bbox。独立编码线程采用单槽覆盖队列，只有
-存在 MJPEG 客户端时才编码；慢客户端只造成调试帧丢弃，不能阻塞感知或控制循环。Python
-runner 与 `bf_debugd` 不能同时使用 8080，也不能与 C++ flight 进程并发占用相机和串口。
-当前监督测试不配置 systemd 自动启动，浏览器页面不属于飞行安全闭环。
+存在 MJPEG 客户端时才编码；但 2026-08-27 实测表明共享 Python 进程在目标跟踪、热负载和
+MJPEG 并发下仍会饿死 MSP 线程，不能把“编码线程独立”等同于控制时序隔离。控制测试必须使用
+`--disable-web-preview`，长期方案应将 MSP/RC 移到独立进程或等效实时边界。Python runner 与
+`bf_debugd` 不能同时使用 8080，也不能与 C++ flight 进程并发占用相机和串口。当前监督测试
+不配置 systemd 自动启动，浏览器页面不属于飞行安全闭环。
 
 2026-08-27 已在 `192.168.124.42` 完成 44.96 s 的无动力电池、无桨、`log_only +
 rknn_bytetrack` 联调：PC 可读取健康检查、JSON 和真实 MJPEG，895 行日志中 Web/MSP 错误及
@@ -754,8 +767,14 @@ python3 examples/run_betaflight_log_only.py \
   --duration-s 0 --rate-hz 20 \
   --control-mode msp_raw_rc \
   --allow-control \
-  --detector-source rknn_bytetrack
+  --detector-source rknn_bytetrack \
+  --rknn-perception-rate-hz 15 \
+  --disable-web-preview
 ```
+
+这两个降载参数不改变批准 JSON 或控制包线，并会写入 meta。关闭 MJPEG 后根页面的 JSON/SSE
+状态仍可读，但视频流不可用；目标位置需在接管前通过 log-only 预览确认。降载无目标基线已经
+通过 60 ms 发送间隔审计，带目标 algorithm 复验仍是放桨阻断项。
 
 严格按以下顺序操作：
 
@@ -799,10 +818,10 @@ CSV 的 `rc_ch*` 是 mapper 候选，`rc_sent_ch*` 才是 worker 实际写入飞
 CSV 已包含：
 - Betaflight：姿态、电压、电流、RSSI、mode flags、sensor flags、profile、完整输入 RC。
 - 视觉：bbox、面积、面积比例、裁切标志、track id、检测拒绝原因。
-- RKNN：模型哈希/输出 schema（meta），raw/accepted/selected 候选数和预处理、NPU 推理、
-  后处理、总耗时（CSV）。
+- RKNN：模型哈希/输出 schema（meta），raw/accepted/selected 候选数、最佳候选置信度和预处理、
+  NPU 推理、后处理、总耗时（CSV）。
 - ByteTrack：真实轨迹 ID、状态、age/hits/lost、关联阶段/IoU、切换/碎片计数和耗时；感知
-  worker 的实际 FPS、结果帧龄、覆盖旧结果数和异常。
+  worker 的实际 FPS、新结果标志、结果帧龄、覆盖旧结果数和异常。
 - 导引：LOS、LOS rate、LOS omega、TTC、`g_eval`。
 - 控制：setpoint、raw RC、最终 RC、限幅标志、斜率限制标志。
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
@@ -810,15 +829,21 @@ CSV 已包含：
   字节数、RAW RC 尝试/成功计数和 worker poll/stage/skip/error。
 - MSP 接管证据：output/algorithm authorization、worker观察到的override、预填是否完成及成功
   帧数、透传/算法/过期计数、staged command age、publish mode 和 `rc_sent_ch*` 实际发送值。
+- 发送当刻门禁：schema v4/v5 的 `msp_last_publish_output_enabled`、
+  `msp_last_publish_algorithm_authorized`、`msp_last_publish_override_active`、
+  `msp_last_publish_prefill_ready`、`msp_last_publish_physical_rc_fresh` 和
+  `msp_last_publish_command_fresh` 与同一成功发送帧绑定，不能用当前 staged gate 代替。
 - MSP 时序：STATUS/RAW_IMU/RC/ATTITUDE/ANALOG/SET_RAW_RC 各自的请求、成功、错误、RTT 和
   最后成功 age；50 Hz 发布 tick、成功发送间隔、最大间隔、deadline miss 和连续发送错误。
 - 映射与反馈：请求/限幅后 rate、Betaflight 反算 stick、斜率限制前 PWM、油门交接参数、
-  RAW_IMU gyro deg/s，以及各类遥测的独立 sample age。
+  RAW_IMU gyro deg/s、图像相对最新姿态样本的时间偏差，以及各类遥测的独立 sample age。
 - 平台与公共事件：RK3588 温度/频率/内存/磁盘/RSS，以及可与 Blackbox ARM/RC7 边沿对齐的
   JSONL。RAW IMU 本阶段只记录，不反馈到 PNG；相机时间戳仍不是硬件曝光时间。
 - Web 遥测：服务状态、SSE/MJPEG 客户端数、快照发布数、预览投递/编码/丢弃数、HTTP请求/
-  子网拒绝数、错误数和最后错误。schema v3 的审计在启用 Web 时要求至少发布一个快照且
-  `web_error_count=0`，同时继续兼容历史 schema v2。
+  子网拒绝数、错误数和最后错误。Web schema v3 直接显示最佳候选分数、raw/class/high/low/
+  tracker-output 数量、hits、关联阶段、match IoU 和 selector reason。日志 schema v3/v4/v5
+  的审计在启用 Web 时要求至少发布一个快照且 `web_error_count=0`；日志 schema v2/v3 仍可读取，
+  但存在算法输出时不能证明发送当刻 gate。
 
 `src` 参考的单串口 MSP worker 已在 Python 中实现，但 RK3588 示例默认关闭。任何未来 RC
 输出都必须使用 worker；同步日志路径不再允许直接发送，也不会在退出时发送中性 RC。控制

@@ -368,3 +368,95 @@ Python runner 与 `bf_debugd` 仍互斥；本功能不作为飞行看门狗或�
 正确显示 `T=885`、`R=1500`，397 行日志再次审计通过，Web 错误和 RC 写入均为 0。两轮日志、
 审计和配置前后版本已归档为 `logs/web_telemetry_validation_20260827_122413.tar.gz`，SHA256 为
 `10ee3f075fdb612c8dbfde7097ba81e4ae79af04dd4aeb0ba998c873ccaea6d7`。
+
+## 2026-08-27 无桨实时接管日志复盘与异步间隙修正
+
+现场运行使用 Orange Pi `/home/orangepi/png_betaflight_python`、`/dev/ttyS1`、动力电池、
+拆桨状态和已批准的 `noprop_bench` 配置。原始日志为
+`logs/betaflight_log_20260827_171517.csv`，时长 1242.82 s、24579 个主循环、19288 个去重
+感知结果。退出顺序经日志确认是先 RC7 回人工，再 DISARM，最后向 Python 发送 SIGINT。
+
+复盘结论如下：
+
+- `MSP_SET_RAW_RC` 最终 attempt/success 为 40836/40836，worker send error 为 0；批准、
+  ID 50、mask 15 和串口发送链路不是本次主要故障。
+- 9876 个真实跟踪输出中，主轨迹 ID 133 持续 5965 帧，后续 ID 206 持续 1049 帧。页面所见
+  大量 `ID -> None -> ID` 主要来自 20 Hz 主循环夹在 13--26 Hz 感知结果之间产生的
+  `perception_no_new_result`，不能按真实 ByteTrack 换 ID 统计。
+- 导引拒绝以 `timestamp_after_buffer=5310`、`bbox_top_clipped=2848`、
+  `area_not_expanding=867` 和 `ttc_out_of_range=549` 为主，仅 203 个感知结果产生有效导引。
+  曝光返回时间相对最新 ATTITUDE 样本偏差 P50/P90 为 7.79/89.55 ms，当前 10 Hz ATTITUDE
+  严格插值无法覆盖大量新图像；本轮只增加诊断，不放宽姿态门控。
+- 安全状态虽然出现 176 个 `ACTIVE` 主循环，但大多只有单个 20 Hz 周期。异步 worker 实际
+  `publish=algorithm` 104 行，发送 A/E 仅 1499--1501 us，油门交接最高约 1002 us，因此
+  无桨电机没有肉眼明显转速变化符合日志。
+- 板温中位/最高为 79.46/84.08 C；温度超过 80 C 时 Tracker FPS 中位为 13.98。冷机、散热
+  和关闭不必要 MJPEG 客户端后的对照测试必须先于 ByteTrack 阈值调整。
+- 原 schema v3 日志安全审计为 `passed=false`：最大 SET_RAW_RC 成功间隔 182.255 ms，超过
+  50 Hz 输出的 60 ms 审计门限；另因旧日志的 `publish_mode` 与 staged gate 不在同一时间
+  基准，无法证明 19 个算法帧的发送当刻 gate。后者不是直接认定越权，而是证据不足；前者
+  是必须在冷机复测中关闭的真实时序缺口。
+
+针对已确认的异步问题，CSV 升级为 schema v4：新增 `perception_new_result` 和
+`detection_attitude_offset_ms`。Web schema v2 在且仅在 `perception_no_new_result` 时保留
+上一份真实视觉显示，并发布 `new_result`、`display_held`、增长后的 `result_age_ms` 和姿态
+偏差；真实无候选、断轨或低分结果会立即清空显示，保持值不进入 PNG。
+
+控制侧新增 `GuidanceSetpointHold`：只允许上一条有效 setpoint 跨越异步无新结果空档，最长
+等于现有 0.25 s watchdog；任一真实感知/LOS/TTC 拒绝、watchdog 超时、RC7/ARM/AUX、批准、
+MSP/姿态/物理 RC gate 关闭都会清空保持并退回物理 RC。该修改不放宽 3/3/0 deg/s、
+1000--1100 us 无桨包线，也不把静止目标的 `area_not_expanding` 改成有效 TTC。
+
+MSP worker 同时增加独立防线：算法发布条件显式包含 worker 自己观察到的 OVERRIDE active。
+每个成功发送帧记录发送当刻的 output enable、algorithm authorization、OVERRIDE、prefill、
+physical RC freshness 和 staged command freshness。schema v4 审计只使用这些
+`msp_last_publish_*` 字段核验算法帧；schema v2/v3 的算法输出日志因缺少同时间基准证据保持
+fail closed，不再用当前 staged gate 对上一帧作误导性归因。
+
+修正后的板端 log-only 先后完成两轮复验。90 s 日志
+`logs/betaflight_log_20260827_181908.csv` 共 1794 行，SET_RAW_RC attempt/success 均为 0，
+Web/MSP error 均为 0，最高板温 61.923 C，审计通过。180 s 日志
+`logs/betaflight_log_20260827_182229.csv` 共 3590 行，SET_RAW_RC 仍为 0/0，Web error 为 0，
+最高板温 66.538 C，审计通过；2406 个去重感知结果中，1961 个为
+`no_detection_candidates`，445 个为 `no_tracked_output`。出现候选时 raw 最大为 1，
+`tracker_high_count` 始终为 0、`tracker_low_count` 最大为 1，说明当前目标/光照下模型偶尔只给出
+低分候选，ByteTrack 按设计不能用低分候选初始化新轨迹。该证据不支持直接降低阈值。
+
+为区分“模型没有候选”“只有低分候选”和“跟踪器已关联输出”，CSV 升级为 schema v5，新增
+`detector_best_score`，并继续记录既有 raw/class/high/low/output、hits、association stage、
+match IoU 和 selector reason。Web schema v3 将这些字段组成可读的感知诊断区；异步显示保持仍
+只作用于页面，不改变控制输入。修改后本地 `unittest` 共 227 项通过。
+
+### schema v5 动力供电无桨复验
+
+动力电池接入、桨叶拆除条件下又完成三组受控测试：
+
+- `betaflight_diag_20260827_184129.csv`：179.96 s、3579 行，3215 个新感知结果；890 帧有
+  候选，749 帧达到 high 阈值，766 帧形成 confirmed output。最佳候选分数按
+  `<0.10/0.10--0.25/>=0.25` 分组为 90/51/749 帧；最高板温 72.076 C，RC 写入 0/0，审计
+  通过。日志归档为 `logs/archives/perception_diagnostics_20260827_184129.tar.gz`，SHA256
+  `4b538991ceca2633f7c9993852642d75d8eff0434cb553f7740bb85c301f3827`。
+- `betaflight_noprop_timing_20260827_184741.csv`：180 s 内成功发送 6944 帧、错误 0，最大
+  成功间隔 50.108 ms，最高板温 68.384 C，审计通过。该轮覆盖预填、ARM 后人工透传和 RC7
+  接管无目标 fail-closed，但没有算法帧。
+- `betaflight_noprop_algorithm_20260827_185318.csv`：289.93 s、10414 个成功发送、错误 0，
+  含 180 个 algorithm 行和 71 个 `guidance_hold` 行。发送 A/E/T/R 范围分别为
+  1499--1501/1500/989--1041/1500 us，限幅后 roll/pitch/yaw 为
+  -0.225--0.232/-0.117--0.120/0 deg/s，发送当刻门禁和无桨包线均通过。审计仍因唯一类别
+  `set_raw_rc_gap` 失败：最大间隔 164.302 ms。缺口发生在 armed+OVERRIDE 期间，MSP publish
+  tick 本身被延迟，物理 RC age 越过 0.25 s 后按设计退回 `physical_rc_stale -> prefill`；
+  没有串口 send error。
+
+长间隔与共享进程负载相关：超过 60 ms 的 publish tick 共 105 行，其中 100 行有一个 MJPEG
+客户端；无客户端时也出现过 120.728 ms。候选存在时相机读取/ByteTrack 中位耗时从
+9.314/0.253 ms 增至 18.714/2.349 ms，实际 Tracker FPS 约 14.2；原配置仍按 30 Hz 尝试感知，
+叠加 JPEG 编码后负载和温度上升。为做可复现对照，runner 新增
+`--rknn-perception-rate-hz` 和 `--disable-web-preview`，两项均记录在 meta，不改变批准配置或
+3/3/0 deg/s、1000--1100 us 控制包线。
+
+降载基线 `betaflight_noprop_load_shed_20260827_190920.csv` 使用 15 Hz 感知并关闭 MJPEG：
+233.52 s、9147 个成功发送、错误 0、最大间隔 49.769 ms、最高板温 59.153 C，审计通过。现场
+未执行 ARM/RC7/目标动作，因此该轮没有算法行，不能替代带目标复验。三份控制测试及审计归档
+为 `logs/archives/noprop_control_validation_20260827.tar.gz`，SHA256
+`1dcd780489fa73c69f118796a9a9a94c300d6c242409ec84f5586b15838822fa`。当前放桨仍被“降载配置下
+带目标 algorithm 发送间隔未通过”和 `timestamp_after_buffer` 高频拒绝共同阻断。

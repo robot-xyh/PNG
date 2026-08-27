@@ -20,7 +20,8 @@ P0问题，当前production YAML不能作为飞行许可。
 |关键异常|MSP OVERRIDE在第一帧有效MSP RC到达前激活时，R/P/Y/T同时变为885 us|
 |相机|`/dev/video0`为视频节点，1280x1024 MJPEG输出640x512；`/dev/video1`是metadata|
 |视觉|修改版RKNN模型可运行，推理约5--8 ms；真实目标精度尚未验收|
-|网页|`bf_flight_png + bf_debugd`，MJPEG模式下页面、曲线和预览可用|
+|网页|Python JSON/SSE/MJPEG可用；实测MJPEG与热负载会放大MSP线程调度间隙，控制时必须关闭|
+|Python无桨输出|180个algorithm日志行已产生，包线和发送当刻门禁通过；最大发送间隔164.302 ms，未放行|
 
 # 第一部分：src 必须独立解决
 
@@ -112,6 +113,12 @@ MSP_SET_RAW_RC wire AETR。记录实际端点、中心、deadband、抖动、反
 确认单UART预算：SET_RAW_RC优先级、STATUS/ATTITUDE/RC/RAW_IMU/ANALOG轮询频率、最大RTT、
 陈旧阈值和串口独占。Configurator、Python和src不得同时占用 `/dev/ttyS1`。
 
+Python实测中，低负载180 s发送6944帧、最大间隔50.108 ms；带目标并打开MJPEG后，10414次
+发送虽然错误为0，但最大publish/send间隔达到164.302 ms并触发physical RC stale重预填。
+15 Hz感知、关闭MJPEG的233.52 s无目标基线降到49.769 ms。专家必须确认生产方案是独立
+MSP进程/实时调度、降低感知与遥测预算，还是硬件mux；带目标、热稳态、生产遥测负载下最大
+间隔连续满足60 ms前不得装桨。
+
 ## S5. src状态门禁和状态机
 
 src当前主要读取STATUS、ATTITUDE和RC；Betaflight路径中的三轴角速度、电压、电流和电机
@@ -198,9 +205,11 @@ de-rotation。先验收视场保持和非碰撞近距通过，再扩大速度和
 1. 无桨RC passthrough：ID 50自动识别、无fallback、接管前后无跳变。
 2. 无桨故障注入：首帧前、短帧、进程/UART/Orange Pi/RX断链均不产生885 us危险输出或无限保持旧指令。
 3. 无桨电机验证：编号、方向、协议、idle、failsafe、Blackbox和电流计正确。
-4. 系留悬停：人工主控、算法仅小幅辅助，验证Rate LUT和油门交接。
-5. 非碰撞移动目标：验证检测、延迟、视场保持和丢目标降级。
-6. 扩大包线：每一级由CSV和Blackbox证据评审，不以“程序能启动”作为飞行许可。
+4. 无桨满载时序：15 Hz或批准后的生产感知率、真实目标、热稳态和生产遥测客户端下，发送
+   最大间隔小于60 ms，且没有physical RC stale重预填。
+5. 系留悬停：人工主控、算法仅小幅辅助，验证Rate LUT和油门交接。
+6. 非碰撞移动目标：验证检测、延迟、视场保持和丢目标降级。
+7. 扩大包线：每一级由CSV和Blackbox证据评审，不以“程序能启动”作为飞行许可。
 
 ## 联合评审直接提问
 
