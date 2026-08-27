@@ -1,0 +1,535 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Betaflight PNG Telemetry</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #111315;
+      --surface: #181b1e;
+      --surface-2: #202429;
+      --border: #34393f;
+      --text: #edf0f2;
+      --muted: #929aa2;
+      --cyan: #4ec9d4;
+      --green: #69d38b;
+      --yellow: #e5c65b;
+      --red: #ee6a63;
+      --magenta: #d98ad6;
+      --orange: #ed9952;
+    }
+    * { box-sizing: border-box; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body { font: 13px/1.4 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; letter-spacing: 0; }
+    header {
+      min-height: 52px; padding: 8px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; gap: 16px; background: #151719;
+    }
+    .brand { font-weight: 700; font-size: 15px; white-space: nowrap; }
+    .brand span { color: var(--cyan); }
+    .status-strip { display: flex; gap: 6px; flex-wrap: wrap; min-width: 0; }
+    .pill {
+      min-height: 27px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 5px;
+      background: var(--surface-2); display: inline-flex; align-items: center; gap: 6px;
+      white-space: nowrap; font: 700 11px/1.1 ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .pill::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
+    .pill.ok::before { background: var(--green); }
+    .pill.warn::before { background: var(--yellow); }
+    .pill.bad::before { background: var(--red); }
+    .pill.info::before { background: var(--cyan); }
+    .header-right { margin-left: auto; color: var(--muted); white-space: nowrap; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    main { min-height: calc(100vh - 53px); display: grid; grid-template-columns: minmax(360px, 42%) minmax(520px, 58%); }
+    .left, .right { min-width: 0; }
+    .left { border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+    .section { padding: 12px 14px; border-bottom: 1px solid var(--border); }
+    .section-title {
+      margin: 0 0 8px; color: #c7cdd2; font-size: 11px; font-weight: 700;
+      text-transform: uppercase; letter-spacing: 0;
+    }
+    .video-shell {
+      width: 100%; aspect-ratio: 5 / 4; min-height: 220px; position: relative;
+      display: flex; align-items: center; justify-content: center; background: #090a0b;
+      border: 1px solid var(--border); border-radius: 4px; overflow: hidden;
+    }
+    #preview { width: 100%; height: 100%; object-fit: contain; display: block; }
+    .video-state {
+      position: absolute; right: 8px; bottom: 8px; padding: 3px 6px;
+      background: rgba(10, 11, 12, .84); border: 1px solid #3c4248; border-radius: 4px;
+      color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); border-top: 1px solid var(--border); border-left: 1px solid var(--border); }
+    .metric { min-width: 0; padding: 8px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); }
+    .metric label { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .metric output { display: block; margin-top: 2px; min-height: 19px; font: 600 13px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .control-summary {
+      min-height: 39px; margin-bottom: 8px; padding: 8px 10px; border: 1px solid var(--border);
+      border-left: 4px solid var(--muted); background: var(--surface); display: flex;
+      align-items: center; justify-content: space-between; gap: 12px;
+    }
+    .control-summary strong { font: 700 13px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .control-summary span { color: var(--muted); text-align: right; overflow-wrap: anywhere; }
+    .control-summary.ok { border-left-color: var(--green); }
+    .control-summary.warn { border-left-color: var(--yellow); }
+    .control-summary.bad { border-left-color: var(--red); }
+    .control-summary.info { border-left-color: var(--cyan); }
+    .gate-grid {
+      display: grid; grid-template-columns: repeat(4, minmax(0, 1fr));
+      border-top: 1px solid var(--border); border-left: 1px solid var(--border);
+    }
+    .gate {
+      min-width: 0; min-height: 49px; padding: 7px 8px; border-right: 1px solid var(--border);
+      border-bottom: 1px solid var(--border); background: #15181b;
+    }
+    .gate label { display: block; color: var(--muted); font-size: 10px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gate output { display: block; margin-top: 3px; font: 700 11px/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .gate output.pass { color: var(--green); }
+    .gate output.wait { color: var(--yellow); }
+    .gate output.fail { color: var(--red); }
+    .gate output.unknown { color: var(--muted); }
+    .control-values { margin-top: 8px; }
+    .channels { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; }
+    .channel { min-width: 0; }
+    .channel-head { display: flex; justify-content: space-between; color: var(--muted); font-size: 10px; }
+    .channel-head output { color: var(--text); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .track { height: 8px; margin-top: 4px; border: 1px solid var(--border); background: #0d0f10; position: relative; }
+    .track::after { content: ""; position: absolute; top: -1px; bottom: -1px; left: 50%; border-left: 1px solid #555b61; }
+    .fill { height: 100%; width: 50%; background: var(--cyan); transition: width 100ms linear; }
+    .fill.sent { background: var(--orange); }
+    .error-line { min-height: 20px; color: var(--muted); font: 11px ui-monospace, SFMono-Regular, Menlo, monospace; overflow-wrap: anywhere; }
+    .error-line.bad { color: var(--red); }
+    .right { display: flex; flex-direction: column; }
+    .chart-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); flex: 1; }
+    .chart-panel { min-width: 0; padding: 10px 12px; border-right: 1px solid var(--border); border-bottom: 1px solid var(--border); background: #141719; }
+    .chart-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 5px; }
+    .chart-head h2 { margin: 0; font-size: 12px; font-weight: 650; }
+    .legend { color: var(--muted); font-size: 9px; display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .legend i { width: 8px; height: 2px; display: inline-block; margin-right: 3px; vertical-align: middle; }
+    canvas { display: block; width: 100%; height: 180px; border: 1px solid #2b3035; background: #0d0f10; }
+    .detail-table { width: 100%; border-collapse: collapse; table-layout: fixed; }
+    .detail-table th, .detail-table td { padding: 5px 7px; border-bottom: 1px solid #2d3237; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .detail-table th { width: 18%; text-align: left; color: var(--muted); font-weight: 500; }
+    .detail-table td { width: 32%; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    @media (max-width: 1050px) {
+      main { grid-template-columns: 1fr; }
+      .left { border-right: 0; }
+      .video-shell { max-height: 58vh; }
+    }
+    @media (max-width: 680px) {
+      header { align-items: flex-start; flex-direction: column; gap: 7px; }
+      .header-right { margin-left: 0; }
+      main { min-height: 0; }
+      .section, .chart-panel { padding: 9px; }
+      .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .gate-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .chart-grid { grid-template-columns: 1fr; }
+      canvas { height: 160px; }
+      .detail-table, .detail-table tbody { display: block; width: 100%; }
+      .detail-table tr { display: flex; width: 100%; flex-wrap: wrap; }
+      .detail-table th, .detail-table td {
+        min-height: 29px; white-space: normal; overflow: visible;
+        text-overflow: clip; overflow-wrap: anywhere;
+      }
+      .detail-table th { width: 92px; flex: 0 0 92px; }
+      .detail-table td { width: calc(100% - 92px); flex: 0 0 calc(100% - 92px); }
+    }
+    @media (max-width: 430px) {
+      .gate-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .control-summary { align-items: flex-start; flex-direction: column; gap: 3px; }
+      .control-summary span { text-align: left; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="brand">Betaflight <span>PNG Telemetry</span></div>
+    <div class="status-strip">
+      <span id="statePill" class="pill">WAIT</span>
+      <span id="armPill" class="pill">DISARMED</span>
+      <span id="overridePill" class="pill">OVERRIDE OFF</span>
+      <span id="trackerPill" class="pill">NO TRACK</span>
+      <span id="commandPill" class="pill">NO COMMAND</span>
+      <span id="linkPill" class="pill">STALE</span>
+    </div>
+    <div id="sampleAge" class="header-right">-- ms</div>
+  </header>
+  <main>
+    <div class="left">
+      <section class="section">
+        <h1 class="section-title">Upward Camera</h1>
+        <div class="video-shell">
+          <img id="preview" src="/api/v1/video/mjpeg" alt="Live upward camera preview">
+          <span id="videoState" class="video-state">CONNECTING</span>
+        </div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">Control Readiness</h2>
+        <div id="controlSummary" class="control-summary info">
+          <strong id="controlSummaryState">WAITING</strong>
+          <span id="controlSummaryReason">Waiting for telemetry</span>
+        </div>
+        <div class="gate-grid">
+          <div class="gate"><label>Approval</label><output id="gateApproval" class="unknown">--</output></div>
+          <div class="gate"><label>ARM / RC5</label><output id="gateArm" class="unknown">--</output></div>
+          <div class="gate"><label>Override / RC7</label><output id="gateOverride" class="unknown">--</output></div>
+          <div class="gate"><label>RC Prefill</label><output id="gatePrefill" class="unknown">--</output></div>
+          <div class="gate"><label>Physical RC</label><output id="gatePhysicalRc" class="unknown">--</output></div>
+          <div class="gate"><label>MSP Telemetry</label><output id="gateTelemetry" class="unknown">--</output></div>
+          <div class="gate"><label>Attitude Sync</label><output id="gateAttitude" class="unknown">--</output></div>
+          <div class="gate"><label>Voltage</label><output id="gateVoltage" class="unknown">--</output></div>
+          <div class="gate"><label>Tracker</label><output id="gateTracker" class="unknown">--</output></div>
+          <div class="gate"><label>LOS</label><output id="gateLos" class="unknown">--</output></div>
+          <div class="gate"><label>TTC</label><output id="gateTtc" class="unknown">--</output></div>
+          <div class="gate"><label>Watchdog</label><output id="gateWatchdog" class="unknown">--</output></div>
+          <div class="gate"><label>Guidance</label><output id="gateGuidance" class="unknown">--</output></div>
+          <div class="gate"><label>Command</label><output id="gateCommand" class="unknown">--</output></div>
+          <div class="gate"><label>Publish</label><output id="gatePublish" class="unknown">--</output></div>
+          <div class="gate"><label>Control State</label><output id="gateControlState" class="unknown">--</output></div>
+        </div>
+        <div class="metric-grid control-values">
+          <div class="metric"><label>Blocking reason</label><output id="controlReason">--</output></div>
+          <div class="metric"><label>Sent AETR</label><output id="sentFrame">--</output></div>
+          <div class="metric"><label>Command R/P/Y</label><output id="commandRates">--</output></div>
+          <div class="metric"><label>Command thrust</label><output id="commandThrust">--</output></div>
+          <div class="metric"><label>SET_RAW_RC</label><output id="setRawRcCount">--</output></div>
+          <div class="metric"><label>SET errors</label><output id="setRawRcErrors">--</output></div>
+          <div class="metric"><label>SET max RTT</label><output id="setRawRcRtt">--</output></div>
+          <div class="metric"><label>Deadline misses</label><output id="deadlineMisses">--</output></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">Flight State</h2>
+        <div class="metric-grid">
+          <div class="metric"><label>Roll</label><output id="roll">--</output></div>
+          <div class="metric"><label>Pitch</label><output id="pitch">--</output></div>
+          <div class="metric"><label>Yaw</label><output id="yaw">--</output></div>
+          <div class="metric"><label>VBAT</label><output id="vbat">--</output></div>
+          <div class="metric"><label>Track</label><output id="trackId">--</output></div>
+          <div class="metric"><label>Score</label><output id="score">--</output></div>
+          <div class="metric"><label>TTC</label><output id="ttc">--</output></div>
+          <div class="metric"><label>Guidance</label><output id="guidance">--</output></div>
+          <div class="metric"><label>RKNN</label><output id="rknn">--</output></div>
+          <div class="metric"><label>Tracker</label><output id="trackerFps">--</output></div>
+          <div class="metric"><label>MSP age</label><output id="mspAge">--</output></div>
+          <div class="metric"><label>Loop</label><output id="loopPeriod">--</output></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">RC Input / Sent</h2>
+        <div id="channels" class="channels"></div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">Runtime</h2>
+        <table class="detail-table">
+          <tr><th>Safety</th><td id="safetyReason">--</td><th>Publish</th><td id="publishMode">--</td></tr>
+          <tr><th>Detector</th><td id="detectorReason">--</td><th>Worker</th><td id="workerState">--</td></tr>
+          <tr><th>Orange Pi</th><td id="hostState">--</td><th>Web</th><td id="webState">--</td></tr>
+        </table>
+        <div id="errorLine" class="error-line">No active errors</div>
+      </section>
+    </div>
+    <div class="right">
+      <div class="chart-grid">
+        <section class="chart-panel">
+          <div class="chart-head"><h2>Attitude</h2><div class="legend"><span><i style="background:#4ec9d4"></i>roll</span><span><i style="background:#e5c65b"></i>pitch</span><span><i style="background:#d98ad6"></i>yaw</span></div></div>
+          <canvas id="attitudeChart"></canvas>
+        </section>
+        <section class="chart-panel">
+          <div class="chart-head"><h2>Body Rates</h2><div class="legend"><span><i style="background:#69d38b"></i>gyro R</span><span><i style="background:#ed9952"></i>gyro P</span><span><i style="background:#ee6a63"></i>command</span></div></div>
+          <canvas id="ratesChart"></canvas>
+        </section>
+        <section class="chart-panel">
+          <div class="chart-head"><h2>LOS / TTC</h2><div class="legend"><span><i style="background:#4ec9d4"></i>lambda x</span><span><i style="background:#e5c65b"></i>lambda y</span><span><i style="background:#69d38b"></i>TTC</span></div></div>
+          <canvas id="guidanceChart"></canvas>
+        </section>
+        <section class="chart-panel">
+          <div class="chart-head"><h2>RC Primary Channels</h2><div class="legend"><span><i style="background:#4ec9d4"></i>input</span><span><i style="background:#ed9952"></i>sent</span></div></div>
+          <canvas id="rcChart"></canvas>
+        </section>
+      </div>
+    </div>
+  </main>
+  <script>
+    const $ = id => document.getElementById(id);
+    const path = (value, keys, fallback = null) => {
+      let cursor = value;
+      for (const key of keys) {
+        if (cursor == null || !(key in cursor)) return fallback;
+        cursor = cursor[key];
+      }
+      return cursor == null ? fallback : cursor;
+    };
+    const number = (value, digits = 1, suffix = "") => Number.isFinite(value) ? `${value.toFixed(digits)}${suffix}` : "--";
+    const text = value => value == null || value === "" ? "--" : String(value);
+    const boolText = (value, yes, no) => value == null ? "--" : value ? yes : no;
+    const reasonLabels = Object.freeze({
+      log_only: "Read-only logging",
+      control_not_allowed: "Control flag not enabled",
+      snapshot_not_approved: "Approval manifest rejected",
+      config_conflict: "Configuration conflict",
+      msp_override_unavailable: "MSP OVERRIDE unavailable",
+      msp_override_inactive: "Waiting for RC7 OVERRIDE",
+      msp_prefill_not_ready: "Waiting for physical RC prefill",
+      not_armed: "Waiting for RC5 ARM",
+      physical_rc_stale: "Physical RC is stale",
+      telemetry_stale: "MSP telemetry is stale",
+      attitude_not_synced: "Attitude is not synchronized",
+      low_voltage: "Battery voltage gate failed",
+      watchdog_expired: "Guidance watchdog expired",
+      aux_disabled: "RC7/AUX gate is disabled",
+      target_invalid: "Tracking has not produced valid guidance",
+      active: "Algorithm command is being published"
+    });
+    let latest = null;
+    let samples = [];
+    const maxSamples = 300;
+
+    function setPill(id, label, kind) {
+      const element = $(id);
+      element.textContent = label;
+      element.className = `pill ${kind || ""}`;
+    }
+
+    function setMetric(id, value) { $(id).textContent = value; }
+
+    function setGate(id, value, passLabel, waitLabel, falseKind = "wait") {
+      const element = $(id);
+      if (value == null) {
+        element.textContent = "UNKNOWN";
+        element.className = "unknown";
+      } else if (value) {
+        element.textContent = passLabel;
+        element.className = "pass";
+      } else {
+        element.textContent = waitLabel;
+        element.className = falseKind;
+      }
+    }
+
+    function formatChannels(values, order) {
+      if (!Array.isArray(values) || !values.length) return "--";
+      return Array.from(String(order || "AETR").slice(0, 4)).map((role, index) => {
+        const value = values[index];
+        return `${role}:${Number.isFinite(value) ? Math.round(value) : "--"}`;
+      }).join(" ");
+    }
+
+    function formatVector(values, digits = 1) {
+      if (!Array.isArray(values) || !values.some(Number.isFinite)) return "--";
+      return values.map(value => Number.isFinite(value) ? value.toFixed(digits) : "--").join(" / ");
+    }
+
+    function updateControlReadiness(data) {
+      const safety = data.safety || {};
+      const vision = data.vision || {};
+      const guidance = data.guidance || {};
+      const command = data.command || {};
+      const msp = data.msp || {};
+      const rc = data.rc || {};
+      const state = text(safety.state);
+      const publish = text(safety.publish_mode);
+      const reason = safety.reason || "unknown";
+      const summaryKind = state === "ACTIVE" ? "ok" : state === "FAILSAFE" || state === "DISABLED" ? "bad" : state === "LOG_ONLY" ? "info" : "warn";
+      $("controlSummary").className = `control-summary ${summaryKind}`;
+      $("controlSummaryState").textContent = `${state} / ${publish}`;
+      $("controlSummaryReason").textContent = `${reasonLabels[reason] || reason} (${reason})`;
+
+      setGate("gateApproval", safety.snapshot_approved, "APPROVED", "REJECTED", "fail");
+      $("gateApproval").title = text(safety.authorization_reason);
+      setGate("gateArm", safety.armed, "ARMED", "DISARMED");
+      setGate("gateOverride", safety.override_active, "ACTIVE", safety.override_available === false ? "UNAVAILABLE" : "MANUAL", safety.override_available === false ? "fail" : "wait");
+      setGate("gatePrefill", safety.prefill_ready, "READY", "WAITING");
+      setGate("gatePhysicalRc", safety.physical_rc_fresh, "FRESH", "STALE", "fail");
+      setGate("gateTelemetry", safety.telemetry_fresh, "FRESH", "STALE", "fail");
+      setGate("gateAttitude", safety.attitude_synced, "SYNCED", "STALE", "fail");
+      setGate("gateVoltage", safety.voltage_ok, "OK", "LOW", "fail");
+      setGate("gateTracker", vision.tracker_confirmed, `TRACK ${text(vision.track_id)}`, "NO TRACK");
+      setGate("gateLos", guidance.los_valid, "VALID", "INVALID");
+      $("gateLos").title = text(guidance.los_reason);
+      setGate("gateTtc", guidance.ttc_valid, number(guidance.ttc_s, 2, " s"), "INVALID");
+      $("gateTtc").title = text(guidance.ttc_reason);
+      setGate("gateWatchdog", safety.watchdog_ok, "FRESH", "EXPIRED", "fail");
+      setGate("gateGuidance", guidance.valid, "VALID", "INVALID");
+      $("gateGuidance").title = text(guidance.reason);
+      setGate("gateCommand", command.valid, "VALID", "INVALID");
+      $("gateCommand").title = text(command.reason);
+      setGate("gatePublish", publish === "algorithm", publish.toUpperCase(), publish.toUpperCase());
+      setGate("gateControlState", state === "ACTIVE", state, state, state === "FAILSAFE" || state === "DISABLED" ? "fail" : "wait");
+
+      setMetric("controlReason", `${reasonLabels[reason] || reason} (${reason})`);
+      setMetric("sentFrame", formatChannels(rc.sent_us, rc.wire_order));
+      setMetric("commandRates", formatVector(command.rate_deg_s));
+      setMetric("commandThrust", number(command.thrust, 3));
+      setMetric("setRawRcCount", `${text(msp.set_raw_rc_success_count)} / ${text(msp.set_raw_rc_attempt_count)}`);
+      const setStats = path(msp, ["commands", "set_raw_rc"], {});
+      setMetric("setRawRcErrors", `${text(setStats.error_count)} / worker ${text(msp.worker_send_error_count)}`);
+      setMetric("setRawRcRtt", number(setStats.max_rtt_ms, 1, " ms"));
+      setMetric("deadlineMisses", text(msp.publish_deadline_miss_count));
+    }
+
+    function updateChannels(data) {
+      const input = path(data, ["rc", "physical_us"], path(data, ["rc", "input_us"], []));
+      const sent = path(data, ["rc", "sent_us"], []);
+      const wireOrder = path(data, ["rc", "wire_order"], "AETR1234");
+      const channelNames = Array.from(String(wireOrder).slice(0, 4));
+      $("channels").innerHTML = channelNames.map((name, index) => {
+        const value = input[index];
+        const sentValue = sent[index];
+        const inputWidth = Number.isFinite(value) ? Math.max(0, Math.min(100, (value - 1000) / 10)) : 50;
+        const sentWidth = Number.isFinite(sentValue) ? Math.max(0, Math.min(100, (sentValue - 1000) / 10)) : 50;
+        return `<div class="channel"><div class="channel-head"><span>${name}</span><output>${Number.isFinite(value) ? Math.round(value) : "--"}/${Number.isFinite(sentValue) ? Math.round(sentValue) : "--"}</output></div><div class="track"><div class="fill" style="width:${inputWidth}%"></div></div><div class="track"><div class="fill sent" style="width:${sentWidth}%"></div></div></div>`;
+      }).join("");
+    }
+
+    function render(data) {
+      latest = data;
+      const safety = data.safety || {};
+      const stale = Boolean(data.stale);
+      const state = text(safety.state);
+      setPill("statePill", state, state === "ACTIVE" ? "ok" : state === "FAILSAFE" || state === "DISABLED" ? "bad" : state === "LOG_ONLY" ? "info" : "warn");
+      setPill("armPill", safety.armed ? "ARMED" : "DISARMED", safety.armed ? "ok" : "warn");
+      setPill("overridePill", safety.override_active ? "OVERRIDE ON" : "OVERRIDE OFF", safety.override_active ? "ok" : "warn");
+      const trackerConfirmed = path(data, ["vision", "tracker_confirmed"]);
+      const commandValid = path(data, ["command", "valid"]);
+      setPill("trackerPill", trackerConfirmed ? "TRACKED" : "NO TRACK", trackerConfirmed ? "ok" : "warn");
+      setPill("commandPill", commandValid ? "COMMAND VALID" : "NO COMMAND", commandValid ? "ok" : "warn");
+      setPill("linkPill", stale ? "STALE" : "LIVE", stale ? "bad" : "ok");
+      $("sampleAge").textContent = number(data.sample_age_ms, 0, " ms");
+
+      const attitude = path(data, ["flight_controller", "attitude_deg"], []);
+      setMetric("roll", number(attitude[0], 1, " deg"));
+      setMetric("pitch", number(attitude[1], 1, " deg"));
+      setMetric("yaw", number(attitude[2], 1, " deg"));
+      setMetric("vbat", number(path(data, ["flight_controller", "vbat_v"]), 2, " V"));
+      setMetric("trackId", text(path(data, ["vision", "track_id"])));
+      setMetric("score", number(path(data, ["vision", "score"]), 2));
+      setMetric("ttc", number(path(data, ["guidance", "ttc_s"]), 2, " s"));
+      setMetric("guidance", boolText(path(data, ["guidance", "valid"]), "VALID", "INVALID"));
+      setMetric("rknn", number(path(data, ["vision", "rknn_ms", "total"]), 1, " ms"));
+      setMetric("trackerFps", number(path(data, ["vision", "tracker_fps"]), 1, " fps"));
+      setMetric("mspAge", number(path(data, ["msp", "telemetry_age_s"]), 3, " s"));
+      setMetric("loopPeriod", number(path(data, ["run", "loop_period_s"]), 3, " s"));
+      setMetric("safetyReason", text(safety.reason));
+      setMetric("publishMode", text(safety.publish_mode));
+      setMetric("detectorReason", text(path(data, ["vision", "detector_reason"])));
+      setMetric("workerState", text(path(data, ["vision", "tracker_state"])));
+      const temp = path(data, ["host", "thermal_max_c"]);
+      const rss = path(data, ["host", "rss_mb"]);
+      setMetric("hostState", `${number(temp, 0, " C")} / ${number(rss, 0, " MB")}`);
+      setMetric("webState", `${text(path(data, ["web", "sse_clients"]))} SSE / ${text(path(data, ["web", "mjpeg_clients"]))} MJPEG`);
+      updateChannels(data);
+      updateControlReadiness(data);
+
+      const errors = [
+        path(data, ["msp", "telemetry_error"]), path(data, ["msp", "worker_error"]),
+        path(data, ["msp", "send_error"]), path(data, ["vision", "worker_error"]),
+        path(data, ["host", "error"]), path(data, ["web", "last_error"])
+      ].filter(Boolean);
+      $("errorLine").textContent = errors.length ? errors.join(" | ") : "No active errors";
+      $("errorLine").className = `error-line ${errors.length ? "bad" : ""}`;
+    }
+
+    const chartSpecs = {
+      attitudeChart: [
+        { color: "#4ec9d4", get: d => path(d, ["flight_controller", "attitude_deg", 0]) },
+        { color: "#e5c65b", get: d => path(d, ["flight_controller", "attitude_deg", 1]) },
+        { color: "#d98ad6", get: d => path(d, ["flight_controller", "attitude_deg", 2]) }
+      ],
+      ratesChart: [
+        { color: "#69d38b", get: d => path(d, ["flight_controller", "gyro_deg_s", 0]) },
+        { color: "#ed9952", get: d => path(d, ["flight_controller", "gyro_deg_s", 1]) },
+        { color: "#ee6a63", get: d => path(d, ["command", "rate_deg_s", 0]) }
+      ],
+      guidanceChart: [
+        { color: "#4ec9d4", get: d => path(d, ["guidance", "lambda", 0]) },
+        { color: "#e5c65b", get: d => path(d, ["guidance", "lambda", 1]) },
+        { color: "#69d38b", get: d => path(d, ["guidance", "ttc_s"]) }
+      ],
+      rcChart: [
+        { color: "#4ec9d4", get: d => path(d, ["rc", "physical_us", 0]) },
+        { color: "#ed9952", get: d => path(d, ["rc", "sent_us", 0]) },
+        { color: "#69d38b", get: d => path(d, ["rc", "physical_us", 2]) },
+        { color: "#ee6a63", get: d => path(d, ["rc", "sent_us", 2]) }
+      ]
+    };
+
+    function drawChart(canvas, series) {
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      const width = Math.max(240, Math.round(rect.width * dpr));
+      const height = Math.max(120, Math.round(rect.height * dpr));
+      if (canvas.width !== width || canvas.height !== height) { canvas.width = width; canvas.height = height; }
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, width, height);
+      const pad = { l: 42 * dpr, r: 10 * dpr, t: 10 * dpr, b: 23 * dpr };
+      const plotW = width - pad.l - pad.r;
+      const plotH = height - pad.t - pad.b;
+      const values = [];
+      for (const spec of series) for (const sample of samples) {
+        const value = spec.get(sample);
+        if (Number.isFinite(value)) values.push(value);
+      }
+      let min = values.length ? Math.min(...values) : -1;
+      let max = values.length ? Math.max(...values) : 1;
+      if (min === max) { min -= 1; max += 1; }
+      const margin = Math.max((max - min) * .12, .01);
+      min -= margin; max += margin;
+      ctx.strokeStyle = "#292e32"; ctx.lineWidth = 1;
+      ctx.fillStyle = "#7e878f"; ctx.font = `${10 * dpr}px ui-monospace,monospace`;
+      for (let i = 0; i <= 4; i++) {
+        const y = pad.t + plotH * i / 4;
+        ctx.beginPath(); ctx.moveTo(pad.l, y); ctx.lineTo(width - pad.r, y); ctx.stroke();
+        const label = (max - (max - min) * i / 4).toFixed(Math.abs(max - min) < 5 ? 2 : 0);
+        ctx.fillText(label, 3 * dpr, y + 3 * dpr);
+      }
+      if (!samples.length) return;
+      for (const spec of series) {
+        ctx.strokeStyle = spec.color; ctx.lineWidth = 1.5 * dpr; ctx.beginPath();
+        let started = false;
+        samples.forEach((sample, index) => {
+          const value = spec.get(sample);
+          if (!Number.isFinite(value)) { started = false; return; }
+          const x = pad.l + plotW * index / Math.max(1, samples.length - 1);
+          const y = pad.t + plotH * (max - value) / (max - min);
+          if (!started) { ctx.moveTo(x, y); started = true; } else { ctx.lineTo(x, y); }
+        });
+        ctx.stroke();
+      }
+      ctx.fillStyle = "#727b83";
+      ctx.fillText("-60 s", pad.l, height - 6 * dpr);
+      ctx.fillText("now", width - pad.r - 24 * dpr, height - 6 * dpr);
+    }
+
+    function drawAll() {
+      for (const [id, specs] of Object.entries(chartSpecs)) drawChart($(id), specs);
+    }
+
+    function acceptSample(data) {
+      render(data);
+      if (!data.stale && data.sequence) {
+        if (!samples.length || samples[samples.length - 1].sequence !== data.sequence) samples.push(data);
+        if (samples.length > maxSamples) samples = samples.slice(-maxSamples);
+        drawAll();
+      }
+    }
+
+    fetch("/api/v1/history?seconds=60", { cache: "no-store" })
+      .then(response => response.json())
+      .then(data => { samples = (data.samples || []).slice(-maxSamples); if (samples.length) render(samples[samples.length - 1]); drawAll(); })
+      .catch(() => {});
+    const events = new EventSource("/api/v1/stream");
+    events.addEventListener("telemetry", event => acceptSample(JSON.parse(event.data)));
+    events.onerror = () => setPill("linkPill", "RECONNECT", "bad");
+    $("preview").addEventListener("load", () => { $("videoState").textContent = "LIVE"; });
+    $("preview").addEventListener("error", () => { $("videoState").textContent = "WAITING"; });
+    new ResizeObserver(drawAll).observe(document.querySelector(".chart-grid"));
+    setInterval(() => {
+      if (!latest) return;
+      const receivedAge = Date.now() / 1000 - (latest.sample_unix_s || 0);
+      if (receivedAge > 1.5) setPill("linkPill", "STALE", "bad");
+    }, 500);
+  </script>
+</body>
+</html>
