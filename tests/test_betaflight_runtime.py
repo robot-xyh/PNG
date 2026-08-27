@@ -1,8 +1,16 @@
+import hashlib
+import json
+import tempfile
+import time
 import unittest
+from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
+    AnalogTelemetry,
+    AttitudeTelemetry,
     BetaflightTelemetry,
     MspAdapterStats,
+    RawImuTelemetry,
     StatusTelemetry,
 )
 from vision_guidance.betaflight_runtime import (
@@ -12,6 +20,7 @@ from vision_guidance.betaflight_runtime import (
     armed_from_telemetry,
     box_mode_active,
     merge_physical_rc,
+    reorder_msp_rc_to_set_raw_rc,
     resolve_control_authorization,
 )
 from vision_guidance.flight_control import RcCommand
@@ -22,23 +31,116 @@ class _Adapter:
 
     def __init__(self):
         self.sent = []
+        self.operations = []
         self.telemetry = BetaflightTelemetry(
             timestamp=1.0,
             status=StatusTelemetry(100, 0, 0, 5, 0),
-            rc_channels=(1500, 1500, 1000, 1500, 1800, 1200, 1300, 1400),
+            # MSP_RC is logical roll, pitch, yaw, throttle, AUX1...
+            rc_channels=(1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400),
         )
 
     def read_telemetry(self):
         return self.telemetry
 
     def send_raw_rc(self, channels):
+        self.operations.append("send")
         self.sent.append(tuple(channels))
+
+    def read_status(self):
+        self.operations.append("status")
+        return self.telemetry.status
+
+    def read_attitude(self):
+        self.operations.append("attitude")
+        return AttitudeTelemetry(1.0, 2.0, 3.0)
+
+    def read_raw_imu(self):
+        self.operations.append("raw_imu")
+        return RawImuTelemetry((1, 2, 3), (4.0, 5.0, 6.0), (7, 8, 9))
+
+    def read_rc(self):
+        self.operations.append("rc")
+        return self.telemetry.rc_channels
+
+    def read_analog(self):
+        self.operations.append("analog")
+        return AnalogTelemetry(16.0)
 
     def snapshot_stats(self):
         return MspAdapterStats(set_raw_rc_attempt_count=len(self.sent), set_raw_rc_success_count=len(self.sent))
 
 
 class BetaflightRuntimeTest(unittest.TestCase):
+    def test_runtime_config_records_cli_override_mode_id(self):
+        config = MspRuntimeConfig.from_mapping({"override_mode_cli_id": 50})
+        self.assertEqual(config.override_mode_cli_id, 50)
+
+        with self.assertRaisesRegex(ValueError, "override_mode_cli_id"):
+            MspRuntimeConfig.from_mapping({"override_mode_cli_id": 256})
+
+    def test_per_command_polling_merges_samples_and_tracks_age(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(adapter, MspRuntimeConfig())
+
+        for name in ("status", "attitude", "raw_imu", "rc", "analog"):
+            worker._poll_one(name)
+        snapshot = worker.snapshot()
+
+        self.assertEqual(snapshot.telemetry.raw_imu.gyro_deg_s, (4.0, 5.0, 6.0))
+        self.assertEqual(snapshot.telemetry.attitude.roll_deg, 1.0)
+        self.assertEqual(snapshot.telemetry.analog.vbat_v, 16.0)
+        self.assertEqual(snapshot.poll_count, 5)
+        self.assertIsNotNone(snapshot.status_age_s)
+        self.assertIsNotNone(snapshot.raw_imu_age_s)
+
+    def test_worker_publish_tick_precedes_telemetry_poll(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                control_publish_hz=50.0,
+                prefill_enabled=True,
+                shutdown_passthrough_frames=0,
+            ),
+        )
+        worker._poll_one("status")
+        worker._poll_one("rc")
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        adapter.operations.clear()
+
+        worker.start()
+        time.sleep(0.035)
+        worker.close()
+
+        self.assertGreaterEqual(len(adapter.operations), 2)
+        self.assertEqual(adapter.operations[0], "send")
+        self.assertIn(adapter.operations[1], {"status", "attitude", "rc", "analog"})
+
+    def test_worker_records_send_timing_and_handover_diagnostics(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=False, throttle_handover_s=0.4),
+        )
+        worker._poll(1.0)
+        worker.stage(
+            RcCommand(timestamp=1.0, channels=(1600, 1400, 1200, 1500, 1000, 1500, 1500, 1500), active=True),
+            output_enabled=True,
+            algorithm_authorized=True,
+            override_active=True,
+        )
+
+        worker._publish(1.01)
+        worker._publish(1.03)
+        snapshot = worker.snapshot(1.03)
+
+        self.assertAlmostEqual(snapshot.publish_tick_interval_s, 0.02)
+        self.assertAlmostEqual(snapshot.send_success_interval_s, 0.02)
+        self.assertEqual(snapshot.consecutive_send_error_count, 0)
+        self.assertEqual(snapshot.throttle_handover.source_us, 1000)
+        self.assertEqual(snapshot.throttle_handover.target_us, 1200)
+        self.assertGreater(snapshot.throttle_handover.alpha, 0.0)
+
     def test_box_mode_mapping_uses_boxids_order(self):
         box_ids = (0, 27, 50)
         self.assertTrue(box_mode_active(1 << 2, box_ids, 50))
@@ -49,6 +151,73 @@ class BetaflightRuntimeTest(unittest.TestCase):
         status = resolve_control_authorization({}, fc_identity={"fc_variant": "BTFL"}, box_ids=(0, 50))
         self.assertFalse(status.approved)
         self.assertEqual(status.reason, "authorization_disabled")
+
+    def test_authorization_binds_scope_and_parameters_hash(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"noprop"}\n', encoding="utf-8")
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "approved": True,
+                        "scope": "noprop_bench",
+                        "source_conflicts_resolved": True,
+                        "snapshot_manifest": str(snapshot),
+                        "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                        "expected_fc_identity": {"fc_variant": "BTFL"},
+                        "parameters_sha256": hashlib.sha256(parameters.read_bytes()).hexdigest(),
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": "noprop_bench",
+                "approval_manifest": str(approval),
+            }
+
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(status.approved)
+            self.assertEqual(status.scope, "noprop_bench")
+
+            parameters.write_text('{"profile":"changed"}\n', encoding="utf-8")
+            mismatch = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(mismatch.approved)
+            self.assertEqual(mismatch.reason, "parameters_sha256_mismatch")
+
+            wrong_scope = resolve_control_authorization(
+                {**values, "required_scope": "flight"},
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(wrong_scope.approved)
+            self.assertEqual(wrong_scope.reason, "authorization_scope_mismatch")
+
+    def test_reorders_msp_logical_rpyt_to_aetr_wire_order(self):
+        logical = (1600, 1400, 1550, 1050, 900, 1200, 1800, 2000)
+
+        wire = reorder_msp_rc_to_set_raw_rc(logical, "AETR1234")
+
+        self.assertEqual(wire, (1600, 1400, 1050, 1550, 900, 1200, 1800, 2000))
 
     def test_merge_preserves_arm_and_aux_channels(self):
         physical = (1500, 1500, 1000, 1500, 1800, 1200, 1300, 1400, 1450, 1550)
@@ -86,6 +255,149 @@ class BetaflightRuntimeTest(unittest.TestCase):
         worker._publish(1.01)
         self.assertEqual(adapter.sent[0][:4], (1600, 1400, 1200, 1550))
         self.assertEqual(adapter.sent[0][4:], adapter.telemetry.rc_channels[4:])
+
+    def test_worker_prefills_physical_rc_before_algorithm_authorization(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=2, shutdown_passthrough_frames=0),
+        )
+        worker._poll(1.0)
+        command = RcCommand(1.0, (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000), True)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=False)
+
+        worker._publish(1.01)
+        self.assertEqual(adapter.sent[-1], (1500, 1500, 1000, 1500, 1800, 1200, 1300, 1400))
+        self.assertFalse(worker.snapshot(1.01).prefill_ready)
+        worker._publish(1.02)
+
+        snapshot = worker.snapshot(1.02)
+        self.assertTrue(snapshot.prefill_ready)
+        self.assertEqual(snapshot.passthrough_send_count, 2)
+        self.assertEqual(snapshot.algorithm_send_count, 0)
+
+    def test_worker_enters_algorithm_only_after_prefill_and_handover(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                prefill_enabled=True,
+                prefill_min_frames=1,
+                throttle_handover_s=0.4,
+                shutdown_passthrough_frames=0,
+            ),
+        )
+        worker._poll(1.0)
+        command = RcCommand(1.0, (1600, 1400, 1500, 1550, 1000, 2000, 2000, 2000), True)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.01)
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+
+        worker._publish(1.02)
+        worker._publish(1.22)
+
+        self.assertEqual(adapter.sent[-2][:2], (1600, 1400))
+        self.assertEqual(adapter.sent[-2][2], 1000)
+        self.assertEqual(adapter.sent[-1][2], 1250)
+        self.assertEqual(adapter.sent[-1][4:], adapter.telemetry.rc_channels[4:])
+        self.assertEqual(worker.snapshot(1.22).algorithm_send_count, 2)
+
+    def test_stale_algorithm_command_falls_back_to_latched_manual_rc(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                prefill_enabled=True,
+                prefill_min_frames=1,
+                staged_command_timeout_s=0.1,
+                shutdown_passthrough_frames=0,
+            ),
+        )
+        worker._poll(1.0)
+        command = RcCommand(1.0, (1600, 1400, 1500, 1550, 1000, 2000, 2000, 2000), True)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.01)
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+        with worker._lock:
+            worker._staged_received_s = 1.0
+
+        worker._publish(1.2)
+
+        snapshot = worker.snapshot(1.2)
+        self.assertEqual(adapter.sent[-1], (1500, 1500, 1000, 1500, 1800, 1200, 1300, 1400))
+        self.assertEqual(snapshot.publish_mode, "passthrough")
+        self.assertEqual(snapshot.stale_command_count, 1)
+
+    def test_worker_refuses_prefill_when_started_with_override_active_and_885_rc(self):
+        adapter = _Adapter()
+        adapter.telemetry = BetaflightTelemetry(
+            timestamp=1.0,
+            status=StatusTelemetry(100, 0, 0, 0b11, 0),
+            rc_channels=(885, 885, 885, 885, 1800, 1500, 1800, 1500),
+        )
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=1, shutdown_passthrough_frames=0),
+            box_ids=(0, 50),
+        )
+        worker._poll(1.0)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=True)
+
+        worker._publish(1.01)
+
+        snapshot = worker.snapshot(1.01)
+        self.assertEqual(adapter.sent, [])
+        self.assertFalse(snapshot.prefill_ready)
+        self.assertEqual(snapshot.publish_mode, "physical_rc_invalid")
+
+    def test_worker_normal_close_sends_configured_passthrough_frames(self):
+        adapter = _Adapter()
+        now = time.monotonic()
+        adapter.telemetry = BetaflightTelemetry(
+            timestamp=now,
+            status=StatusTelemetry(100, 0, 0, 0, 0),
+            rc_channels=(1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400),
+        )
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=1, shutdown_passthrough_frames=3),
+        )
+        worker._poll(now)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(time.monotonic())
+        count_before_close = len(adapter.sent)
+
+        worker.close()
+
+        self.assertEqual(len(adapter.sent), count_before_close + 3)
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
+
+    def test_worker_send_error_resets_consecutive_prefill(self):
+        class FailingAdapter(_Adapter):
+            fail = False
+
+            def send_raw_rc(self, channels):
+                if self.fail:
+                    raise OSError("serial write failed")
+                super().send_raw_rc(channels)
+
+        adapter = FailingAdapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=2, shutdown_passthrough_frames=0),
+        )
+        worker._poll(1.0)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.01)
+        self.assertEqual(worker.snapshot(1.01).prefill_success_count, 1)
+        adapter.fail = True
+
+        worker._publish(1.02)
+
+        snapshot = worker.snapshot(1.02)
+        self.assertEqual(snapshot.prefill_success_count, 0)
+        self.assertFalse(snapshot.prefill_ready)
+        self.assertEqual(snapshot.send_error_count, 1)
 
 
 if __name__ == "__main__":

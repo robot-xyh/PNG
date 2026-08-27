@@ -11,12 +11,37 @@
   "msp_runtime": {
     "io_worker_enabled": false,
     "telemetry_poll_hz": 5.0,
+    "status_poll_hz": 5.0,
+    "attitude_poll_hz": 10.0,
+    "raw_imu_poll_hz": 20.0,
+    "rc_poll_hz": 10.0,
+    "analog_poll_hz": 2.0,
     "control_publish_hz": 50.0,
     "physical_rc_timeout_s": 0.25,
     "override_channels_mask": 15,
     "aux_arm_channel_zero_based": 4,
     "throttle_channel_zero_based": 2,
+    "set_raw_rc_channel_map": "AETR1234",
     "throttle_handover_s": 0.4
+  },
+  "logging": {
+    "platform_health_hz": 1.0
+  },
+  "telemetry_web": {
+    "enabled": false,
+    "bind": "127.0.0.1",
+    "port": 8080,
+    "allowed_subnets": ["127.0.0.0/8"],
+    "sample_hz": 5.0,
+    "history_s": 60.0,
+    "stale_after_s": 1.0,
+    "max_sse_clients": 4,
+    "preview": {
+      "enabled": true,
+      "max_fps": 10.0,
+      "jpeg_quality": 70,
+      "max_clients": 2
+    }
   },
   "control_authorization": {
     "enabled": false,
@@ -71,7 +96,7 @@
     "min_vbat_v": 0.0,
     "require_aux_enable": true,
     "aux_enable": {
-      "channel_index": 5,
+      "channel_index": 7,
       "min_us": 1700,
       "max_us": 2100
     },

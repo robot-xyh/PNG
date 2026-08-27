@@ -12,6 +12,7 @@ from vision_guidance.betaflight_msp import (
     AnalogTelemetry,
     AttitudeTelemetry,
     BetaflightTelemetry,
+    RawImuTelemetry,
     StatusTelemetry,
 )
 from vision_guidance.flight_control import GuidanceSetpoint, RcCommand
@@ -306,6 +307,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             attitude=AttitudeTelemetry(roll_deg=1.0, pitch_deg=-2.0, yaw_deg=30.0),
             analog=AnalogTelemetry(vbat_v=12.3, mah_drawn=100, rssi=900, amperage_a=3.21),
             rc_channels=(1000, 1100, 1200, 1300, 1800, 1500, 1500, 1500),
+            raw_imu=RawImuTelemetry((1, 2, 3), (4.0, 5.0, 6.0), (7, 8, 9)),
         )
         setpoint = GuidanceSetpoint(
             timestamp=10.1,
@@ -321,8 +323,14 @@ class BetaflightLoggingTest(unittest.TestCase):
             active=True,
             reason="active",
             raw_channels=(1500, 1500, 900, 1500, 1800, 1500, 1500, 1500),
+            target_channels=(1500, 1500, 1000, 1500, 1800, 1500, 1500, 1500),
             clipped_flags=(0, 0, 1, 0, 0, 0, 0, 0),
             slew_limited_flags=(0, 0, 1, 0, 0, 0, 0, 0),
+            requested_rates_deg_s=(10.0, 20.0, 30.0),
+            limited_rates_deg_s=(3.0, 3.0, 0.0),
+            stick_deflections=(0.01, 0.01, 0.0),
+            requested_thrust=0.5,
+            limited_thrust=0.1,
         )
 
         row = runner._log_row(
@@ -354,6 +362,7 @@ class BetaflightLoggingTest(unittest.TestCase):
                 "rknn_inference_ms": 4.0,
                 "rknn_postprocess_ms": 0.5,
                 "rknn_total_ms": 5.5,
+                "msp_last_sent_channels": tuple(range(1000, 1016)),
             },
             detection=detection,
             result=result,
@@ -386,6 +395,12 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["loop_period_s"], "0.050000")
         self.assertEqual(row["rknn_inference_ms"], "4.000")
         self.assertEqual(row["rc_in_ch5"], 1800)
+        self.assertEqual(row["rc_in_all"], "1000,1100,1200,1300,1800,1500,1500,1500")
+        self.assertEqual(row["rc_sent_all"], ",".join(str(value) for value in range(1000, 1016)))
+        self.assertEqual(row["rc_sent_ch8"], 1007)
+        self.assertEqual(row["gyro_roll_deg_s"], 4.0)
+        self.assertEqual(row["map_limited_roll_rate_deg_s"], 3.0)
+        self.assertEqual(row["rc_target_ch3"], 1000)
         self.assertEqual(row["bbox_clip_left"], 1)
         self.assertEqual(row["bbox_area"], "600.000")
         self.assertEqual(row["los_valid"], 1)
@@ -455,6 +470,27 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
+            self.assertEqual(data["log_schema_version"], 3)
+
+    def test_edge_event_logger_writes_only_state_changes(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "events.jsonl"
+            logger = runner.EdgeEventLogger(path, start_s=10.0)
+            logger.update({"armed": 0}, timestamp_s=10.1)
+            logger.update({"armed": 0}, timestamp_s=10.2)
+            logger.update(
+                {"armed": 1},
+                timestamp_s=10.3,
+                context={"rc_sent": [1500, 1500, 1000, 1500]},
+            )
+            logger.close()
+
+            events = [json.loads(line) for line in path.read_text().splitlines()]
+            self.assertEqual(len(events), 2)
+            self.assertIsNone(events[0]["old"])
+            self.assertEqual(events[1]["old"], 0)
+            self.assertEqual(events[1]["new"], 1)
+            self.assertEqual(events[1]["context"]["rc_sent"][2], 1000)
 
 
 if __name__ == "__main__":

@@ -1,4 +1,10 @@
 {
+  "bench_profile": {
+    "scope": "noprop_bench",
+    "description": "Restricted PNG-to-MSP bench profile; all propellers must be physically removed.",
+    "rate_limit_deg_s": 3.0,
+    "throttle_pwm_range": [1000, 1100]
+  },
   "serial": {
     "port": "/dev/ttyS1",
     "baud": 115200,
@@ -9,7 +15,7 @@
     "runtime_loadable": false
   },
   "msp_runtime": {
-    "io_worker_enabled": false,
+    "io_worker_enabled": true,
     "telemetry_poll_hz": 5.0,
     "status_poll_hz": 5.0,
     "attitude_poll_hz": 10.0,
@@ -19,10 +25,17 @@
     "control_publish_hz": 50.0,
     "physical_rc_timeout_s": 0.25,
     "override_channels_mask": 15,
+    "override_mode_cli_id": 50,
     "aux_arm_channel_zero_based": 4,
     "throttle_channel_zero_based": 2,
     "set_raw_rc_channel_map": "AETR1234",
-    "throttle_handover_s": 0.4
+    "throttle_handover_s": 0.4,
+    "prefill_enabled": true,
+    "prefill_min_frames": 10,
+    "prefill_valid_min_us": 900,
+    "prefill_valid_max_us": 2100,
+    "staged_command_timeout_s": 0.15,
+    "shutdown_passthrough_frames": 3
   },
   "logging": {
     "platform_health_hz": 1.0
@@ -44,8 +57,9 @@
     }
   },
   "control_authorization": {
-    "enabled": false,
-    "approval_manifest": ""
+    "enabled": true,
+    "required_scope": "noprop_bench",
+    "approval_manifest": "logs/betaflight_noprop_approval.json"
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -110,27 +124,36 @@
   "rc_mapping": {
     "channel_map": "AETR1234",
     "channel_count": 8,
-    "roll_rate_limit_deg_s": 120.0,
-    "pitch_rate_limit_deg_s": 120.0,
-    "yaw_rate_limit_deg_s": 90.0,
+    "rate_mapping_type": "betaflight",
+    "betaflight_rc_rate": [1.0, 1.0, 1.0],
+    "betaflight_super_rate": [0.7, 0.7, 0.7],
+    "betaflight_expo": [0.0, 0.0, 0.0],
+    "betaflight_rate_profile_index": 0,
+    "roll_rate_limit_deg_s": 666.666667,
+    "pitch_rate_limit_deg_s": 666.666667,
+    "yaw_rate_limit_deg_s": 666.666667,
+    "roll_command_limit_deg_s": 3.0,
+    "pitch_command_limit_deg_s": 3.0,
+    "yaw_command_limit_deg_s": 0.0,
     "thrust_min": 0.0,
-    "thrust_hover": 0.5,
-    "thrust_max": 1.0,
+    "thrust_hover": 0.078,
+    "thrust_max": 0.1,
     "throttle_min_us": 1000,
-    "throttle_hover_us": 1500,
-    "throttle_max_us": 2000,
+    "throttle_hover_us": 1078,
+    "throttle_max_us": 1100,
     "neutral_throttle_us": 1000,
-    "max_delta_us_per_s": 600.0,
+    "max_delta_us_per_s": 100.0,
     "aux_values_us": {}
   },
   "guidance_command": {
     "rate_gain_matrix": [
-      [0.0, 0.0, 0.0],
-      [0.0, 0.0, 0.0],
+      [0.0, 1.0, 0.0],
+      [0.0, 0.0, 1.0],
       [0.0, 0.0, 0.0]
     ],
-    "hover_thrust": 0.5,
-    "yaw_rate_bias_deg_s": 0.0
+    "hover_thrust": 0.078,
+    "yaw_rate_bias_deg_s": 0.0,
+    "bench_axis_mapping_status": "candidate_requires_noprop_sign_check"
   },
   "safety": {
     "telemetry_timeout_s": 0.5,

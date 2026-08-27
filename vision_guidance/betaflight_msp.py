@@ -16,6 +16,7 @@ MSP_API_VERSION = 1
 MSP_FC_VARIANT = 2
 MSP_FC_VERSION = 3
 MSP_STATUS = 101
+MSP_RAW_IMU = 102
 MSP_RC = 105
 MSP_ATTITUDE = 108
 MSP_ANALOG = 110
@@ -78,12 +79,48 @@ class AnalogTelemetry:
 
 
 @dataclass(frozen=True)
+class RawImuTelemetry:
+    acc_raw: tuple[int, int, int]
+    gyro_deg_s: tuple[float, float, float]
+    mag_raw: tuple[int, int, int]
+
+
+@dataclass(frozen=True)
 class BetaflightTelemetry:
     timestamp: float
     status: StatusTelemetry | None = None
     attitude: AttitudeTelemetry | None = None
     analog: AnalogTelemetry | None = None
     rc_channels: tuple[int, ...] = ()
+    raw_imu: RawImuTelemetry | None = None
+    status_timestamp_s: float | None = None
+    attitude_timestamp_s: float | None = None
+    analog_timestamp_s: float | None = None
+    rc_timestamp_s: float | None = None
+    raw_imu_timestamp_s: float | None = None
+
+
+@dataclass(frozen=True)
+class MspCommandStats:
+    command: int
+    attempt_count: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    last_rtt_ms: float | None = None
+    max_rtt_ms: float | None = None
+    last_success_monotonic_s: float | None = None
+    last_error: str = ""
+
+
+@dataclass
+class _MutableMspCommandStats:
+    attempt_count: int = 0
+    success_count: int = 0
+    error_count: int = 0
+    last_rtt_ms: float | None = None
+    max_rtt_ms: float | None = None
+    last_success_monotonic_s: float | None = None
+    last_error: str = ""
 
 
 @dataclass(frozen=True)
@@ -94,6 +131,10 @@ class MspAdapterStats:
     rx_bytes: int = 0
     set_raw_rc_attempt_count: int = 0
     set_raw_rc_success_count: int = 0
+    command_stats: tuple[MspCommandStats, ...] = ()
+
+    def for_command(self, command: int) -> MspCommandStats | None:
+        return next((item for item in self.command_stats if item.command == int(command)), None)
 
 
 def encode_msp_frame(command: int, payload: bytes | bytearray = b"", direction: str = "<") -> bytes:
@@ -194,6 +235,18 @@ def parse_analog(payload: bytes | bytearray) -> AnalogTelemetry:
     return AnalogTelemetry(vbat_v=vbat_v, mah_drawn=mah_drawn, rssi=rssi, amperage_a=amperage_a)
 
 
+def parse_raw_imu(payload: bytes | bytearray) -> RawImuTelemetry:
+    data = bytes(payload)
+    if len(data) < 18:
+        raise MSPError("MSP_RAW_IMU payload too short")
+    values = struct.unpack_from("<9h", data, 0)
+    return RawImuTelemetry(
+        acc_raw=tuple(int(value) for value in values[0:3]),
+        gyro_deg_s=tuple(float(value) for value in values[3:6]),
+        mag_raw=tuple(int(value) for value in values[6:9]),
+    )
+
+
 def parse_rc_channels(payload: bytes | bytearray) -> tuple[int, ...]:
     data = bytes(payload)
     if len(data) < 2 or len(data) % 2 != 0:
@@ -258,6 +311,7 @@ class BetaflightMSPAdapter:
         self._rx_bytes = 0
         self._set_raw_rc_attempt_count = 0
         self._set_raw_rc_success_count = 0
+        self._command_stats: dict[int, _MutableMspCommandStats] = {}
 
     def open(self) -> None:
         if self.transport is not None:
@@ -284,18 +338,35 @@ class BetaflightMSPAdapter:
 
     def request(self, command: int, payload: bytes | bytearray = b"") -> MSPFrame:
         with self._io_lock:
+            command = int(command)
+            started_s = time.monotonic()
+            command_stats = self._command_stats.setdefault(command, _MutableMspCommandStats())
+            command_stats.attempt_count += 1
             self._request_count += 1
-            if int(command) == MSP_SET_RAW_RC:
+            if command == MSP_SET_RAW_RC:
                 self._set_raw_rc_attempt_count += 1
             request_frame = encode_msp_frame(command, payload, direction="<")
             self._tx_bytes += len(request_frame)
             try:
                 response = self._request_locked(command, payload, request_frame)
-            except Exception:
+            except Exception as exc:
+                completed_s = time.monotonic()
+                rtt_ms = 1000.0 * max(0.0, completed_s - started_s)
+                command_stats.error_count += 1
+                command_stats.last_rtt_ms = rtt_ms
+                command_stats.max_rtt_ms = max(command_stats.max_rtt_ms or 0.0, rtt_ms)
+                command_stats.last_error = f"{type(exc).__name__}: {exc}"
                 self._request_error_count += 1
                 raise
+            completed_s = time.monotonic()
+            rtt_ms = 1000.0 * max(0.0, completed_s - started_s)
+            command_stats.success_count += 1
+            command_stats.last_rtt_ms = rtt_ms
+            command_stats.max_rtt_ms = max(command_stats.max_rtt_ms or 0.0, rtt_ms)
+            command_stats.last_success_monotonic_s = completed_s
+            command_stats.last_error = ""
             self._rx_bytes += 6 + len(response.payload)
-            if int(command) == MSP_SET_RAW_RC:
+            if command == MSP_SET_RAW_RC:
                 self._set_raw_rc_success_count += 1
             return response
 
@@ -331,6 +402,19 @@ class BetaflightMSPAdapter:
                 rx_bytes=self._rx_bytes,
                 set_raw_rc_attempt_count=self._set_raw_rc_attempt_count,
                 set_raw_rc_success_count=self._set_raw_rc_success_count,
+                command_stats=tuple(
+                    MspCommandStats(
+                        command=command,
+                        attempt_count=stats.attempt_count,
+                        success_count=stats.success_count,
+                        error_count=stats.error_count,
+                        last_rtt_ms=stats.last_rtt_ms,
+                        max_rtt_ms=stats.max_rtt_ms,
+                        last_success_monotonic_s=stats.last_success_monotonic_s,
+                        last_error=stats.last_error,
+                    )
+                    for command, stats in sorted(self._command_stats.items())
+                ),
             )
 
     def read_api_version(self) -> ApiVersion:
@@ -344,6 +428,9 @@ class BetaflightMSPAdapter:
 
     def read_status(self) -> StatusTelemetry:
         return parse_status(self.request(MSP_STATUS).payload)
+
+    def read_raw_imu(self) -> RawImuTelemetry:
+        return parse_raw_imu(self.request(MSP_RAW_IMU).payload)
 
     def read_attitude(self) -> AttitudeTelemetry:
         return parse_attitude(self.request(MSP_ATTITUDE).payload)
@@ -367,17 +454,26 @@ class BetaflightMSPAdapter:
         include_attitude: bool = True,
         include_analog: bool = True,
         include_rc: bool = True,
+        include_raw_imu: bool = False,
     ) -> BetaflightTelemetry:
         status = self.read_status() if include_status else None
         attitude = self.read_attitude() if include_attitude else None
         analog = self.read_analog() if include_analog else None
         rc = self.read_rc() if include_rc else ()
+        raw_imu = self.read_raw_imu() if include_raw_imu else None
+        timestamp = time.monotonic()
         return BetaflightTelemetry(
-            timestamp=time.monotonic(),
+            timestamp=timestamp,
             status=status,
             attitude=attitude,
             analog=analog,
             rc_channels=tuple(rc),
+            raw_imu=raw_imu,
+            status_timestamp_s=timestamp if status is not None else None,
+            attitude_timestamp_s=timestamp if attitude is not None else None,
+            analog_timestamp_s=timestamp if analog is not None else None,
+            rc_timestamp_s=timestamp if rc else None,
+            raw_imu_timestamp_s=timestamp if raw_imu is not None else None,
         )
 
     def send_raw_rc(self, command: RcCommand | Sequence[int]) -> None:

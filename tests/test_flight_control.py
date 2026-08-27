@@ -99,6 +99,79 @@ class FlightControlTest(unittest.TestCase):
         self.assertEqual(command.clipped_flags[:4], (1, 1, 1, 0))
         self.assertEqual(command.slew_limited_flags[:4], (0, 0, 0, 0))
 
+    def test_betaflight_rate_inverse_matches_100_0_70_profile(self):
+        mapper = RcCommandMapper(
+            RcMappingConfig(
+                rate_mapping_type="betaflight",
+                betaflight_rc_rate=(1.0, 1.0, 1.0),
+                betaflight_super_rate=(0.70, 0.70, 0.70),
+                betaflight_expo=(0.0, 0.0, 0.0),
+            )
+        )
+
+        command = mapper.map_setpoint(
+            GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=120.0, pitch_rate_deg_s=-120.0, thrust=0.5)
+        )
+
+        self.assertEqual(command.channels[0], 1711)
+        self.assertEqual(command.channels[1], 1289)
+        full_stick = mapper.map_setpoint(
+            GuidanceSetpoint(timestamp=2.0, roll_rate_deg_s=200.0 / 0.3, thrust=0.5)
+        )
+        self.assertEqual(full_stick.channels[0], 2000)
+
+    def test_betaflight_mapping_applies_independent_noprop_rate_limit(self):
+        mapper = RcCommandMapper(
+            RcMappingConfig(
+                rate_mapping_type="betaflight",
+                betaflight_rc_rate=(1.0, 1.0, 1.0),
+                betaflight_super_rate=(0.70, 0.70, 0.70),
+                betaflight_expo=(0.0, 0.0, 0.0),
+                roll_command_limit_deg_s=3.0,
+                pitch_command_limit_deg_s=3.0,
+                yaw_command_limit_deg_s=0.0,
+            )
+        )
+
+        command = mapper.map_setpoint(
+            GuidanceSetpoint(
+                timestamp=1.0,
+                roll_rate_deg_s=100.0,
+                pitch_rate_deg_s=-100.0,
+                yaw_rate_deg_s=50.0,
+                thrust=0.5,
+            )
+        )
+
+        self.assertEqual(command.channels[:4], (1507, 1493, 1500, 1500))
+        self.assertEqual(command.clipped_flags[:4], (1, 1, 0, 1))
+        self.assertEqual(command.requested_rates_deg_s, (100.0, -100.0, 50.0))
+        self.assertEqual(command.limited_rates_deg_s, (3.0, -3.0, 0.0))
+        self.assertAlmostEqual(command.stick_deflections[0], 0.0148, places=3)
+        self.assertEqual(command.target_channels[:4], (1507, 1493, 1500, 1500))
+        self.assertEqual(command.requested_thrust, 0.5)
+        self.assertEqual(command.limited_thrust, 0.5)
+
+    def test_thrust_mapping_hard_limits_noprop_pwm_envelope(self):
+        mapper = RcCommandMapper(
+            RcMappingConfig(
+                thrust_min=0.0,
+                thrust_hover=0.078,
+                thrust_max=0.10,
+                throttle_min_us=1000,
+                throttle_hover_us=1078,
+                throttle_max_us=1100,
+                neutral_throttle_us=1000,
+            )
+        )
+
+        hover = mapper.map_setpoint(GuidanceSetpoint(timestamp=1.0, thrust=0.078))
+        excessive = mapper.map_setpoint(GuidanceSetpoint(timestamp=2.0, thrust=0.50))
+
+        self.assertEqual(hover.channels[2], 1078)
+        self.assertEqual(excessive.channels[2], 1100)
+        self.assertEqual(excessive.clipped_flags[2], 1)
+
     def test_safety_state_machine_gates_control(self):
         safety = BetaflightSafetyStateMachine()
 
@@ -180,6 +253,7 @@ class FlightControlTest(unittest.TestCase):
             ("config_conflict_free", False, "config_conflict"),
             ("override_available", False, "msp_override_unavailable"),
             ("override_active", False, "msp_override_inactive"),
+            ("prefill_ready", False, "msp_prefill_not_ready"),
             ("armed", False, "not_armed"),
             ("physical_rc_fresh", False, "physical_rc_stale"),
         )

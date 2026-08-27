@@ -8,6 +8,7 @@ from vision_guidance.betaflight_msp import (
     MSP_API_VERSION,
     MSP_ATTITUDE,
     MSP_BOXNAMES,
+    MSP_RAW_IMU,
     MSP_RC,
     MSP_SET_RAW_RC,
     MSP_STATUS,
@@ -22,6 +23,7 @@ from vision_guidance.betaflight_msp import (
     parse_box_ids,
     parse_box_names,
     parse_rc_channels,
+    parse_raw_imu,
     parse_status,
 )
 from vision_guidance.flight_control import RcCommand
@@ -109,6 +111,37 @@ class BetaflightMSPTest(unittest.TestCase):
 
         self.assertEqual(parse_box_ids(bytes([0, 1, 50, 27])), (0, 1, 50, 27))
         self.assertEqual(parse_box_names(b"ARM;ANGLE;MSP OVERRIDE;"), ("ARM", "ANGLE", "MSP OVERRIDE"))
+
+    def test_parses_signed_raw_imu_payload(self):
+        raw_imu = parse_raw_imu(struct.pack("<9h", -10, 20, -30, -40, 50, -60, 70, -80, 90))
+
+        self.assertEqual(raw_imu.acc_raw, (-10, 20, -30))
+        self.assertEqual(raw_imu.gyro_deg_s, (-40.0, 50.0, -60.0))
+        self.assertEqual(raw_imu.mag_raw, (70, -80, 90))
+        with self.assertRaisesRegex(MSPError, "too short"):
+            parse_raw_imu(b"\x00" * 17)
+
+    def test_adapter_tracks_per_command_rtt_and_errors(self):
+        response = encode_msp_frame(MSP_RAW_IMU, struct.pack("<9h", *range(9)), direction=">")
+        adapter = BetaflightMSPAdapter("/dev/null", timeout_s=0.01, transport=FakeTransport([response]))
+
+        adapter.read_raw_imu()
+        success = adapter.snapshot_stats().for_command(MSP_RAW_IMU)
+
+        self.assertIsNotNone(success)
+        self.assertEqual(success.attempt_count, 1)
+        self.assertEqual(success.success_count, 1)
+        self.assertEqual(success.error_count, 0)
+        self.assertGreaterEqual(success.last_rtt_ms, 0.0)
+        self.assertIsNotNone(success.last_success_monotonic_s)
+
+        failing = BetaflightMSPAdapter("/dev/null", timeout_s=0.01, transport=FakeTransport([]))
+        with self.assertRaises(TimeoutError):
+            failing.read_raw_imu()
+        error = failing.snapshot_stats().for_command(MSP_RAW_IMU)
+        self.assertEqual(error.attempt_count, 1)
+        self.assertEqual(error.error_count, 1)
+        self.assertIn("TimeoutError", error.last_error)
 
     def test_box_ids_rejects_empty_payload(self):
         with self.assertRaisesRegex(MSPError, "must not be empty"):

@@ -21,7 +21,16 @@ sys.path.insert(0, str(ROOT))
 
 from vision_guidance.airsim_adapter import AirSimDetectionConfig  # noqa: E402
 from vision_guidance.attitude_buffer import AttitudeHistoryBuffer  # noqa: E402
-from vision_guidance.betaflight_msp import BetaflightMSPAdapter, BetaflightTelemetry  # noqa: E402
+from vision_guidance.betaflight_msp import (  # noqa: E402
+    MSP_ANALOG,
+    MSP_ATTITUDE,
+    MSP_RAW_IMU,
+    MSP_RC,
+    MSP_SET_RAW_RC,
+    MSP_STATUS,
+    BetaflightMSPAdapter,
+    BetaflightTelemetry,
+)
 from vision_guidance.betaflight_runtime import (  # noqa: E402
     MSP_OVERRIDE_PERMANENT_ID,
     BetaflightMspIoWorker,
@@ -30,6 +39,11 @@ from vision_guidance.betaflight_runtime import (  # noqa: E402
     box_mode_active,
     box_mode_index,
     resolve_control_authorization,
+)
+from vision_guidance.betaflight_web import (  # noqa: E402
+    TelemetryWebConfig,
+    TelemetryWebService,
+    telemetry_payload_from_log_row,
 )
 from vision_guidance.flight_control import (  # noqa: E402
     BetaflightSafetyStateMachine,
@@ -44,11 +58,23 @@ from vision_guidance.flight_control import (  # noqa: E402
 )
 from vision_guidance.fusion import PureVisionGuidancePipeline, VisionGuidanceResult  # noqa: E402
 from vision_guidance.geometry import camera_to_body_mount  # noqa: E402
+from vision_guidance.platform_health import PlatformHealthSampler  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
 from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
 from vision_guidance.bytetrack_adapter import ByteTrackConfig  # noqa: E402
 from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetection  # noqa: E402
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
+
+
+LOG_SCHEMA_VERSION = 3
+MSP_COMMAND_LOG_SPECS = (
+    ("status", MSP_STATUS),
+    ("raw_imu", MSP_RAW_IMU),
+    ("rc", MSP_RC),
+    ("attitude", MSP_ATTITUDE),
+    ("analog", MSP_ANALOG),
+    ("set_raw_rc", MSP_SET_RAW_RC),
+)
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +106,43 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rknn-library", default="", help="Override rknn_detector.library.")
     parser.add_argument("--rknn-model", default="", help="Override rknn_detector.model.")
     return parser.parse_args()
+
+
+class EdgeEventLogger:
+    def __init__(self, path: Path, *, start_s: float):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.start_s = float(start_s)
+        self._stream = path.open("w", encoding="utf-8")
+        self._previous: dict[str, Any] = {}
+
+    def write(self, event: str, *, timestamp_s: float, old: Any = None, new: Any = None, context=None) -> None:
+        record = {
+            "schema_version": LOG_SCHEMA_VERSION,
+            "monotonic_s": float(timestamp_s),
+            "elapsed_s": max(0.0, float(timestamp_s) - self.start_s),
+            "event": str(event),
+            "old": old,
+            "new": new,
+            "context": dict(context or {}),
+        }
+        self._stream.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
+        self._stream.flush()
+
+    def update(self, values: dict[str, Any], *, timestamp_s: float, context=None) -> None:
+        for event, value in values.items():
+            if event not in self._previous or self._previous[event] != value:
+                self.write(
+                    event,
+                    timestamp_s=timestamp_s,
+                    old=self._previous.get(event),
+                    new=value,
+                    context=context,
+                )
+                self._previous[event] = value
+
+    def close(self) -> None:
+        self._stream.close()
 
 
 class DetectionCsvSource:
@@ -122,6 +185,7 @@ class OpenCvCameraSource:
         *,
         cv2_module: Any = None,
         capture_factory: Any = None,
+        preview_sink: Any = None,
     ) -> None:
         self.cv2 = cv2_module if cv2_module is not None else importlib.import_module("cv2")
         self.camera_config = dict(config.get("camera", {}))
@@ -141,6 +205,8 @@ class OpenCvCameraSource:
         self.requested_fourcc = str(self.camera_config.get("fourcc", "") or "").upper()
         self.buffer_size = int(self.camera_config.get("buffer_size", 1))
         self.failed_frames = 0
+        self.last_image = None
+        self.preview_sink = preview_sink
         self.last_stats = self._empty_stats()
         self._configure_capture()
 
@@ -179,6 +245,7 @@ class OpenCvCameraSource:
         stats = dict(self.last_stats)
         stats["detector_source"] = "camera_only"
         stats["detector_reject_reason"] = "" if image is not None else "camera_frame_unavailable"
+        _publish_preview(self.preview_sink, image, None, stats)
         return None, stats
 
     def read_image(self):
@@ -188,6 +255,7 @@ class OpenCvCameraSource:
         read_ms = 1000.0 * (capture_ts - read_start)
         if not ok or image is None:
             self.failed_frames += 1
+            self.last_image = None
             self.last_stats = self._empty_stats(
                 frame_ok=False,
                 capture_ts=capture_ts,
@@ -199,6 +267,7 @@ class OpenCvCameraSource:
         if input_width != self.output_width or input_height != self.output_height:
             image = self.cv2.resize(image, (self.output_width, self.output_height), interpolation=self.cv2.INTER_LINEAR)
         image = self._undistort(image)
+        self.last_image = image
         self.last_stats = self._empty_stats(
             frame_ok=True,
             capture_ts=capture_ts,
@@ -253,9 +322,21 @@ class OpenCvCameraSource:
 
 
 class OpenCvYoloSource:
-    def __init__(self, args: argparse.Namespace, config: dict[str, Any], *, camera_source: OpenCvCameraSource | None = None):
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        config: dict[str, Any],
+        *,
+        camera_source: OpenCvCameraSource | None = None,
+        preview_sink: Any = None,
+    ):
         _validate_yolo_runtime(config, str(args.yolo_device or ""))
-        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        self.camera = (
+            camera_source
+            if camera_source is not None
+            else OpenCvCameraSource(args, config, preview_sink=preview_sink)
+        )
+        self.preview_sink = preview_sink
         self.cv2 = self.camera.cv2
         _configure_torch_runtime(config)
         self.detector = YoloByteTrackDetector(
@@ -285,6 +366,7 @@ class OpenCvYoloSource:
         )
         stats = dict(frame.stats)
         stats.update(self.camera.last_stats)
+        _publish_preview(self.preview_sink, self.camera.last_image, frame.frame_detection, stats)
         return frame.frame_detection, stats
 
     def _read_image(self, _client: Any, _config: AirSimDetectionConfig):
@@ -299,8 +381,14 @@ class OpenCvRknnSource:
         *,
         camera_source: OpenCvCameraSource | None = None,
         detector: RknnNativeDetector | None = None,
+        preview_sink: Any = None,
     ) -> None:
-        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        self.camera = (
+            camera_source
+            if camera_source is not None
+            else OpenCvCameraSource(args, config, preview_sink=preview_sink)
+        )
+        self.preview_sink = preview_sink
         rknn = dict(config.get("rknn_detector", {}))
         library_path = str(getattr(args, "rknn_library", "") or rknn.get("library", ""))
         model_path = str(getattr(args, "rknn_model", "") or rknn.get("model", ""))
@@ -345,6 +433,7 @@ class OpenCvRknnSource:
             exposure_ts=exposure_ts,
         )
         detector_stats.update(camera_stats)
+        _publish_preview(self.preview_sink, image_bgr, detection, detector_stats)
         return detection, detector_stats
 
 
@@ -356,8 +445,14 @@ class OpenCvRknnByteTrackSource:
         *,
         camera_source: OpenCvCameraSource | None = None,
         detector: RknnByteTrackDetector | None = None,
+        preview_sink: Any = None,
     ) -> None:
-        self.camera = camera_source if camera_source is not None else OpenCvCameraSource(args, config)
+        self.camera = (
+            camera_source
+            if camera_source is not None
+            else OpenCvCameraSource(args, config, preview_sink=preview_sink)
+        )
+        self.preview_sink = preview_sink
         rknn = dict(config.get("rknn_detector", {}))
         tracker_values = dict(config.get("rknn_bytetrack", {}))
         library_path = str(getattr(args, "rknn_library", "") or rknn.get("library", ""))
@@ -451,6 +546,7 @@ class OpenCvRknnByteTrackSource:
             exposure_ts=exposure_ts,
         )
         detector_stats.update(camera_stats)
+        _publish_preview(self.preview_sink, image_bgr, detection, detector_stats)
         return detection, detector_stats
 
     def _worker_loop(self) -> None:
@@ -474,9 +570,41 @@ class OpenCvRknnByteTrackSource:
                 self._worker_error = str(exc)
 
 
+def _publish_preview(
+    preview_sink: Any,
+    image_bgr: Any,
+    detection: FrameDetection | None,
+    stats: dict[str, Any],
+) -> None:
+    if preview_sink is None or image_bgr is None:
+        return
+    preview_sink.offer_preview(
+        image_bgr,
+        {
+            "bbox_xyxy": None if detection is None else list(detection.bbox_xyxy),
+            "track_id": None if detection is None else detection.track_id,
+            "score": None if detection is None else detection.score,
+            "detector_source": stats.get("detector_source", ""),
+            "tracker_state": stats.get("tracker_state", ""),
+        },
+    )
+
+
 def main() -> None:
     args = parse_args()
     config = _load_config(args.config)
+    web_config = TelemetryWebConfig.from_mapping(dict(config.get("telemetry_web", {})))
+    web_service = TelemetryWebService(web_config)
+    web_service.start()
+    if web_config.enabled:
+        print(f"Browser telemetry: {web_service.url}")
+    try:
+        _run(args, config, web_service)
+    finally:
+        web_service.close()
+
+
+def _run(args: argparse.Namespace, config: dict[str, Any], web_service: TelemetryWebService) -> None:
     serial_cfg = dict(config.get("serial", {}))
     port = args.serial_port or str(serial_cfg.get("port", ""))
     if not port:
@@ -496,16 +624,17 @@ def main() -> None:
         dict(config.get("control_authorization", {})),
         fc_identity=fc_identity,
         box_ids=box_ids,
+        parameters_path=args.config,
     )
     msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
     if args.control_mode == "msp_raw_rc" and args.allow_control and not msp_runtime_config.io_worker_enabled:
         raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
     msp_worker = None
     if msp_runtime_config.io_worker_enabled:
-        msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config)
+        msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config, box_ids=box_ids)
         msp_worker.start()
 
-    detection_source = _create_detection_source(args, config)
+    detection_source = _create_detection_source(args, config, preview_sink=web_service)
     intrinsics = _camera_intrinsics(config)
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
     pipeline = PureVisionGuidancePipeline(
@@ -515,13 +644,23 @@ def main() -> None:
     )
 
     log_path = _log_path(args.log_dir, args.log_prefix)
+    events_path = _events_path(log_path)
     fields = _log_fields(rc_mapper.config.channel_count)
     meta_path = _meta_path(log_path)
+    logging_cfg = dict(config.get("logging", {}))
+    platform_health_hz = float(logging_cfg.get("platform_health_hz", 1.0))
+    platform_health = (
+        None
+        if platform_health_hz <= 0.0
+        else PlatformHealthSampler(sample_hz=platform_health_hz, log_directory=log_path.parent)
+    )
+    start = time.monotonic()
     _write_run_meta(
         meta_path,
         args=args,
         config=config,
         log_path=log_path,
+        events_path=events_path,
         fields=fields,
         fc_identity=fc_identity,
         detector_metadata=_detector_metadata(detection_source),
@@ -534,15 +673,30 @@ def main() -> None:
         },
         control_authorization=asdict(authorization),
         msp_runtime={"config": asdict(msp_runtime_config)},
+        platform_health={} if platform_health is None else platform_health.metadata(),
+        web_telemetry=web_service.metadata(),
     )
-    start = time.monotonic()
     frame_id = 0
     last_telemetry_s: float | None = None
     last_attitude_s: float | None = None
+    last_attitude_buffer_sample_s: float | None = None
     last_loop_start_s: float | None = None
+    last_runtime_status: tuple[Any, ...] | None = None
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
+    print(
+        f"Authorization: approved={int(authorization.approved)} reason={authorization.reason} "
+        f"scope={authorization.scope or '-'}"
+    )
+    event_logger = EdgeEventLogger(events_path, start_s=start)
+    event_logger.write(
+        "run_start",
+        timestamp_s=start,
+        new={"control_mode": args.control_mode, "allow_control": bool(args.allow_control)},
+    )
+    if platform_health is not None:
+        platform_health.start()
     try:
         with log_path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
@@ -561,10 +715,19 @@ def main() -> None:
                     telemetry = worker_snapshot.telemetry
                     telemetry_error = worker_snapshot.telemetry_error
                 if telemetry is not None:
-                    last_telemetry_s = telemetry.timestamp
+                    status_sample_s = telemetry.status_timestamp_s
+                    if status_sample_s is None and telemetry.status is not None:
+                        status_sample_s = telemetry.timestamp
+                    if status_sample_s is not None:
+                        last_telemetry_s = status_sample_s
                     if telemetry.attitude is not None:
-                        attitude_buffer.push(AttitudeSample(timestamp=telemetry.timestamp, R_IB=telemetry.attitude.R_IB))
-                        last_attitude_s = telemetry.timestamp
+                        attitude_sample_s = telemetry.attitude_timestamp_s or telemetry.timestamp
+                        if attitude_sample_s != last_attitude_buffer_sample_s:
+                            attitude_buffer.push(
+                                AttitudeSample(timestamp=attitude_sample_s, R_IB=telemetry.attitude.R_IB)
+                            )
+                            last_attitude_buffer_sample_s = attitude_sample_s
+                        last_attitude_s = attitude_sample_s
 
                 detection, detector_stats = _read_detection(
                     detection_source,
@@ -581,8 +744,16 @@ def main() -> None:
                     watchdog.kick(loop_start)
                 setpoint = _guidance_setpoint(config, guidance, loop_start)
 
-                telemetry_age_s = None if last_telemetry_s is None else max(0.0, loop_start - last_telemetry_s)
-                attitude_age_s = None if last_attitude_s is None else max(0.0, loop_start - last_attitude_s)
+                telemetry_age_s = (
+                    worker_snapshot.telemetry_age_s
+                    if worker_snapshot is not None
+                    else None if last_telemetry_s is None else max(0.0, loop_start - last_telemetry_s)
+                )
+                attitude_age_s = (
+                    worker_snapshot.attitude_age_s
+                    if worker_snapshot is not None
+                    else None if last_attitude_s is None else max(0.0, loop_start - last_attitude_s)
+                )
                 watchdog_age_s = watchdog.age_s(loop_start)
                 telemetry_fresh = telemetry_age_s is not None and telemetry_age_s <= float(safety_cfg.get("telemetry_timeout_s", 0.5))
                 attitude_synced = attitude_age_s is not None and attitude_age_s <= float(safety_cfg.get("attitude_timeout_s", 0.5))
@@ -609,6 +780,11 @@ def main() -> None:
                 )
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
+                prefill_ready = bool(
+                    worker_snapshot.prefill_ready
+                    if worker_snapshot is not None
+                    else not msp_runtime_config.prefill_enabled
+                )
                 decision = safety.update(
                     SafetyInputs(
                         control_requested=control_requested,
@@ -622,6 +798,7 @@ def main() -> None:
                         armed=armed,
                         override_available=override_available,
                         override_active=override_active,
+                        prefill_ready=prefill_ready,
                         physical_rc_fresh=physical_rc_fresh,
                         snapshot_approved=authorization.approved,
                         config_conflict_free=(
@@ -633,7 +810,19 @@ def main() -> None:
                 if msp_worker is None:
                     send_error = _maybe_send_rc(adapter, args, rc_command, decision.command_active, config)
                 else:
-                    msp_worker.stage(rc_command, authorized=decision.command_active)
+                    output_enabled = bool(
+                        control_requested
+                        and allow_control
+                        and authorization.approved
+                        and authorization.config_conflict_free
+                        and override_available
+                    )
+                    msp_worker.stage(
+                        rc_command,
+                        output_enabled=output_enabled,
+                        algorithm_authorized=decision.command_active,
+                        override_active=override_active,
+                    )
                     send_error = worker_snapshot.worker_error if worker_snapshot is not None else ""
                 detector_stats.update(
                     _msp_log_stats(
@@ -647,47 +836,116 @@ def main() -> None:
                         physical_rc_fresh=physical_rc_fresh,
                         authorization=authorization,
                         runtime_config=msp_runtime_config,
+                        timestamp=loop_start,
                     )
                 )
-                writer.writerow(
-                    _log_row(
-                        timestamp=loop_start,
-                        elapsed_s=elapsed,
-                        telemetry=telemetry,
-                        telemetry_error=telemetry_error,
-                        detector_stats=detector_stats,
-                        detection=detection,
-                        result=result,
-                        setpoint=setpoint,
-                        rc_command=rc_command,
-                        safety_state=str(decision.state.value),
-                        safety_reason=decision.reason,
-                        send_error=send_error,
-                        telemetry_age_s=telemetry_age_s,
-                        attitude_age_s=attitude_age_s,
-                        watchdog_age_s=watchdog_age_s,
-                        telemetry_fresh=telemetry_fresh,
-                        attitude_synced=attitude_synced,
-                        watchdog_ok=watchdog_ok,
-                        voltage_ok=voltage_ok,
-                        aux_enabled=aux_enabled,
-                        control_requested=control_requested,
-                        allow_control=allow_control,
-                        intrinsics=intrinsics,
-                        channel_count=rc_mapper.config.channel_count,
+                if platform_health is not None:
+                    detector_stats.update(_platform_health_log_stats(platform_health.snapshot(), loop_start))
+                detector_stats.update(web_service.log_stats())
+                target_valid = bool(guidance is not None and guidance.valid)
+                event_logger.update(
+                    {
+                        "armed": int(armed),
+                        "msp_override_active": int(override_active),
+                        "prefill_ready": int(prefill_ready),
+                        "safety_state": str(decision.state.value),
+                        "publish_mode": "" if worker_snapshot is None else worker_snapshot.publish_mode,
+                        "target_valid": int(target_valid),
+                        "track_id": None if detection is None else detection.track_id,
+                        "telemetry_fresh": int(telemetry_fresh),
+                        "attitude_synced": int(attitude_synced),
+                        "physical_rc_fresh": int(physical_rc_fresh),
+                        "watchdog_ok": int(watchdog_ok),
+                        "msp_telemetry_error": telemetry_error,
+                        "msp_worker_error": "" if worker_snapshot is None else worker_snapshot.worker_error,
+                        "web_error": detector_stats.get("web_last_error", ""),
+                    },
+                    timestamp_s=loop_start,
+                    context={
+                        "safety_reason": decision.reason,
+                        "rc_in": [] if telemetry is None else list(telemetry.rc_channels),
+                        "rc_sent": [] if worker_snapshot is None else list(worker_snapshot.last_sent_channels),
+                    },
+                )
+                runtime_status = (
+                    decision.state.value,
+                    decision.reason,
+                    int(armed),
+                    int(override_active),
+                    int(prefill_ready),
+                    int(target_valid),
+                    "" if worker_snapshot is None else worker_snapshot.publish_mode,
+                    () if worker_snapshot is None else worker_snapshot.last_sent_channels[:4],
+                )
+                if runtime_status != last_runtime_status:
+                    sent = runtime_status[-1]
+                    sent_text = "-" if not sent else "/".join(str(value) for value in sent)
+                    print(
+                        f"BF state={runtime_status[0]} reason={runtime_status[1]} "
+                        f"armed={runtime_status[2]} override={runtime_status[3]} "
+                        f"prefill={runtime_status[4]} target={runtime_status[5]} "
+                        f"publish={runtime_status[6] or '-'} sent_aetr={sent_text}",
+                        flush=True,
                     )
+                    last_runtime_status = runtime_status
+                row = _log_row(
+                    timestamp=loop_start,
+                    elapsed_s=elapsed,
+                    telemetry=telemetry,
+                    telemetry_error=telemetry_error,
+                    detector_stats=detector_stats,
+                    detection=detection,
+                    result=result,
+                    setpoint=setpoint,
+                    rc_command=rc_command,
+                    safety_state=str(decision.state.value),
+                    safety_reason=decision.reason,
+                    send_error=send_error,
+                    telemetry_age_s=telemetry_age_s,
+                    attitude_age_s=attitude_age_s,
+                    watchdog_age_s=watchdog_age_s,
+                    telemetry_fresh=telemetry_fresh,
+                    attitude_synced=attitude_synced,
+                    watchdog_ok=watchdog_ok,
+                    voltage_ok=voltage_ok,
+                    aux_enabled=aux_enabled,
+                    control_requested=control_requested,
+                    allow_control=allow_control,
+                    intrinsics=intrinsics,
+                    channel_count=rc_mapper.config.channel_count,
+                )
+                writer.writerow(row)
+                web_service.publish(
+                    telemetry_payload_from_log_row(
+                        row,
+                        channel_count=rc_mapper.config.channel_count,
+                        channel_map=msp_runtime_config.set_raw_rc_channel_map,
+                    ),
+                    timestamp_s=loop_start,
                 )
 
                 sleep_s = max(0.0, (1.0 / max(1.0, float(args.rate_hz))) - (time.monotonic() - loop_start))
                 time.sleep(sleep_s)
     finally:
-        if msp_worker is not None:
-            msp_worker.stage(None, authorized=False)
-            msp_worker.close()
-        close = getattr(detection_source, "close", None)
-        if callable(close):
-            close()
-        adapter.close()
+        try:
+            if msp_worker is not None:
+                msp_worker.close()
+        finally:
+            try:
+                close = getattr(detection_source, "close", None)
+                if callable(close):
+                    close()
+            finally:
+                try:
+                    adapter.close()
+                finally:
+                    try:
+                        if platform_health is not None:
+                            platform_health.close()
+                    finally:
+                        stopped_s = time.monotonic()
+                        event_logger.write("run_stop", timestamp_s=stopped_s, new="normal_or_exception")
+                        event_logger.close()
 
 
 def _load_config(path: str) -> dict[str, Any]:
@@ -699,12 +957,22 @@ def _load_config(path: str) -> dict[str, Any]:
 def _rc_mapping_config(config: dict[str, Any]) -> RcMappingConfig:
     rc = dict(config.get("rc_mapping", {}))
     aux_values = {int(key): int(value) for key, value in dict(rc.get("aux_values_us", {})).items()}
+    rc_rate = tuple(float(value) for value in rc.get("betaflight_rc_rate", [1.0, 1.0, 1.0]))
+    super_rate = tuple(float(value) for value in rc.get("betaflight_super_rate", [0.0, 0.0, 0.0]))
+    expo = tuple(float(value) for value in rc.get("betaflight_expo", [0.0, 0.0, 0.0]))
     return RcMappingConfig(
         channel_map=str(rc.get("channel_map", "AETR1234")),
         channel_count=int(rc.get("channel_count", 8)),
         roll_rate_limit_deg_s=float(rc.get("roll_rate_limit_deg_s", 120.0)),
         pitch_rate_limit_deg_s=float(rc.get("pitch_rate_limit_deg_s", 120.0)),
         yaw_rate_limit_deg_s=float(rc.get("yaw_rate_limit_deg_s", 90.0)),
+        rate_mapping_type=str(rc.get("rate_mapping_type", "linear")),
+        betaflight_rc_rate=rc_rate,
+        betaflight_super_rate=super_rate,
+        betaflight_expo=expo,
+        roll_command_limit_deg_s=_optional_mapping_float(rc, "roll_command_limit_deg_s"),
+        pitch_command_limit_deg_s=_optional_mapping_float(rc, "pitch_command_limit_deg_s"),
+        yaw_command_limit_deg_s=_optional_mapping_float(rc, "yaw_command_limit_deg_s"),
         thrust_min=float(rc.get("thrust_min", 0.0)),
         thrust_hover=float(rc.get("thrust_hover", 0.5)),
         thrust_max=float(rc.get("thrust_max", 1.0)),
@@ -715,6 +983,11 @@ def _rc_mapping_config(config: dict[str, Any]) -> RcMappingConfig:
         max_delta_us_per_s=float(rc.get("max_delta_us_per_s", 0.0)),
         aux_values_us=aux_values,
     )
+
+
+def _optional_mapping_float(values: dict[str, Any], key: str) -> float | None:
+    value = values.get(key)
+    return None if value is None else float(value)
 
 
 def _camera_intrinsics(config: dict[str, Any]) -> CameraIntrinsics:
@@ -765,7 +1038,12 @@ def _validate_yolo_runtime(config: dict[str, Any], requested_device: str) -> Non
         )
 
 
-def _create_detection_source(args: argparse.Namespace, config: dict[str, Any]):
+def _create_detection_source(
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    *,
+    preview_sink: Any = None,
+):
     if args.detector_source == "none":
         return None
     if args.detector_source == "csv":
@@ -773,13 +1051,13 @@ def _create_detection_source(args: argparse.Namespace, config: dict[str, Any]):
             raise RuntimeError("--detections-csv is required for --detector-source csv")
         return DetectionCsvSource(args.detections_csv)
     if args.detector_source == "camera_only":
-        return OpenCvCameraSource(args, config)
+        return OpenCvCameraSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "yolo_bytetrack":
-        return OpenCvYoloSource(args, config)
+        return OpenCvYoloSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_native":
-        return OpenCvRknnSource(args, config)
+        return OpenCvRknnSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_bytetrack":
-        return OpenCvRknnByteTrackSource(args, config)
+        return OpenCvRknnByteTrackSource(args, config, preview_sink=preview_sink)
     raise ValueError(f"unsupported detector source: {args.detector_source}")
 
 
@@ -831,6 +1109,7 @@ def _msp_log_stats(
     physical_rc_fresh: bool,
     authorization,
     runtime_config: MspRuntimeConfig,
+    timestamp: float,
 ) -> dict[str, Any]:
     stats = adapter.snapshot_stats() if worker_snapshot is None else worker_snapshot.adapter_stats
     values = {
@@ -856,8 +1135,50 @@ def _msp_log_stats(
         "msp_worker_send_skip_count": "",
         "msp_worker_send_error_count": "",
         "msp_worker_error": "",
+        "msp_output_enabled": "",
+        "msp_algorithm_authorized": "",
+        "msp_worker_override_active": "",
+        "msp_prefill_ready": "",
+        "msp_prefill_success_count": "",
+        "msp_passthrough_send_count": "",
+        "msp_algorithm_send_count": "",
+        "msp_stale_command_count": "",
+        "msp_staged_command_age_s": "",
+        "msp_publish_mode": "",
+        "msp_last_sent_channels": (),
+        "msp_status_age_s": "",
+        "msp_attitude_age_s": "",
+        "msp_analog_age_s": "",
+        "msp_raw_imu_age_s": "",
+        "msp_publish_tick_interval_s": "",
+        "msp_publish_tick_max_interval_s": "",
+        "msp_publish_deadline_miss_count": "",
+        "msp_send_success_interval_s": "",
+        "msp_send_success_max_interval_s": "",
+        "msp_last_send_success_age_s": "",
+        "msp_consecutive_send_error_count": "",
+        "throttle_handover_source_us": "",
+        "throttle_handover_target_us": "",
+        "throttle_handover_alpha": "",
+        "throttle_handover_output_us": "",
+        "throttle_handover_active": "",
     }
+    for label, command in MSP_COMMAND_LOG_SPECS:
+        command_stats = stats.for_command(command)
+        prefix = f"msp_cmd_{label}"
+        values[f"{prefix}_attempt_count"] = 0 if command_stats is None else command_stats.attempt_count
+        values[f"{prefix}_success_count"] = 0 if command_stats is None else command_stats.success_count
+        values[f"{prefix}_error_count"] = 0 if command_stats is None else command_stats.error_count
+        values[f"{prefix}_last_rtt_ms"] = "" if command_stats is None else command_stats.last_rtt_ms
+        values[f"{prefix}_max_rtt_ms"] = "" if command_stats is None else command_stats.max_rtt_ms
+        values[f"{prefix}_last_success_age_s"] = (
+            ""
+            if command_stats is None or command_stats.last_success_monotonic_s is None
+            else max(0.0, timestamp - command_stats.last_success_monotonic_s)
+        )
+        values[f"{prefix}_last_error"] = "" if command_stats is None else command_stats.last_error
     if worker_snapshot is not None:
+        handover = worker_snapshot.throttle_handover
         values.update(
             msp_worker_poll_count=worker_snapshot.poll_count,
             msp_worker_poll_error_count=worker_snapshot.poll_error_count,
@@ -865,8 +1186,55 @@ def _msp_log_stats(
             msp_worker_send_skip_count=worker_snapshot.send_skip_count,
             msp_worker_send_error_count=worker_snapshot.send_error_count,
             msp_worker_error=worker_snapshot.worker_error,
+            msp_output_enabled=int(worker_snapshot.output_enabled),
+            msp_algorithm_authorized=int(worker_snapshot.algorithm_authorized),
+            msp_worker_override_active=int(worker_snapshot.override_active),
+            msp_prefill_ready=int(worker_snapshot.prefill_ready),
+            msp_prefill_success_count=worker_snapshot.prefill_success_count,
+            msp_passthrough_send_count=worker_snapshot.passthrough_send_count,
+            msp_algorithm_send_count=worker_snapshot.algorithm_send_count,
+            msp_stale_command_count=worker_snapshot.stale_command_count,
+            msp_staged_command_age_s=(
+                "" if worker_snapshot.staged_command_age_s is None else worker_snapshot.staged_command_age_s
+            ),
+            msp_publish_mode=worker_snapshot.publish_mode,
+            msp_last_sent_channels=worker_snapshot.last_sent_channels,
+            msp_status_age_s=worker_snapshot.status_age_s,
+            msp_attitude_age_s=worker_snapshot.attitude_age_s,
+            msp_analog_age_s=worker_snapshot.analog_age_s,
+            msp_raw_imu_age_s=worker_snapshot.raw_imu_age_s,
+            msp_publish_tick_interval_s=worker_snapshot.publish_tick_interval_s,
+            msp_publish_tick_max_interval_s=worker_snapshot.publish_tick_max_interval_s,
+            msp_publish_deadline_miss_count=worker_snapshot.publish_deadline_miss_count,
+            msp_send_success_interval_s=worker_snapshot.send_success_interval_s,
+            msp_send_success_max_interval_s=worker_snapshot.send_success_max_interval_s,
+            msp_last_send_success_age_s=worker_snapshot.last_send_success_age_s,
+            msp_consecutive_send_error_count=worker_snapshot.consecutive_send_error_count,
+            throttle_handover_source_us=handover.source_us,
+            throttle_handover_target_us=handover.target_us,
+            throttle_handover_alpha=handover.alpha,
+            throttle_handover_output_us=handover.output_us,
+            throttle_handover_active=int(handover.active),
         )
     return values
+
+
+def _platform_health_log_stats(snapshot, timestamp: float) -> dict[str, Any]:
+    age_s = None if snapshot.timestamp_s is None else max(0.0, timestamp - snapshot.timestamp_s)
+    return {
+        "host_sample_age_s": age_s,
+        "host_load_1m": snapshot.load_1m,
+        "host_process_rss_mb": snapshot.process_rss_mb,
+        "host_mem_available_mb": snapshot.mem_available_mb,
+        "host_disk_free_gb": snapshot.disk_free_gb,
+        "host_thermal_max_c": snapshot.thermal_max_c,
+        "host_soc_temp_c": snapshot.soc_temp_c,
+        "host_npu_temp_c": snapshot.npu_temp_c,
+        "host_cpu_freq_min_mhz": snapshot.cpu_freq_min_mhz,
+        "host_cpu_freq_max_mhz": snapshot.cpu_freq_max_mhz,
+        "host_npu_freq_mhz": snapshot.npu_freq_mhz,
+        "host_health_error": snapshot.error,
+    }
 
 
 def _read_detection(
@@ -953,6 +1321,10 @@ def _meta_path(log_path: Path) -> Path:
     return log_path.with_name(f"{log_path.stem}_meta.json")
 
 
+def _events_path(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_events.jsonl")
+
+
 def _write_run_meta(
     path: Path,
     *,
@@ -961,17 +1333,22 @@ def _write_run_meta(
     log_path: Path,
     fields: list[str],
     fc_identity: dict[str, Any],
+    events_path: Path | None = None,
     detector_metadata: dict[str, Any] | None = None,
     fc_configuration: dict[str, Any] | None = None,
     control_authorization: dict[str, Any] | None = None,
     msp_runtime: dict[str, Any] | None = None,
+    platform_health: dict[str, Any] | None = None,
+    web_telemetry: dict[str, Any] | None = None,
 ) -> None:
     config_path = Path(str(getattr(args, "config", ""))).expanduser()
     source_reference_path = Path(str(config.get("source_reference", {}).get("manifest", ""))).expanduser()
     meta = {
+        "log_schema_version": LOG_SCHEMA_VERSION,
         "created_unix_s": time.time(),
         "created_local": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "log_csv": str(log_path),
+        "log_events_jsonl": "" if events_path is None else str(events_path),
         "args": vars(args),
         "config": config,
         "fields": fields,
@@ -993,6 +1370,8 @@ def _write_run_meta(
         "fc_configuration": fc_configuration or {},
         "control_authorization": control_authorization or {},
         "msp_runtime": msp_runtime or {},
+        "platform_health": platform_health or {},
+        "web_telemetry": web_telemetry or {},
         "detector": detector_metadata or {},
     }
     with path.open("w") as stream:
@@ -1049,6 +1428,33 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_worker_send_skip_count",
         "msp_worker_send_error_count",
         "msp_worker_error",
+        "msp_output_enabled",
+        "msp_algorithm_authorized",
+        "msp_worker_override_active",
+        "msp_prefill_ready",
+        "msp_prefill_success_count",
+        "msp_passthrough_send_count",
+        "msp_algorithm_send_count",
+        "msp_stale_command_count",
+        "msp_staged_command_age_s",
+        "msp_publish_mode",
+        "msp_status_age_s",
+        "msp_attitude_age_s",
+        "msp_analog_age_s",
+        "msp_raw_imu_age_s",
+        "msp_publish_tick_interval_s",
+        "msp_publish_tick_max_interval_s",
+        "msp_publish_deadline_miss_count",
+        "msp_send_success_interval_s",
+        "msp_send_success_max_interval_s",
+        "msp_last_send_success_age_s",
+        "msp_consecutive_send_error_count",
+        "throttle_handover_source_us",
+        "throttle_handover_target_us",
+        "throttle_handover_alpha",
+        "throttle_handover_output_us",
+        "throttle_handover_active",
+        "rc_sent_all",
         "telemetry_fresh",
         "attitude_synced",
         "watchdog_ok",
@@ -1071,7 +1477,17 @@ def _log_fields(channel_count: int) -> list[str]:
         "roll_deg",
         "pitch_deg",
         "yaw_deg",
+        "acc_raw_x",
+        "acc_raw_y",
+        "acc_raw_z",
+        "gyro_roll_deg_s",
+        "gyro_pitch_deg_s",
+        "gyro_yaw_deg_s",
+        "mag_raw_x",
+        "mag_raw_y",
+        "mag_raw_z",
         "rc_in_count",
+        "rc_in_all",
         "detector_source",
         "detector_reject_reason",
         "detector_raw_count",
@@ -1170,10 +1586,58 @@ def _log_fields(channel_count: int) -> list[str]:
         "sp_thrust",
         "rc_active",
         "rc_reason",
+        "map_requested_roll_rate_deg_s",
+        "map_requested_pitch_rate_deg_s",
+        "map_requested_yaw_rate_deg_s",
+        "map_limited_roll_rate_deg_s",
+        "map_limited_pitch_rate_deg_s",
+        "map_limited_yaw_rate_deg_s",
+        "map_roll_stick",
+        "map_pitch_stick",
+        "map_yaw_stick",
+        "map_requested_thrust",
+        "map_limited_thrust",
+        "host_sample_age_s",
+        "host_load_1m",
+        "host_process_rss_mb",
+        "host_mem_available_mb",
+        "host_disk_free_gb",
+        "host_thermal_max_c",
+        "host_soc_temp_c",
+        "host_npu_temp_c",
+        "host_cpu_freq_min_mhz",
+        "host_cpu_freq_max_mhz",
+        "host_npu_freq_mhz",
+        "host_health_error",
+        "web_running",
+        "web_sse_clients",
+        "web_mjpeg_clients",
+        "web_publish_count",
+        "web_preview_offer_count",
+        "web_preview_encode_count",
+        "web_preview_drop_count",
+        "web_request_count",
+        "web_denied_count",
+        "web_error_count",
+        "web_last_error",
     ]
+    for label, _command in MSP_COMMAND_LOG_SPECS:
+        fields.extend(
+            (
+                f"msp_cmd_{label}_attempt_count",
+                f"msp_cmd_{label}_success_count",
+                f"msp_cmd_{label}_error_count",
+                f"msp_cmd_{label}_last_rtt_ms",
+                f"msp_cmd_{label}_max_rtt_ms",
+                f"msp_cmd_{label}_last_success_age_s",
+                f"msp_cmd_{label}_last_error",
+            )
+        )
     fields.extend(f"rc_in_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_raw_ch{i}" for i in range(1, channel_count + 1))
+    fields.extend(f"rc_target_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_ch{i}" for i in range(1, channel_count + 1))
+    fields.extend(f"rc_sent_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_clipped_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_slew_limited_ch{i}" for i in range(1, channel_count + 1))
     return fields
@@ -1212,6 +1676,7 @@ def _log_row(
     status = None if telemetry is None else telemetry.status
     analog = None if telemetry is None else telemetry.analog
     attitude = None if telemetry is None else telemetry.attitude
+    raw_imu = None if telemetry is None else telemetry.raw_imu
     clip_flags = (
         {"left": "", "top": "", "right": "", "bottom": ""}
         if detection is None
@@ -1247,6 +1712,43 @@ def _log_row(
         "msp_worker_send_skip_count": detector_stats.get("msp_worker_send_skip_count", ""),
         "msp_worker_send_error_count": detector_stats.get("msp_worker_send_error_count", ""),
         "msp_worker_error": detector_stats.get("msp_worker_error", ""),
+        "msp_output_enabled": detector_stats.get("msp_output_enabled", ""),
+        "msp_algorithm_authorized": detector_stats.get("msp_algorithm_authorized", ""),
+        "msp_worker_override_active": detector_stats.get("msp_worker_override_active", ""),
+        "msp_prefill_ready": detector_stats.get("msp_prefill_ready", ""),
+        "msp_prefill_success_count": detector_stats.get("msp_prefill_success_count", ""),
+        "msp_passthrough_send_count": detector_stats.get("msp_passthrough_send_count", ""),
+        "msp_algorithm_send_count": detector_stats.get("msp_algorithm_send_count", ""),
+        "msp_stale_command_count": detector_stats.get("msp_stale_command_count", ""),
+        "msp_staged_command_age_s": _stats_float(detector_stats, "msp_staged_command_age_s", precision=6),
+        "msp_publish_mode": detector_stats.get("msp_publish_mode", ""),
+        "msp_status_age_s": _stats_float(detector_stats, "msp_status_age_s", precision=6),
+        "msp_attitude_age_s": _stats_float(detector_stats, "msp_attitude_age_s", precision=6),
+        "msp_analog_age_s": _stats_float(detector_stats, "msp_analog_age_s", precision=6),
+        "msp_raw_imu_age_s": _stats_float(detector_stats, "msp_raw_imu_age_s", precision=6),
+        "msp_publish_tick_interval_s": _stats_float(
+            detector_stats, "msp_publish_tick_interval_s", precision=6
+        ),
+        "msp_publish_tick_max_interval_s": _stats_float(
+            detector_stats, "msp_publish_tick_max_interval_s", precision=6
+        ),
+        "msp_publish_deadline_miss_count": detector_stats.get("msp_publish_deadline_miss_count", ""),
+        "msp_send_success_interval_s": _stats_float(
+            detector_stats, "msp_send_success_interval_s", precision=6
+        ),
+        "msp_send_success_max_interval_s": _stats_float(
+            detector_stats, "msp_send_success_max_interval_s", precision=6
+        ),
+        "msp_last_send_success_age_s": _stats_float(
+            detector_stats, "msp_last_send_success_age_s", precision=6
+        ),
+        "msp_consecutive_send_error_count": detector_stats.get("msp_consecutive_send_error_count", ""),
+        "throttle_handover_source_us": detector_stats.get("throttle_handover_source_us", ""),
+        "throttle_handover_target_us": detector_stats.get("throttle_handover_target_us", ""),
+        "throttle_handover_alpha": _stats_float(detector_stats, "throttle_handover_alpha", precision=6),
+        "throttle_handover_output_us": detector_stats.get("throttle_handover_output_us", ""),
+        "throttle_handover_active": detector_stats.get("throttle_handover_active", ""),
+        "rc_sent_all": _channels_field(detector_stats.get("msp_last_sent_channels", ())),
         "telemetry_fresh": int(telemetry_fresh),
         "attitude_synced": int(attitude_synced),
         "watchdog_ok": int(watchdog_ok),
@@ -1269,7 +1771,17 @@ def _log_row(
         "roll_deg": "" if attitude is None else f"{attitude.roll_deg:.3f}",
         "pitch_deg": "" if attitude is None else f"{attitude.pitch_deg:.3f}",
         "yaw_deg": "" if attitude is None else f"{attitude.yaw_deg:.3f}",
+        "acc_raw_x": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 0),
+        "acc_raw_y": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 1),
+        "acc_raw_z": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 2),
+        "gyro_roll_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 0),
+        "gyro_pitch_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 1),
+        "gyro_yaw_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 2),
+        "mag_raw_x": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 0),
+        "mag_raw_y": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 1),
+        "mag_raw_z": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 2),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
+        "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),
         "detector_source": detector_stats.get("detector_source", ""),
         "detector_reject_reason": detector_stats.get("detector_reject_reason", ""),
         "detector_raw_count": detector_stats.get("detector_raw_count", ""),
@@ -1368,11 +1880,63 @@ def _log_row(
         "sp_thrust": f"{setpoint.thrust:.6f}",
         "rc_active": int(rc_command.active),
         "rc_reason": rc_command.reason,
+        "map_requested_roll_rate_deg_s": _sequence_field(rc_command.requested_rates_deg_s, 0),
+        "map_requested_pitch_rate_deg_s": _sequence_field(rc_command.requested_rates_deg_s, 1),
+        "map_requested_yaw_rate_deg_s": _sequence_field(rc_command.requested_rates_deg_s, 2),
+        "map_limited_roll_rate_deg_s": _sequence_field(rc_command.limited_rates_deg_s, 0),
+        "map_limited_pitch_rate_deg_s": _sequence_field(rc_command.limited_rates_deg_s, 1),
+        "map_limited_yaw_rate_deg_s": _sequence_field(rc_command.limited_rates_deg_s, 2),
+        "map_roll_stick": _sequence_field(rc_command.stick_deflections, 0),
+        "map_pitch_stick": _sequence_field(rc_command.stick_deflections, 1),
+        "map_yaw_stick": _sequence_field(rc_command.stick_deflections, 2),
+        "map_requested_thrust": "" if rc_command.requested_thrust is None else rc_command.requested_thrust,
+        "map_limited_thrust": "" if rc_command.limited_thrust is None else rc_command.limited_thrust,
+        "host_sample_age_s": _stats_float(detector_stats, "host_sample_age_s", precision=6),
+        "host_load_1m": _stats_float(detector_stats, "host_load_1m", precision=3),
+        "host_process_rss_mb": _stats_float(detector_stats, "host_process_rss_mb", precision=3),
+        "host_mem_available_mb": _stats_float(detector_stats, "host_mem_available_mb", precision=3),
+        "host_disk_free_gb": _stats_float(detector_stats, "host_disk_free_gb", precision=3),
+        "host_thermal_max_c": _stats_float(detector_stats, "host_thermal_max_c", precision=3),
+        "host_soc_temp_c": _stats_float(detector_stats, "host_soc_temp_c", precision=3),
+        "host_npu_temp_c": _stats_float(detector_stats, "host_npu_temp_c", precision=3),
+        "host_cpu_freq_min_mhz": _stats_float(detector_stats, "host_cpu_freq_min_mhz", precision=3),
+        "host_cpu_freq_max_mhz": _stats_float(detector_stats, "host_cpu_freq_max_mhz", precision=3),
+        "host_npu_freq_mhz": _stats_float(detector_stats, "host_npu_freq_mhz", precision=3),
+        "host_health_error": detector_stats.get("host_health_error", ""),
+        "web_running": detector_stats.get("web_running", ""),
+        "web_sse_clients": detector_stats.get("web_sse_clients", ""),
+        "web_mjpeg_clients": detector_stats.get("web_mjpeg_clients", ""),
+        "web_publish_count": detector_stats.get("web_publish_count", ""),
+        "web_preview_offer_count": detector_stats.get("web_preview_offer_count", ""),
+        "web_preview_encode_count": detector_stats.get("web_preview_encode_count", ""),
+        "web_preview_drop_count": detector_stats.get("web_preview_drop_count", ""),
+        "web_request_count": detector_stats.get("web_request_count", ""),
+        "web_denied_count": detector_stats.get("web_denied_count", ""),
+        "web_error_count": detector_stats.get("web_error_count", ""),
+        "web_last_error": detector_stats.get("web_last_error", ""),
     }
+    for label, _command in MSP_COMMAND_LOG_SPECS:
+        prefix = f"msp_cmd_{label}"
+        row[f"{prefix}_attempt_count"] = detector_stats.get(f"{prefix}_attempt_count", "")
+        row[f"{prefix}_success_count"] = detector_stats.get(f"{prefix}_success_count", "")
+        row[f"{prefix}_error_count"] = detector_stats.get(f"{prefix}_error_count", "")
+        row[f"{prefix}_last_rtt_ms"] = _stats_float(
+            detector_stats, f"{prefix}_last_rtt_ms", precision=3
+        )
+        row[f"{prefix}_max_rtt_ms"] = _stats_float(detector_stats, f"{prefix}_max_rtt_ms", precision=3)
+        row[f"{prefix}_last_success_age_s"] = _stats_float(
+            detector_stats, f"{prefix}_last_success_age_s", precision=6
+        )
+        row[f"{prefix}_last_error"] = detector_stats.get(f"{prefix}_last_error", "")
     rc_input = () if telemetry is None else telemetry.rc_channels
     row.update({f"rc_in_ch{i}": _sequence_field(rc_input, i - 1) for i in range(1, channel_count + 1)})
     row.update({f"rc_raw_ch{i}": _sequence_field(rc_command.raw_channels, i - 1) for i in range(1, channel_count + 1)})
+    row.update(
+        {f"rc_target_ch{i}": _sequence_field(rc_command.target_channels, i - 1) for i in range(1, channel_count + 1)}
+    )
     row.update({f"rc_ch{i}": value for i, value in enumerate(rc_command.channels, start=1)})
+    sent_channels = detector_stats.get("msp_last_sent_channels", ())
+    row.update({f"rc_sent_ch{i}": _sequence_field(sent_channels, i - 1) for i in range(1, channel_count + 1)})
     row.update({f"rc_clipped_ch{i}": _sequence_field(rc_command.clipped_flags, i - 1) for i in range(1, channel_count + 1)})
     row.update({f"rc_slew_limited_ch{i}": _sequence_field(rc_command.slew_limited_flags, i - 1) for i in range(1, channel_count + 1)})
     return row
@@ -1404,6 +1968,12 @@ def _sequence_field(values: Any, index: int) -> Any:
     if values is None or index >= len(values):
         return ""
     return values[index]
+
+
+def _channels_field(values: Any) -> str:
+    if values is None:
+        return ""
+    return ",".join(str(int(value)) for value in values)
 
 
 def _float_or_none(value: Any) -> float | None:
