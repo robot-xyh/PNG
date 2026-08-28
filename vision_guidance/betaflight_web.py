@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 4
+WEB_SCHEMA_VERSION = 7
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -159,6 +159,7 @@ def telemetry_payload_from_log_row(
             "override_available": _boolean(row.get("msp_override_available")),
             "override_active": _boolean(row.get("msp_override_active")),
             "prefill_ready": _boolean(row.get("msp_prefill_ready")),
+            "msp_response_fresh": _boolean(row.get("msp_set_raw_rc_ack_fresh")),
             "target_valid": _boolean(row.get("sp_valid")),
             "publish_mode": _text(row.get("msp_publish_mode")),
             "telemetry_fresh": _boolean(row.get("telemetry_fresh")),
@@ -175,6 +176,10 @@ def telemetry_payload_from_log_row(
             "gyro_deg_s": _vector(
                 row,
                 ("gyro_roll_deg_s", "gyro_pitch_deg_s", "gyro_yaw_deg_s"),
+            ),
+            "gyro_msp_raw": _vector(
+                row,
+                ("gyro_msp_raw_x", "gyro_msp_raw_y", "gyro_msp_raw_z"),
             ),
             "vbat_v": _number(row.get("vbat_v")),
             "amperage_a": _number(row.get("amperage_a")),
@@ -198,6 +203,30 @@ def telemetry_payload_from_log_row(
             "worker_send_error_count": _integer(row.get("msp_worker_send_error_count")),
             "set_raw_rc_attempt_count": _integer(row.get("msp_set_raw_rc_attempt_count")),
             "set_raw_rc_success_count": _integer(row.get("msp_set_raw_rc_success_count")),
+            "transport_mode": _text(row.get("msp_transport_mode")),
+            "set_raw_rc": {
+                "write_attempt_count": _integer(row.get("msp_set_raw_rc_write_attempt_count")),
+                "write_success_count": _integer(row.get("msp_set_raw_rc_write_success_count")),
+                "write_error_count": _integer(row.get("msp_set_raw_rc_write_error_count")),
+                "ack_count": _integer(row.get("msp_set_raw_rc_ack_count")),
+                "ack_age_s": _number(row.get("msp_set_raw_rc_ack_age_s")),
+                "ack_fresh": _boolean(row.get("msp_set_raw_rc_ack_fresh")),
+                "pending_depth": _integer(row.get("msp_set_raw_rc_pending_depth")),
+                "write_rate_hz": _number(row.get("msp_set_raw_rc_write_rate_hz")),
+                "write_interval_s": _number(row.get("msp_set_raw_rc_write_interval_s")),
+                "write_max_interval_s": _number(row.get("msp_set_raw_rc_write_max_interval_s")),
+                "write_p50_interval_s": _number(row.get("msp_set_raw_rc_write_p50_interval_s")),
+                "write_p95_interval_s": _number(row.get("msp_set_raw_rc_write_p95_interval_s")),
+                "write_p99_interval_s": _number(row.get("msp_set_raw_rc_write_p99_interval_s")),
+                "write_p999_interval_s": _number(row.get("msp_set_raw_rc_write_p999_interval_s")),
+            },
+            "parser": {
+                "pending_telemetry_count": _integer(row.get("msp_async_pending_telemetry_count")),
+                "discarded_bytes": _integer(row.get("msp_rx_discarded_bytes")),
+                "checksum_error_count": _integer(row.get("msp_rx_checksum_error_count")),
+                "parser_error_count": _integer(row.get("msp_rx_parser_error_count")),
+                "rc_poll_suspended": _boolean(row.get("msp_rc_poll_suspended")),
+            },
             "publish_deadline_miss_count": _integer(row.get("msp_publish_deadline_miss_count")),
             "last_publish_gates": {
                 "output_enabled": _boolean(row.get("msp_last_publish_output_enabled")),
@@ -210,6 +239,9 @@ def telemetry_payload_from_log_row(
                     row.get("msp_last_publish_physical_rc_fresh")
                 ),
                 "command_fresh": _boolean(row.get("msp_last_publish_command_fresh")),
+                "set_raw_rc_ack_fresh": _boolean(
+                    row.get("msp_last_publish_set_raw_rc_ack_fresh")
+                ),
             },
             "worker_error": _text(row.get("msp_worker_error")),
             "telemetry_error": _text(row.get("telemetry_error")),
@@ -327,6 +359,48 @@ def telemetry_payload_from_log_row(
                 ("sp_roll_rate_deg_s", "sp_pitch_rate_deg_s", "sp_yaw_rate_deg_s"),
             ),
             "thrust": _number(row.get("sp_thrust")),
+            "shaping": {
+                "valid": _boolean(row.get("shaping_valid")),
+                "reason": _text(row.get("shaping_reason")),
+                "input_rate_deg_s": _vector(
+                    row,
+                    (
+                        "pre_shape_sp_roll_rate_deg_s",
+                        "pre_shape_sp_pitch_rate_deg_s",
+                    ),
+                ),
+                "output_rate_deg_s": _vector(
+                    row,
+                    ("sp_roll_rate_deg_s", "sp_pitch_rate_deg_s"),
+                ),
+                "entry_handoff": {
+                    "active": _boolean(row.get("entry_handoff_active")),
+                    "progress": _number(row.get("entry_handoff_progress")),
+                    "source": _text(row.get("entry_handoff_source")),
+                    "start_rate_deg_s": _vector(
+                        row,
+                        (
+                            "entry_handoff_start_roll_rate_deg_s",
+                            "entry_handoff_start_pitch_rate_deg_s",
+                        ),
+                    ),
+                },
+                "tilt_envelope": {
+                    "attitude_deg": _vector(
+                        row,
+                        ("tilt_roll_attitude_deg", "tilt_pitch_attitude_deg"),
+                    ),
+                    "softcap_factor": _vector(
+                        row,
+                        ("tilt_roll_softcap_factor", "tilt_pitch_softcap_factor"),
+                    ),
+                    "level_weight": _vector(
+                        row,
+                        ("tilt_roll_level_weight", "tilt_pitch_level_weight"),
+                    ),
+                    "hardcap_active": _boolean(row.get("tilt_hardcap_active")),
+                },
+            },
         },
         "host": {
             "sample_age_s": _number(row.get("host_sample_age_s")),

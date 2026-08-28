@@ -25,6 +25,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     config = dict(meta.get("config", {}))
     runtime = dict(config.get("msp_runtime", {}))
     mapping = dict(config.get("rc_mapping", {}))
+    guidance_command = dict(config.get("guidance_command", {}))
+    tilt_config = dict(guidance_command.get("tilt_envelope", {}))
     web_config = dict(config.get("telemetry_web", {}))
     web_enabled = bool(web_config.get("enabled", False))
     publish_hz = float(runtime.get("control_publish_hz", 50.0))
@@ -40,10 +42,19 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     thresholds = {
         "publish_hz": publish_hz,
         "max_send_gap_s": 3.0 / max(1.0, publish_hz),
+        "minimum_set_write_rate_hz": max(1.0, publish_hz - 1.0),
+        "p999_set_write_gap_s": min(0.04, 2.0 / max(1.0, publish_hz)),
+        "maximum_ack_age_s": float(runtime.get("response_stale_s", 0.25)),
         "valid_rc_min_us": valid_min_us,
         "valid_rc_max_us": valid_max_us,
         "algorithm_throttle_max_us": throttle_max_us,
         "rate_limits_deg_s": rate_limits,
+        "tilt_envelope": {
+            "enabled": bool(tilt_config.get("enabled", False)),
+            "max_roll_angle_deg": float(tilt_config.get("max_roll_angle_deg", 35.0)),
+            "max_pitch_angle_deg": float(tilt_config.get("max_pitch_angle_deg", 35.0)),
+            "hardcap_margin_deg": float(tilt_config.get("hardcap_margin_deg", 5.0)),
+        },
     }
 
     violations: list[dict[str, Any]] = []
@@ -53,7 +64,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -62,6 +73,11 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     gate_rows = []
     legacy_algorithm_rows = []
     invalid_hold_rows = []
+    shaping_nonfinite_rows = []
+    shaping_factor_rows = []
+    invalid_algorithm_shaping_rows = []
+    hardcap_not_leveling_rows = []
+    hardcap_flag_rows = []
     rate_rows: dict[str, list[dict[str, str]]] = {axis: [] for axis in rate_limits}
     for row in rows:
         sent = [_number(row.get(f"rc_sent_ch{index}")) for index in range(1, 5)]
@@ -82,6 +98,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                     "msp_last_publish_physical_rc_fresh",
                     "msp_last_publish_command_fresh",
                 )
+                if schema_version >= 7:
+                    required_publish_gates += ("msp_last_publish_set_raw_rc_ack_fresh",)
                 if any(_integer(row.get(field)) != 1 for field in required_publish_gates):
                     gate_rows.append(row)
             else:
@@ -100,6 +118,58 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             value = _number(row.get(f"map_limited_{axis}_rate_deg_s"))
             if value is not None and abs(value) > limit + 1.0e-6:
                 rate_rows[axis].append(row)
+        if schema_version is not None and schema_version >= 8:
+            shaping_numbers = tuple(
+                _number(row.get(field))
+                for field in (
+                    "pre_shape_sp_roll_rate_deg_s",
+                    "pre_shape_sp_pitch_rate_deg_s",
+                    "sp_roll_rate_deg_s",
+                    "sp_pitch_rate_deg_s",
+                    "entry_handoff_progress",
+                    "tilt_roll_softcap_factor",
+                    "tilt_pitch_softcap_factor",
+                    "tilt_roll_level_weight",
+                    "tilt_pitch_level_weight",
+                )
+            )
+            shaping_nonfinite = any(value is None for value in shaping_numbers)
+            factors = shaping_numbers[4:]
+            if any(value is not None and not 0.0 <= value <= 1.0 for value in factors):
+                shaping_factor_rows.append(row)
+            if row.get("msp_publish_mode") == "algorithm":
+                if _integer(row.get("shaping_valid")) != 1:
+                    invalid_algorithm_shaping_rows.append(row)
+                if bool(tilt_config.get("enabled", False)):
+                    axis_values = (
+                        (
+                            _number(row.get("tilt_roll_attitude_deg")),
+                            _number(row.get("sp_roll_rate_deg_s")),
+                            float(tilt_config.get("max_roll_angle_deg", 35.0)),
+                        ),
+                        (
+                            _number(row.get("tilt_pitch_attitude_deg")),
+                            _number(row.get("sp_pitch_rate_deg_s")),
+                            float(tilt_config.get("max_pitch_angle_deg", 35.0)),
+                        ),
+                    )
+                    hard_margin = float(tilt_config.get("hardcap_margin_deg", 5.0))
+                    hard_region = False
+                    hardcap_not_leveling = False
+                    for attitude, output_rate, max_angle in axis_values:
+                        if attitude is None or output_rate is None:
+                            shaping_nonfinite = True
+                            continue
+                        if abs(attitude) + 1.0e-6 >= max_angle + hard_margin:
+                            hard_region = True
+                            if attitude * output_rate >= -1.0e-6:
+                                hardcap_not_leveling = True
+                    if hardcap_not_leveling:
+                        hardcap_not_leveling_rows.append(row)
+                    if hard_region and _integer(row.get("tilt_hardcap_active")) != 1:
+                        hardcap_flag_rows.append(row)
+            if shaping_nonfinite:
+                shaping_nonfinite_rows.append(row)
 
     _append_violation(violations, "invalid_sent_rc", invalid_rc_rows)
     _append_violation(violations, "sent_885_us", exact_885_rows)
@@ -107,10 +177,20 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "algorithm_without_worker_gates", gate_rows)
     _append_violation(violations, "publish_gate_timebase_unavailable", legacy_algorithm_rows)
     _append_violation(violations, "guidance_hold_outside_perception_gap", invalid_hold_rows)
+    _append_violation(violations, "command_shaping_nonfinite", shaping_nonfinite_rows)
+    _append_violation(violations, "command_shaping_factor_out_of_range", shaping_factor_rows)
+    _append_violation(violations, "algorithm_with_invalid_command_shaping", invalid_algorithm_shaping_rows)
+    _append_violation(violations, "tilt_hardcap_not_leveling", hardcap_not_leveling_rows)
+    _append_violation(violations, "tilt_hardcap_flag_missing", hardcap_flag_rows)
     for axis, failed_rows in rate_rows.items():
         _append_violation(violations, f"{axis}_rate_limit", failed_rows)
 
-    max_send_gap_s = _maximum(rows, "msp_send_success_max_interval_s")
+    max_send_gap_field = (
+        "msp_set_raw_rc_write_max_interval_s"
+        if schema_version is not None and schema_version >= 7
+        else "msp_send_success_max_interval_s"
+    )
+    max_send_gap_s = _maximum(rows, max_send_gap_field)
     if max_send_gap_s is not None and max_send_gap_s > thresholds["max_send_gap_s"]:
         violations.append(
             {
@@ -124,14 +204,65 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     final = rows[-1] if rows else {}
     send_errors = _integer(final.get("msp_worker_send_error_count")) or 0
     set_errors = _integer(final.get("msp_cmd_set_raw_rc_error_count")) or 0
-    if send_errors > 0 or set_errors > 0:
+    write_errors = _integer(final.get("msp_set_raw_rc_write_error_count")) or 0
+    if send_errors > 0 or set_errors > 0 or write_errors > 0:
         violations.append(
             {
                 "code": "set_raw_rc_errors",
-                "count": max(send_errors, set_errors),
+                "count": max(send_errors, set_errors, write_errors),
                 "first_elapsed_s": None,
             }
         )
+    if schema_version is not None and schema_version >= 7:
+        write_rate_hz = _number(final.get("msp_set_raw_rc_write_rate_hz"))
+        if write_rate_hz is not None and write_rate_hz < thresholds["minimum_set_write_rate_hz"]:
+            violations.append(
+                {
+                    "code": "set_raw_rc_write_rate_low",
+                    "count": 1,
+                    "first_elapsed_s": None,
+                    "observed": write_rate_hz,
+                    "limit": thresholds["minimum_set_write_rate_hz"],
+                }
+            )
+        p999_gap_s = _maximum(rows, "msp_set_raw_rc_write_p999_interval_s")
+        if p999_gap_s is not None and p999_gap_s > thresholds["p999_set_write_gap_s"]:
+            violations.append(
+                {
+                    "code": "set_raw_rc_write_p999_gap",
+                    "count": 1,
+                    "first_elapsed_s": None,
+                    "observed": p999_gap_s,
+                    "limit": thresholds["p999_set_write_gap_s"],
+                }
+            )
+        output_rows = [row for row in rows if _integer(row.get("msp_output_enabled")) == 1]
+        max_ack_age_s = _maximum(output_rows, "msp_set_raw_rc_ack_age_s")
+        stale_ack_rows = [
+            row
+            for row in rows
+            if row.get("msp_publish_mode") == "algorithm"
+            and _integer(row.get("msp_last_publish_set_raw_rc_ack_fresh")) != 1
+        ]
+        _append_violation(violations, "algorithm_with_stale_set_ack", stale_ack_rows)
+        if max_ack_age_s is not None and max_ack_age_s > thresholds["maximum_ack_age_s"]:
+            violations.append(
+                {
+                    "code": "set_raw_rc_ack_stall",
+                    "count": 1,
+                    "first_elapsed_s": None,
+                    "observed": max_ack_age_s,
+                    "limit": thresholds["maximum_ack_age_s"],
+                }
+            )
+        parser_error_count = max(
+            _integer(final.get("msp_rx_checksum_error_count")) or 0,
+            _integer(final.get("msp_rx_parser_error_count")) or 0,
+        )
+        if parser_error_count > 0:
+            violations.append(
+                {"code": "msp_response_parser_errors", "count": parser_error_count, "first_elapsed_s": None}
+            )
     web_errors = _integer(final.get("web_error_count")) or 0
     web_publish_count = _integer(final.get("web_publish_count")) or 0
     if web_enabled and web_publish_count <= 0:
@@ -157,9 +288,25 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "duration_s": _maximum(rows, "elapsed_s"),
         "algorithm_rows": sum(row.get("msp_publish_mode") == "algorithm" for row in rows),
         "guidance_hold_rows": sum(row.get("sp_source") == "guidance_hold" for row in rows),
+        "entry_handoff_rows": sum(_integer(row.get("entry_handoff_active")) == 1 for row in rows),
+        "tilt_hardcap_rows": sum(_integer(row.get("tilt_hardcap_active")) == 1 for row in rows),
         "set_raw_rc_success_count": _integer(final.get("msp_set_raw_rc_success_count")) or 0,
+        "set_raw_rc_write_success_count": _integer(final.get("msp_set_raw_rc_write_success_count")) or 0,
+        "set_raw_rc_ack_count": _integer(final.get("msp_set_raw_rc_ack_count")) or 0,
         "set_raw_rc_error_count": set_errors,
+        "set_raw_rc_write_error_count": write_errors,
         "max_send_gap_s": max_send_gap_s,
+        "set_raw_rc_write_rate_hz": _number(final.get("msp_set_raw_rc_write_rate_hz")),
+        "set_raw_rc_write_p999_interval_s": _maximum(rows, "msp_set_raw_rc_write_p999_interval_s"),
+        "max_set_raw_rc_ack_age_s": (
+            _maximum(
+                (row for row in rows if _integer(row.get("msp_output_enabled")) == 1),
+                "msp_set_raw_rc_ack_age_s",
+            )
+        ),
+        "msp_rx_discarded_bytes": _integer(final.get("msp_rx_discarded_bytes")) or 0,
+        "msp_rx_checksum_error_count": _integer(final.get("msp_rx_checksum_error_count")) or 0,
+        "msp_rx_parser_error_count": _integer(final.get("msp_rx_parser_error_count")) or 0,
         "publish_deadline_miss_count": _integer(final.get("msp_publish_deadline_miss_count")) or 0,
         "max_set_raw_rc_rtt_ms": _maximum(rows, "msp_cmd_set_raw_rc_max_rtt_ms"),
         "max_raw_imu_rtt_ms": _maximum(rows, "msp_cmd_raw_imu_max_rtt_ms"),
@@ -168,6 +315,10 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "max_gyro_abs_deg_s": _maximum_abs(
             rows,
             ("gyro_roll_deg_s", "gyro_pitch_deg_s", "gyro_yaw_deg_s"),
+        ),
+        "max_gyro_msp_raw_abs": _maximum_abs(
+            rows,
+            ("gyro_msp_raw_x", "gyro_msp_raw_y", "gyro_msp_raw_z"),
         ),
         "log_schema_version": schema_version,
         "web_enabled": web_enabled,

@@ -175,6 +175,7 @@
           <div class="gate"><label>ARM / RC5</label><output id="gateArm" class="unknown">--</output></div>
           <div class="gate"><label>Override / RC7</label><output id="gateOverride" class="unknown">--</output></div>
           <div class="gate"><label>RC Prefill</label><output id="gatePrefill" class="unknown">--</output></div>
+          <div class="gate"><label>SET ACK</label><output id="gateSetAck" class="unknown">--</output></div>
           <div class="gate"><label>Physical RC</label><output id="gatePhysicalRc" class="unknown">--</output></div>
           <div class="gate"><label>MSP Telemetry</label><output id="gateTelemetry" class="unknown">--</output></div>
           <div class="gate"><label>Attitude Sync</label><output id="gateAttitude" class="unknown">--</output></div>
@@ -193,10 +194,22 @@
           <div class="metric"><label>Sent AETR</label><output id="sentFrame">--</output></div>
           <div class="metric"><label>Command R/P/Y</label><output id="commandRates">--</output></div>
           <div class="metric"><label>Command thrust</label><output id="commandThrust">--</output></div>
+          <div class="metric"><label>Shaper input R/P</label><output id="shaperInputRates">--</output></div>
+          <div class="metric"><label>Shaper output R/P</label><output id="shaperOutputRates">--</output></div>
+          <div class="metric"><label>Entry source / progress</label><output id="entryHandoff">--</output></div>
+          <div class="metric"><label>Tilt soft factors R/P</label><output id="tiltSoftcap">--</output></div>
+          <div class="metric"><label>Tilt level weights R/P</label><output id="tiltLevelWeights">--</output></div>
+          <div class="metric"><label>Tilt hard cap</label><output id="tiltHardcap">--</output></div>
           <div class="metric"><label>SET_RAW_RC</label><output id="setRawRcCount">--</output></div>
           <div class="metric"><label>SET errors</label><output id="setRawRcErrors">--</output></div>
           <div class="metric"><label>SET max RTT</label><output id="setRawRcRtt">--</output></div>
           <div class="metric"><label>Deadline misses</label><output id="deadlineMisses">--</output></div>
+          <div class="metric"><label>Transport</label><output id="mspTransport">--</output></div>
+          <div class="metric"><label>SET write rate</label><output id="setWriteRate">--</output></div>
+          <div class="metric"><label>SET max gap</label><output id="setMaxGap">--</output></div>
+          <div class="metric"><label>SET P99.9 gap</label><output id="setP999Gap">--</output></div>
+          <div class="metric"><label>ACK age / pending</label><output id="setAckState">--</output></div>
+          <div class="metric"><label>RX discard / CRC</label><output id="mspParserErrors">--</output></div>
         </div>
       </section>
       <section class="section">
@@ -251,7 +264,7 @@
           <canvas id="attitudeChart"></canvas>
         </section>
         <section class="chart-panel">
-          <div class="chart-head"><h2>Body Rates</h2><div class="legend"><span><i style="background:#69d38b"></i>gyro R</span><span><i style="background:#ed9952"></i>gyro P</span><span><i style="background:#ee6a63"></i>command</span></div></div>
+          <div class="chart-head"><h2>MSP Gyro Raw</h2><div class="legend"><span><i style="background:#69d38b"></i>raw X</span><span><i style="background:#ed9952"></i>raw Y</span><span><i style="background:#ee6a63"></i>command</span></div></div>
           <canvas id="ratesChart"></canvas>
         </section>
         <section class="chart-panel">
@@ -286,6 +299,7 @@
       msp_override_unavailable: "MSP OVERRIDE unavailable",
       msp_override_inactive: "Waiting for RC7 OVERRIDE",
       msp_prefill_not_ready: "Waiting for physical RC prefill",
+      msp_set_raw_rc_ack_stale: "SET_RAW_RC acknowledgement is stale",
       not_armed: "Waiting for RC5 ARM",
       physical_rc_stale: "Physical RC is stale",
       telemetry_stale: "MSP telemetry is stale",
@@ -340,6 +354,9 @@
       const vision = data.vision || {};
       const guidance = data.guidance || {};
       const command = data.command || {};
+      const shaping = command.shaping || {};
+      const entryHandoff = shaping.entry_handoff || {};
+      const tiltEnvelope = shaping.tilt_envelope || {};
       const msp = data.msp || {};
       const rc = data.rc || {};
       const state = text(safety.state);
@@ -355,6 +372,7 @@
       setGate("gateArm", safety.armed, "ARMED", "DISARMED");
       setGate("gateOverride", safety.override_active, "ACTIVE", safety.override_available === false ? "UNAVAILABLE" : "MANUAL", safety.override_available === false ? "fail" : "wait");
       setGate("gatePrefill", safety.prefill_ready, "READY", "WAITING");
+      setGate("gateSetAck", safety.msp_response_fresh, "FRESH", "STALE", "fail");
       setGate("gatePhysicalRc", safety.physical_rc_fresh, "FRESH", "STALE", "fail");
       setGate("gateTelemetry", safety.telemetry_fresh, "FRESH", "STALE", "fail");
       setGate("gateAttitude", safety.attitude_synced, "SYNCED", "STALE", "fail");
@@ -377,11 +395,31 @@
       setMetric("sentFrame", formatChannels(rc.sent_us, rc.wire_order));
       setMetric("commandRates", formatVector(command.rate_deg_s));
       setMetric("commandThrust", number(command.thrust, 3));
-      setMetric("setRawRcCount", `${text(msp.set_raw_rc_success_count)} / ${text(msp.set_raw_rc_attempt_count)}`);
+      setMetric("shaperInputRates", formatVector(shaping.input_rate_deg_s, 2));
+      setMetric("shaperOutputRates", formatVector(shaping.output_rate_deg_s, 2));
+      const entryProgress = Number.isFinite(entryHandoff.progress)
+        ? `${(100 * entryHandoff.progress).toFixed(0)}%`
+        : "--";
+      setMetric(
+        "entryHandoff",
+        `${text(entryHandoff.source)} / ${entryProgress}${entryHandoff.active ? " ACTIVE" : ""}`
+      );
+      setMetric("tiltSoftcap", formatVector(tiltEnvelope.softcap_factor, 2));
+      setMetric("tiltLevelWeights", formatVector(tiltEnvelope.level_weight, 2));
+      setMetric("tiltHardcap", tiltEnvelope.hardcap_active === true ? "ACTIVE" : tiltEnvelope.hardcap_active === false ? "CLEAR" : "--");
+      const transport = msp.set_raw_rc || {};
+      const parser = msp.parser || {};
+      setMetric("setRawRcCount", `${text(transport.write_success_count)} write / ${text(transport.ack_count)} ack`);
       const setStats = path(msp, ["commands", "set_raw_rc"], {});
       setMetric("setRawRcErrors", `${text(setStats.error_count)} / worker ${text(msp.worker_send_error_count)}`);
       setMetric("setRawRcRtt", number(setStats.max_rtt_ms, 1, " ms"));
       setMetric("deadlineMisses", text(msp.publish_deadline_miss_count));
+      setMetric("mspTransport", text(msp.transport_mode));
+      setMetric("setWriteRate", number(transport.write_rate_hz, 1, " Hz"));
+      setMetric("setMaxGap", number(Number.isFinite(transport.write_max_interval_s) ? transport.write_max_interval_s * 1000 : null, 1, " ms"));
+      setMetric("setP999Gap", number(Number.isFinite(transport.write_p999_interval_s) ? transport.write_p999_interval_s * 1000 : null, 1, " ms"));
+      setMetric("setAckState", `${number(transport.ack_age_s, 3, " s")} / ${text(transport.pending_depth)}`);
+      setMetric("mspParserErrors", `${text(parser.discarded_bytes)} / ${text(parser.checksum_error_count)}`);
     }
 
     function updateChannels(data) {
@@ -465,8 +503,8 @@
         { color: "#d98ad6", get: d => path(d, ["flight_controller", "attitude_deg", 2]) }
       ],
       ratesChart: [
-        { color: "#69d38b", get: d => path(d, ["flight_controller", "gyro_deg_s", 0]) },
-        { color: "#ed9952", get: d => path(d, ["flight_controller", "gyro_deg_s", 1]) },
+        { color: "#69d38b", get: d => path(d, ["flight_controller", "gyro_msp_raw", 0]) },
+        { color: "#ed9952", get: d => path(d, ["flight_controller", "gyro_msp_raw", 1]) },
         { color: "#ee6a63", get: d => path(d, ["command", "rate_deg_s", 0]) }
       ],
       guidanceChart: [

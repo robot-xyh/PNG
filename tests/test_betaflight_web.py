@@ -52,6 +52,7 @@ class BetaflightWebTest(unittest.TestCase):
             "gateArm",
             "gateOverride",
             "gatePrefill",
+            "gateSetAck",
             "gatePhysicalRc",
             "gateTelemetry",
             "gateAttitude",
@@ -66,6 +67,18 @@ class BetaflightWebTest(unittest.TestCase):
             "setRawRcCount",
             "setRawRcErrors",
             "deadlineMisses",
+            "mspTransport",
+            "setWriteRate",
+            "setMaxGap",
+            "setP999Gap",
+            "setAckState",
+            "mspParserErrors",
+            "shaperInputRates",
+            "shaperOutputRates",
+            "entryHandoff",
+            "tiltSoftcap",
+            "tiltLevelWeights",
+            "tiltHardcap",
             "perceptionState",
             "attitudeOffset",
             "bestCandidateScore",
@@ -106,12 +119,42 @@ class BetaflightWebTest(unittest.TestCase):
             "armed": "0",
             "msp_override_available": "1",
             "msp_override_active": "0",
+            "msp_transport_mode": "async_pipeline",
+            "msp_set_raw_rc_write_success_count": "100",
+            "msp_set_raw_rc_ack_count": "99",
+            "msp_set_raw_rc_ack_age_s": "0.02",
+            "msp_set_raw_rc_ack_fresh": "1",
+            "msp_set_raw_rc_pending_depth": "1",
+            "msp_set_raw_rc_write_rate_hz": "49.9",
+            "msp_set_raw_rc_write_max_interval_s": "0.025",
+            "msp_set_raw_rc_write_p999_interval_s": "0.024",
+            "msp_rx_checksum_error_count": "0",
             "guidance_valid": "1",
             "sp_valid": "1",
+            "pre_shape_sp_roll_rate_deg_s": "3.0",
+            "pre_shape_sp_pitch_rate_deg_s": "-2.0",
+            "sp_roll_rate_deg_s": "1.5",
+            "sp_pitch_rate_deg_s": "-1.0",
+            "shaping_valid": "1",
+            "entry_handoff_active": "1",
+            "entry_handoff_progress": "0.5",
+            "entry_handoff_source": "gyro",
+            "entry_handoff_start_roll_rate_deg_s": "0.5",
+            "entry_handoff_start_pitch_rate_deg_s": "-0.5",
+            "tilt_roll_attitude_deg": "30.0",
+            "tilt_pitch_attitude_deg": "-20.0",
+            "tilt_roll_softcap_factor": "0.5",
+            "tilt_pitch_softcap_factor": "1.0",
+            "tilt_roll_level_weight": "0.0",
+            "tilt_pitch_level_weight": "0.25",
+            "tilt_hardcap_active": "0",
             "perception_new_result": "1",
             "roll_deg": "2.5",
             "pitch_deg": "-1.0",
             "yaw_deg": "90.0",
+            "gyro_msp_raw_x": "10",
+            "gyro_msp_raw_y": "-20",
+            "gyro_msp_raw_z": "30",
             "vbat_v": "4.20",
             "track_id": "7",
             "detection_score": "0.75",
@@ -145,8 +188,13 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["safety"]["state"], "LOG_ONLY")
         self.assertFalse(payload["safety"]["armed"])
         self.assertTrue(payload["safety"]["target_valid"])
+        self.assertTrue(payload["safety"]["msp_response_fresh"])
+        self.assertEqual(payload["msp"]["transport_mode"], "async_pipeline")
+        self.assertEqual(payload["msp"]["set_raw_rc"]["ack_count"], 99)
+        self.assertEqual(payload["msp"]["set_raw_rc"]["write_rate_hz"], 49.9)
         self.assertTrue(payload["vision"]["new_result"])
         self.assertEqual(payload["flight_controller"]["attitude_deg"], [2.5, -1.0, 90.0])
+        self.assertEqual(payload["flight_controller"]["gyro_msp_raw"], [10.0, -20.0, 30.0])
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(payload["vision"]["detector_best_score"], 0.22)
         self.assertEqual(
@@ -157,6 +205,15 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["vision"]["tracker_association_stage"], "low")
         self.assertEqual(payload["vision"]["tracker_match_iou"], 0.63)
         self.assertEqual(payload["vision"]["target_selector_reason"], "no_tracked_output")
+        shaping = payload["command"]["shaping"]
+        self.assertTrue(shaping["valid"])
+        self.assertEqual(shaping["input_rate_deg_s"], [3.0, -2.0])
+        self.assertEqual(shaping["output_rate_deg_s"], [1.5, -1.0])
+        self.assertEqual(shaping["entry_handoff"]["source"], "gyro")
+        self.assertEqual(shaping["entry_handoff"]["progress"], 0.5)
+        self.assertEqual(shaping["tilt_envelope"]["softcap_factor"], [0.5, 1.0])
+        self.assertEqual(shaping["tilt_envelope"]["level_weight"], [0.0, 0.25])
+        self.assertFalse(shaping["tilt_envelope"]["hardcap_active"])
         self.assertEqual(
             payload["vision"]["fusion"],
             {"status": None, "pending_count": None, "dropped_count": None, "wait_ms": None},

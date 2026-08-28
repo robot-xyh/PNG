@@ -43,8 +43,10 @@ class BetaflightLogAuditTest(unittest.TestCase):
                 msp_worker_override_active="0",
                 msp_last_publish_override_active="0",
                 msp_send_success_max_interval_s="0.10",
+                msp_set_raw_rc_write_max_interval_s="0.10",
                 msp_worker_send_error_count="1",
                 msp_cmd_set_raw_rc_error_count="1",
+                msp_set_raw_rc_write_error_count="1",
             )
             csv_path = self._write_log(Path(directory), row)
 
@@ -110,6 +112,66 @@ class BetaflightLogAuditTest(unittest.TestCase):
 
             self.assertTrue(result["passed"])
 
+    def test_schema_v7_rejects_ack_stall_low_write_rate_and_parser_errors(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                msp_set_raw_rc_write_rate_hz="45.0",
+                msp_set_raw_rc_write_p999_interval_s="0.05",
+                msp_set_raw_rc_ack_age_s="0.30",
+                msp_last_publish_set_raw_rc_ack_fresh="0",
+                msp_rx_checksum_error_count="1",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=7)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertTrue(
+                {
+                    "algorithm_without_worker_gates",
+                    "set_raw_rc_write_rate_low",
+                    "set_raw_rc_write_p999_gap",
+                    "algorithm_with_stale_set_ack",
+                    "set_raw_rc_ack_stall",
+                    "msp_response_parser_errors",
+                }.issubset(codes)
+            )
+
+    def test_schema_v8_rejects_invalid_shaping_and_nonleveling_hardcap(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                entry_handoff_progress="1.2",
+                tilt_roll_attitude_deg="40.0",
+                sp_roll_rate_deg_s="1.0",
+                tilt_hardcap_active="0",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=8)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertTrue(
+                {
+                    "command_shaping_factor_out_of_range",
+                    "tilt_hardcap_not_leveling",
+                    "tilt_hardcap_flag_missing",
+                }.issubset(codes)
+            )
+
+    def test_schema_v8_rejects_nonfinite_shaping_and_invalid_algorithm_flag(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(sp_pitch_rate_deg_s="nan", shaping_valid="0")
+            csv_path = self._write_log(Path(directory), row, schema_version=8)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertIn("command_shaping_nonfinite", codes)
+            self.assertIn("algorithm_with_invalid_command_shaping", codes)
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
@@ -142,25 +204,54 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "msp_last_publish_prefill_ready": "1",
             "msp_last_publish_physical_rc_fresh": "1",
             "msp_last_publish_command_fresh": "1",
+            "msp_last_publish_set_raw_rc_ack_fresh": "1",
             "map_limited_roll_rate_deg_s": "3.0",
             "map_limited_pitch_rate_deg_s": "-3.0",
             "map_limited_yaw_rate_deg_s": "0.0",
+            "pre_shape_sp_roll_rate_deg_s": "3.0",
+            "pre_shape_sp_pitch_rate_deg_s": "-3.0",
+            "sp_roll_rate_deg_s": "3.0",
+            "sp_pitch_rate_deg_s": "-3.0",
+            "shaping_valid": "1",
+            "shaping_reason": "",
+            "entry_handoff_active": "0",
+            "entry_handoff_progress": "1.0",
+            "entry_handoff_source": "gyro",
+            "tilt_roll_attitude_deg": "30.0",
+            "tilt_pitch_attitude_deg": "-30.0",
+            "tilt_roll_softcap_factor": "0.5",
+            "tilt_pitch_softcap_factor": "0.5",
+            "tilt_roll_level_weight": "0.0",
+            "tilt_pitch_level_weight": "0.0",
+            "tilt_hardcap_active": "0",
             "msp_send_success_max_interval_s": "0.02",
             "msp_worker_send_error_count": "0",
             "msp_cmd_set_raw_rc_error_count": "0",
             "msp_set_raw_rc_success_count": "50",
+            "msp_set_raw_rc_write_success_count": "50",
+            "msp_set_raw_rc_write_error_count": "0",
+            "msp_set_raw_rc_ack_count": "50",
+            "msp_set_raw_rc_ack_age_s": "0.02",
+            "msp_set_raw_rc_write_rate_hz": "50.0",
+            "msp_set_raw_rc_write_max_interval_s": "0.02",
+            "msp_set_raw_rc_write_p999_interval_s": "0.02",
+            "msp_rx_checksum_error_count": "0",
+            "msp_rx_parser_error_count": "0",
             "msp_publish_deadline_miss_count": "0",
             "msp_cmd_set_raw_rc_max_rtt_ms": "2.0",
             "msp_cmd_raw_imu_max_rtt_ms": "2.5",
             "rknn_total_ms": "8.0",
             "host_thermal_max_c": "65.0",
-            "gyro_roll_deg_s": "1.0",
-            "gyro_pitch_deg_s": "-2.0",
-            "gyro_yaw_deg_s": "0.5",
+            "gyro_msp_raw_x": "16",
+            "gyro_msp_raw_y": "-32",
+            "gyro_msp_raw_z": "8",
+            "gyro_roll_deg_s": "",
+            "gyro_pitch_deg_s": "",
+            "gyro_yaw_deg_s": "",
         }
 
     @staticmethod
-    def _write_log(directory: Path, row, *, web_enabled=False, schema_version=4):
+    def _write_log(directory: Path, row, *, web_enabled=False, schema_version=9):
         csv_path = directory / "bench.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(row))
@@ -173,12 +264,21 @@ class BetaflightLogAuditTest(unittest.TestCase):
                     "prefill_valid_min_us": 900,
                     "prefill_valid_max_us": 2100,
                     "throttle_channel_zero_based": 2,
+                    "response_stale_s": 0.25,
                 },
                 "rc_mapping": {
                     "roll_command_limit_deg_s": 3.0,
                     "pitch_command_limit_deg_s": 3.0,
                     "yaw_command_limit_deg_s": 0.0,
                     "throttle_max_us": 1100,
+                },
+                "guidance_command": {
+                    "tilt_envelope": {
+                        "enabled": True,
+                        "max_roll_angle_deg": 35.0,
+                        "max_pitch_angle_deg": 35.0,
+                        "hardcap_margin_deg": 5.0,
+                    }
                 },
                 "telemetry_web": {"enabled": web_enabled},
             },
