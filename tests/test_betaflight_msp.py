@@ -30,10 +30,16 @@ from vision_guidance.flight_control import RcCommand
 
 
 class FakeTransport:
-    def __init__(self, responses):
+    def __init__(self, responses, *, max_read_size=None):
         self.buffer = bytearray(b"".join(responses))
         self.writes = []
         self.closed = False
+        self.timeout = 0.2
+        self.max_read_size = max_read_size
+
+    @property
+    def in_waiting(self):
+        return len(self.buffer)
 
     def write(self, data):
         self.writes.append(bytes(data))
@@ -43,6 +49,8 @@ class FakeTransport:
         if not self.buffer:
             return b""
         count = min(n, len(self.buffer))
+        if self.max_read_size is not None:
+            count = min(count, self.max_read_size)
         data = bytes(self.buffer[:count])
         del self.buffer[:count]
         return data
@@ -52,6 +60,9 @@ class FakeTransport:
 
     def close(self):
         self.closed = True
+
+    def inject(self, *responses):
+        self.buffer.extend(b"".join(responses))
 
 
 class BetaflightMSPTest(unittest.TestCase):
@@ -91,9 +102,19 @@ class BetaflightMSPTest(unittest.TestCase):
         attitude = parse_attitude(struct.pack("<hhh", 123, -45, 270))
         self.assertAlmostEqual(attitude.roll_deg, 12.3)
         self.assertAlmostEqual(attitude.pitch_deg, -4.5)
+        self.assertAlmostEqual(attitude.pitch_nose_up_deg, 4.5)
         self.assertAlmostEqual(attitude.yaw_deg, 270.0)
+        self.assertEqual(attitude.euler_frd_deg, (12.3, 4.5, 270.0))
         self.assertEqual(attitude.R_IB.shape, (3, 3))
         self.assertTrue(np.all(np.isfinite(attitude.R_IB)))
+
+        nose_up = parse_attitude(struct.pack("<hhh", 0, -100, 0))
+        body_forward_in_ned = nose_up.R_IB @ np.array([1.0, 0.0, 0.0])
+        self.assertLess(body_forward_in_ned[2], 0.0)
+
+        right_roll = parse_attitude(struct.pack("<hhh", 100, 0, 0))
+        body_right_in_ned = right_roll.R_IB @ np.array([0.0, 1.0, 0.0])
+        self.assertGreater(body_right_in_ned[2], 0.0)
 
         analog = parse_analog(bytes([121]) + struct.pack("<HHh", 345, 987, -123))
         self.assertAlmostEqual(analog.vbat_v, 12.1)
@@ -116,7 +137,7 @@ class BetaflightMSPTest(unittest.TestCase):
         raw_imu = parse_raw_imu(struct.pack("<9h", -10, 20, -30, -40, 50, -60, 70, -80, 90))
 
         self.assertEqual(raw_imu.acc_raw, (-10, 20, -30))
-        self.assertEqual(raw_imu.gyro_deg_s, (-40.0, 50.0, -60.0))
+        self.assertEqual(raw_imu.gyro_msp_raw, (-40, 50, -60))
         self.assertEqual(raw_imu.mag_raw, (70, -80, 90))
         with self.assertRaisesRegex(MSPError, "too short"):
             parse_raw_imu(b"\x00" * 17)
@@ -207,6 +228,76 @@ class BetaflightMSPTest(unittest.TestCase):
         self.assertEqual(stats.set_raw_rc_attempt_count, 1)
         self.assertEqual(stats.set_raw_rc_success_count, 1)
         self.assertEqual(stats.request_error_count, 0)
+
+    def test_async_parser_handles_fragmented_and_coalesced_frames(self):
+        status_payload = struct.pack("<HHHI", 1000, 0, 7, 9) + b"\x02"
+        transport = FakeTransport([], max_read_size=2)
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        adapter.begin_async_pipeline()
+        status_request = adapter.queue_async_request(MSP_STATUS)
+        attitude_request = adapter.queue_async_request(MSP_ATTITUDE)
+        transport.inject(
+            encode_msp_frame(MSP_STATUS, status_payload, direction=">"),
+            encode_msp_frame(MSP_ATTITUDE, struct.pack("<hhh", 10, 20, 30), direction=">"),
+        )
+
+        responses = adapter.drain_async_responses(5.0)
+
+        self.assertEqual([item.frame.command for item in responses], [MSP_STATUS, MSP_ATTITUDE])
+        self.assertEqual([item.request_id for item in responses], [status_request, attitude_request])
+        self.assertEqual(adapter.snapshot_stats().async_pending_telemetry_count, 0)
+
+    def test_async_parser_resynchronizes_after_noise_and_bad_checksum(self):
+        bad = bytearray(encode_msp_frame(MSP_STATUS, struct.pack("<HHHI", 1, 0, 0, 0), direction=">"))
+        bad[-1] ^= 0xFF
+        valid = encode_msp_frame(MSP_ATTITUDE, struct.pack("<hhh", 10, 20, 30), direction=">")
+        transport = FakeTransport([])
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        adapter.begin_async_pipeline()
+        adapter.queue_async_request(MSP_STATUS)
+        attitude_request = adapter.queue_async_request(MSP_ATTITUDE)
+        transport.inject(b"noise", bytes(bad), valid)
+
+        responses = adapter.drain_async_responses(1.0)
+        stats = adapter.snapshot_stats()
+
+        self.assertEqual([item.frame.command for item in responses], [MSP_ATTITUDE])
+        self.assertEqual(responses[0].request_id, attitude_request)
+        self.assertGreaterEqual(stats.rx_discarded_bytes, 6)
+        self.assertEqual(stats.rx_checksum_error_count, 1)
+
+    def test_async_set_writes_do_not_wait_for_delayed_ack(self):
+        transport = FakeTransport([])
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        adapter.begin_async_pipeline()
+        first = adapter.write_raw_rc_async((1500, 1500, 1000, 1500, 1000, 1000, 1000, 1000))
+        second = adapter.write_raw_rc_async((1510, 1490, 1010, 1500, 1000, 1000, 1000, 1000))
+
+        before_ack = adapter.snapshot_stats()
+        self.assertEqual(before_ack.set_raw_rc_write_success_count, 2)
+        self.assertEqual(before_ack.set_raw_rc_ack_count, 0)
+        self.assertEqual(before_ack.set_raw_rc_pending_depth, 2)
+        transport.inject(
+            encode_msp_frame(MSP_SET_RAW_RC, direction=">"),
+            encode_msp_frame(MSP_SET_RAW_RC, direction=">"),
+        )
+
+        responses = adapter.drain_async_responses(1.0)
+
+        self.assertEqual([item.request_id for item in responses], [first, second])
+        self.assertEqual(adapter.snapshot_stats().set_raw_rc_ack_count, 2)
+
+    def test_async_allows_only_one_outstanding_request_per_telemetry_command(self):
+        transport = FakeTransport([])
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        adapter.begin_async_pipeline()
+
+        first = adapter.queue_async_request(MSP_STATUS)
+        duplicate = adapter.queue_async_request(MSP_STATUS)
+
+        self.assertIsNotNone(first)
+        self.assertIsNone(duplicate)
+        self.assertEqual(len(transport.writes), 1)
 
 
 if __name__ == "__main__":

@@ -10,10 +10,11 @@
   },
   "msp_runtime": {
     "io_worker_enabled": false,
+    "transport_mode": "async_pipeline",
     "telemetry_poll_hz": 5.0,
     "status_poll_hz": 5.0,
     "attitude_poll_hz": 10.0,
-    "raw_imu_poll_hz": 20.0,
+    "raw_imu_poll_hz": 5.0,
     "rc_poll_hz": 10.0,
     "analog_poll_hz": 2.0,
     "control_publish_hz": 50.0,
@@ -22,7 +23,9 @@
     "aux_arm_channel_zero_based": 4,
     "throttle_channel_zero_based": 2,
     "set_raw_rc_channel_map": "AETR1234",
-    "throttle_handover_s": 0.4
+    "throttle_handover_s": 0.4,
+    "response_drain_budget_ms": 3.0,
+    "response_stale_s": 0.25
   },
   "logging": {
     "platform_health_hz": 1.0
@@ -67,7 +70,16 @@
       -0.00021461333729847564,
       1.4612166830713538
     ],
-    "pitch_up_deg": 90.0
+    "pitch_up_deg": 90.0,
+    "timestamp_source": "capture_return_monotonic",
+    "intrinsic_calibration_id": "unarchived_candidate_640x512",
+    "extrinsic_validation": {
+      "verified": false,
+      "body_frame": "FRD",
+      "camera_frame": "opencv_x_right_y_down_z_forward",
+      "expected_optical_axis_body": [0.0, 0.0, -1.0],
+      "max_optical_axis_error_deg": 5.0
+    }
   },
   "rknn_detector": {
     "library": "native/rknn_detector/build/librknn_detector_bridge.so",
@@ -134,7 +146,22 @@
       [0.0, 0.0, 0.0]
     ],
     "hover_thrust": 0.5,
-    "yaw_rate_bias_deg_s": 0.0
+    "yaw_rate_bias_deg_s": 0.0,
+    "entry_handoff": {
+      "enabled": false,
+      "duration_s": 0.8,
+      "gyro_max_age_s": 0.25,
+      "rate_source": "zero"
+    },
+    "tilt_envelope": {
+      "enabled": false,
+      "max_roll_angle_deg": 35.0,
+      "max_pitch_angle_deg": 35.0,
+      "softcap_band_deg": 10.0,
+      "hardcap_margin_deg": 5.0,
+      "hardcap_level_kp": 3.0,
+      "hardcap_max_level_rate_deg_s": 60.0
+    }
   },
   "safety": {
     "telemetry_timeout_s": 0.5,

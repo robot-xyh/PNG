@@ -5,12 +5,16 @@ import numpy as np
 from vision_guidance.flight_control import (
     BetaflightSafetyStateMachine,
     CommandWatchdog,
+    EntryHandoffConfig,
+    GuidanceCommandShaper,
+    GuidanceCommandShaperConfig,
     GuidanceSetpoint,
     GuidanceSetpointHold,
     RcCommandMapper,
     RcMappingConfig,
     SafetyInputs,
     SafetyState,
+    TiltEnvelopeConfig,
     aux_range_enabled,
     guidance_eval_to_setpoint,
 )
@@ -18,6 +22,26 @@ from vision_guidance.types import GuidanceEval
 
 
 class FlightControlTest(unittest.TestCase):
+    @staticmethod
+    def _shape(
+        shaper,
+        setpoint,
+        *,
+        timestamp=1.0,
+        gate_open=True,
+        attitude_deg=(0.0, 0.0),
+        gyro_deg_s=(0.0, 0.0),
+        gyro_age_s=0.0,
+    ):
+        return shaper.update(
+            setpoint,
+            timestamp=timestamp,
+            gate_open=gate_open,
+            attitude_deg=attitude_deg,
+            gyro_deg_s=gyro_deg_s,
+            gyro_age_s=gyro_age_s,
+        )
+
     def test_rc_mapper_maps_rates_and_thrust_to_aetr_channels(self):
         mapper = RcCommandMapper(
             RcMappingConfig(
@@ -268,6 +292,189 @@ class FlightControlTest(unittest.TestCase):
         self.assertFalse(hold.update(missing, timestamp=2.05, allow_hold=True, gate_open=False).valid)
         self.assertFalse(hold.update(missing, timestamp=2.10, allow_hold=True, gate_open=True).valid)
 
+    def test_command_shaper_entry_handoff_uses_fresh_gyro_and_smoothstep(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(
+                entry_handoff=EntryHandoffConfig(
+                    enabled=True,
+                    duration_s=0.8,
+                    gyro_max_age_s=0.25,
+                    rate_source="gyro",
+                )
+            )
+        )
+        target = GuidanceSetpoint(
+            timestamp=1.0,
+            roll_rate_deg_s=10.0,
+            pitch_rate_deg_s=20.0,
+            yaw_rate_deg_s=5.0,
+            thrust=0.078,
+            source="guidance_eval",
+        )
+
+        start, start_diag = self._shape(
+            shaper,
+            target,
+            timestamp=1.0,
+            gyro_deg_s=(2.0, -4.0),
+            gyro_age_s=0.1,
+        )
+        middle, middle_diag = self._shape(shaper, target, timestamp=1.4)
+        end, end_diag = self._shape(shaper, target, timestamp=1.8)
+
+        self.assertEqual((start.roll_rate_deg_s, start.pitch_rate_deg_s), (2.0, -4.0))
+        self.assertEqual(start_diag.entry_source, "gyro")
+        self.assertTrue(start_diag.entry_active)
+        self.assertAlmostEqual(middle_diag.entry_progress, 0.5)
+        self.assertAlmostEqual(middle.roll_rate_deg_s, 6.0)
+        self.assertAlmostEqual(middle.pitch_rate_deg_s, 8.0)
+        self.assertEqual(end.roll_rate_deg_s, target.roll_rate_deg_s)
+        self.assertEqual(end.pitch_rate_deg_s, target.pitch_rate_deg_s)
+        self.assertFalse(end_diag.entry_active)
+        self.assertEqual(end.yaw_rate_deg_s, target.yaw_rate_deg_s)
+        self.assertEqual(end.thrust, target.thrust)
+        self.assertEqual(end.source, target.source)
+
+    def test_command_shaper_entry_uses_zero_for_stale_gyro_and_resets_on_gate_close(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(
+                entry_handoff=EntryHandoffConfig(enabled=True, rate_source="gyro")
+            )
+        )
+        target = GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=10.0, pitch_rate_deg_s=-5.0)
+
+        first, first_diag = self._shape(
+            shaper,
+            target,
+            timestamp=1.0,
+            gyro_deg_s=(4.0, 3.0),
+            gyro_age_s=0.3,
+        )
+        self.assertEqual((first.roll_rate_deg_s, first.pitch_rate_deg_s), (0.0, 0.0))
+        self.assertEqual(first_diag.entry_source, "zero")
+
+        self._shape(shaper, target, timestamp=1.1, gate_open=False)
+        restarted, restarted_diag = self._shape(
+            shaper,
+            target,
+            timestamp=2.0,
+            gyro_deg_s=(-2.0, 1.0),
+            gyro_age_s=0.0,
+        )
+        self.assertEqual((restarted.roll_rate_deg_s, restarted.pitch_rate_deg_s), (-2.0, 1.0))
+        self.assertEqual(restarted_diag.entry_source, "gyro")
+        self.assertAlmostEqual(restarted_diag.entry_progress, 0.0)
+
+    def test_command_shaper_zero_rate_source_ignores_fresh_gyro(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(
+                entry_handoff=EntryHandoffConfig(enabled=True, rate_source="zero")
+            )
+        )
+        target = GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=8.0, pitch_rate_deg_s=-6.0)
+
+        start, diagnostics = self._shape(
+            shaper,
+            target,
+            timestamp=1.0,
+            gyro_deg_s=(300.0, -400.0),
+            gyro_age_s=0.0,
+        )
+
+        self.assertEqual((start.roll_rate_deg_s, start.pitch_rate_deg_s), (0.0, 0.0))
+        self.assertEqual(diagnostics.entry_source, "zero")
+
+    def test_tilt_envelope_softcap_is_symmetric_and_preserves_inward_commands(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(
+                tilt_envelope=TiltEnvelopeConfig(
+                    enabled=True,
+                    max_roll_angle_deg=35.0,
+                    max_pitch_angle_deg=35.0,
+                    softcap_band_deg=10.0,
+                    hardcap_margin_deg=5.0,
+                    hardcap_level_kp=3.0,
+                    hardcap_max_level_rate_deg_s=3.0,
+                )
+            )
+        )
+        positive = GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=10.0)
+        shaped_positive, positive_diag = self._shape(
+            shaper, positive, attitude_deg=(30.0, 0.0)
+        )
+        self.assertAlmostEqual(shaped_positive.roll_rate_deg_s, 5.0)
+        self.assertAlmostEqual(positive_diag.roll_softcap_factor, 0.5)
+
+        shaper.reset()
+        negative = GuidanceSetpoint(timestamp=2.0, roll_rate_deg_s=-10.0)
+        shaped_negative, negative_diag = self._shape(
+            shaper, negative, timestamp=2.0, attitude_deg=(-30.0, 0.0)
+        )
+        self.assertAlmostEqual(shaped_negative.roll_rate_deg_s, -5.0)
+        self.assertAlmostEqual(negative_diag.roll_softcap_factor, 0.5)
+
+        shaper.reset()
+        inward = GuidanceSetpoint(timestamp=3.0, roll_rate_deg_s=-10.0, pitch_rate_deg_s=4.0)
+        shaped_inward, inward_diag = self._shape(
+            shaper, inward, timestamp=3.0, attitude_deg=(30.0, -30.0)
+        )
+        self.assertEqual(shaped_inward.roll_rate_deg_s, -10.0)
+        self.assertEqual(shaped_inward.pitch_rate_deg_s, 4.0)
+        self.assertEqual(inward_diag.roll_softcap_factor, 1.0)
+        self.assertEqual(inward_diag.pitch_softcap_factor, 1.0)
+
+    def test_tilt_envelope_hard_region_blends_to_bounded_leveling_rate(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(
+                tilt_envelope=TiltEnvelopeConfig(
+                    enabled=True,
+                    max_roll_angle_deg=35.0,
+                    max_pitch_angle_deg=35.0,
+                    softcap_band_deg=10.0,
+                    hardcap_margin_deg=5.0,
+                    hardcap_level_kp=3.0,
+                    hardcap_max_level_rate_deg_s=3.0,
+                )
+            )
+        )
+        target = GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=10.0, pitch_rate_deg_s=-10.0)
+
+        middle, middle_diag = self._shape(
+            shaper, target, attitude_deg=(37.5, -37.5)
+        )
+        self.assertAlmostEqual(middle.roll_rate_deg_s, -1.5)
+        self.assertAlmostEqual(middle.pitch_rate_deg_s, 1.5)
+        self.assertAlmostEqual(middle_diag.roll_level_weight, 0.5)
+        self.assertFalse(middle_diag.hardcap_active)
+
+        full, full_diag = self._shape(
+            shaper, target, timestamp=1.1, attitude_deg=(40.0, -40.0)
+        )
+        self.assertEqual(full.roll_rate_deg_s, -3.0)
+        self.assertEqual(full.pitch_rate_deg_s, 3.0)
+        self.assertEqual(full_diag.roll_level_weight, 1.0)
+        self.assertTrue(full_diag.hardcap_active)
+
+    def test_tilt_envelope_fails_closed_without_finite_attitude(self):
+        shaper = GuidanceCommandShaper(
+            GuidanceCommandShaperConfig(tilt_envelope=TiltEnvelopeConfig(enabled=True))
+        )
+        target = GuidanceSetpoint(timestamp=1.0, roll_rate_deg_s=1.0)
+
+        missing, missing_diag = self._shape(shaper, target, attitude_deg=None)
+        nonfinite, nonfinite_diag = self._shape(
+            shaper,
+            target,
+            timestamp=2.0,
+            attitude_deg=(float("nan"), 0.0),
+        )
+
+        self.assertFalse(missing.valid)
+        self.assertEqual(missing.reject_reason, "tilt_attitude_unavailable")
+        self.assertFalse(missing_diag.valid)
+        self.assertFalse(nonfinite.valid)
+        self.assertEqual(nonfinite_diag.reason, "tilt_attitude_unavailable")
+
     def test_control_authorization_gates_fail_closed(self):
         base = {
             "control_requested": True,
@@ -291,6 +498,7 @@ class FlightControlTest(unittest.TestCase):
             ("override_available", False, "msp_override_unavailable"),
             ("override_active", False, "msp_override_inactive"),
             ("prefill_ready", False, "msp_prefill_not_ready"),
+            ("msp_response_fresh", False, "msp_set_raw_rc_ack_stale"),
             ("armed", False, "not_armed"),
             ("physical_rc_fresh", False, "physical_rc_stale"),
         )

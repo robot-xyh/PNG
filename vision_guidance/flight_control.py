@@ -102,6 +102,335 @@ class GuidanceSetpointHold:
 
 
 @dataclass(frozen=True)
+class EntryHandoffConfig:
+    enabled: bool = False
+    duration_s: float = 0.8
+    gyro_max_age_s: float = 0.25
+    rate_source: str = "zero"
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.duration_s) or self.duration_s < 0.0:
+            raise ValueError("entry handoff duration_s must be finite and non-negative")
+        if not np.isfinite(self.gyro_max_age_s) or self.gyro_max_age_s <= 0.0:
+            raise ValueError("entry handoff gyro_max_age_s must be finite and positive")
+        if self.rate_source not in {"zero", "gyro"}:
+            raise ValueError("entry handoff rate_source must be zero or gyro")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "EntryHandoffConfig":
+        return cls(
+            enabled=bool(values.get("enabled", False)),
+            duration_s=float(values.get("duration_s", 0.8)),
+            gyro_max_age_s=float(values.get("gyro_max_age_s", 0.25)),
+            rate_source=str(values.get("rate_source", "zero")),
+        )
+
+
+@dataclass(frozen=True)
+class TiltEnvelopeConfig:
+    enabled: bool = False
+    max_roll_angle_deg: float = 35.0
+    max_pitch_angle_deg: float = 35.0
+    softcap_band_deg: float = 10.0
+    hardcap_margin_deg: float = 5.0
+    hardcap_level_kp: float = 3.0
+    hardcap_max_level_rate_deg_s: float = 60.0
+
+    def __post_init__(self) -> None:
+        for name in ("max_roll_angle_deg", "max_pitch_angle_deg"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value <= 0.0 or value > 90.0:
+                raise ValueError(f"{name} must be finite and in (0, 90]")
+        if (
+            not np.isfinite(self.softcap_band_deg)
+            or self.softcap_band_deg < 0.0
+            or self.softcap_band_deg >= min(self.max_roll_angle_deg, self.max_pitch_angle_deg)
+        ):
+            raise ValueError("softcap_band_deg must be finite, non-negative, and below both angle limits")
+        for name in ("hardcap_margin_deg", "hardcap_level_kp", "hardcap_max_level_rate_deg_s"):
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value < 0.0:
+                raise ValueError(f"{name} must be finite and non-negative")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "TiltEnvelopeConfig":
+        return cls(
+            enabled=bool(values.get("enabled", False)),
+            max_roll_angle_deg=float(values.get("max_roll_angle_deg", 35.0)),
+            max_pitch_angle_deg=float(values.get("max_pitch_angle_deg", 35.0)),
+            softcap_band_deg=float(values.get("softcap_band_deg", 10.0)),
+            hardcap_margin_deg=float(values.get("hardcap_margin_deg", 5.0)),
+            hardcap_level_kp=float(values.get("hardcap_level_kp", 3.0)),
+            hardcap_max_level_rate_deg_s=float(values.get("hardcap_max_level_rate_deg_s", 60.0)),
+        )
+
+
+@dataclass(frozen=True)
+class GuidanceCommandShaperConfig:
+    entry_handoff: EntryHandoffConfig = field(default_factory=EntryHandoffConfig)
+    tilt_envelope: TiltEnvelopeConfig = field(default_factory=TiltEnvelopeConfig)
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "GuidanceCommandShaperConfig":
+        entry = values.get("entry_handoff", {})
+        tilt = values.get("tilt_envelope", {})
+        if not isinstance(entry, Mapping) or not isinstance(tilt, Mapping):
+            raise ValueError("entry_handoff and tilt_envelope must be mappings")
+        return cls(
+            entry_handoff=EntryHandoffConfig.from_mapping(entry),
+            tilt_envelope=TiltEnvelopeConfig.from_mapping(tilt),
+        )
+
+
+@dataclass(frozen=True)
+class GuidanceCommandShapingDiagnostics:
+    valid: bool = True
+    reason: str = ""
+    input_roll_rate_deg_s: float = 0.0
+    input_pitch_rate_deg_s: float = 0.0
+    output_roll_rate_deg_s: float = 0.0
+    output_pitch_rate_deg_s: float = 0.0
+    entry_active: bool = False
+    entry_progress: float = 1.0
+    entry_source: str = "disabled"
+    entry_start_roll_rate_deg_s: float = 0.0
+    entry_start_pitch_rate_deg_s: float = 0.0
+    roll_attitude_deg: float | None = None
+    pitch_attitude_deg: float | None = None
+    roll_softcap_factor: float = 1.0
+    pitch_softcap_factor: float = 1.0
+    roll_level_weight: float = 0.0
+    pitch_level_weight: float = 0.0
+    hardcap_active: bool = False
+
+
+class GuidanceCommandShaper:
+    """Smooth algorithm engagement and constrain outward rates near tilt limits."""
+
+    def __init__(self, config: GuidanceCommandShaperConfig):
+        self.config = config
+        self.reset()
+
+    def reset(self) -> None:
+        self._engaged = False
+        self._entry_start_s: float | None = None
+        self._entry_start_roll_rate_deg_s = 0.0
+        self._entry_start_pitch_rate_deg_s = 0.0
+        self._entry_source = "disabled"
+
+    def update(
+        self,
+        setpoint: GuidanceSetpoint,
+        *,
+        timestamp: float,
+        gate_open: bool,
+        attitude_deg: Sequence[float] | None,
+        gyro_deg_s: Sequence[float] | None,
+        gyro_age_s: float | None,
+    ) -> tuple[GuidanceSetpoint, GuidanceCommandShapingDiagnostics]:
+        now = float(timestamp)
+        input_roll = float(setpoint.roll_rate_deg_s)
+        input_pitch = float(setpoint.pitch_rate_deg_s)
+        if not gate_open or not setpoint.valid:
+            self.reset()
+            return setpoint, GuidanceCommandShapingDiagnostics(
+                valid=setpoint.valid,
+                reason=setpoint.reject_reason or ("gate_closed" if not gate_open else ""),
+                input_roll_rate_deg_s=input_roll,
+                input_pitch_rate_deg_s=input_pitch,
+                output_roll_rate_deg_s=input_roll,
+                output_pitch_rate_deg_s=input_pitch,
+            )
+
+        if not np.all(
+            np.isfinite(
+                [
+                    now,
+                    setpoint.roll_rate_deg_s,
+                    setpoint.pitch_rate_deg_s,
+                    setpoint.yaw_rate_deg_s,
+                    setpoint.thrust,
+                ]
+            )
+        ):
+            self.reset()
+            invalid = replace(setpoint, valid=False, reject_reason="command_shaper_nonfinite_setpoint")
+            return invalid, GuidanceCommandShapingDiagnostics(
+                valid=False,
+                reason=invalid.reject_reason,
+                input_roll_rate_deg_s=input_roll,
+                input_pitch_rate_deg_s=input_pitch,
+                output_roll_rate_deg_s=0.0,
+                output_pitch_rate_deg_s=0.0,
+            )
+
+        tilt = self.config.tilt_envelope
+        attitude = _finite_pair(attitude_deg)
+        if tilt.enabled and attitude is None:
+            self.reset()
+            invalid = replace(setpoint, valid=False, reject_reason="tilt_attitude_unavailable")
+            return invalid, GuidanceCommandShapingDiagnostics(
+                valid=False,
+                reason=invalid.reject_reason,
+                input_roll_rate_deg_s=input_roll,
+                input_pitch_rate_deg_s=input_pitch,
+                output_roll_rate_deg_s=0.0,
+                output_pitch_rate_deg_s=0.0,
+            )
+
+        if not self._engaged:
+            self._start_entry(now, gyro_deg_s, gyro_age_s)
+
+        roll_rate, pitch_rate, entry_active, entry_progress = self._apply_entry(
+            input_roll,
+            input_pitch,
+            now,
+        )
+        roll_factor = 1.0
+        pitch_factor = 1.0
+        roll_weight = 0.0
+        pitch_weight = 0.0
+        if tilt.enabled and attitude is not None:
+            roll_rate, roll_factor, roll_weight = _apply_tilt_axis(
+                roll_rate,
+                attitude[0],
+                tilt.max_roll_angle_deg,
+                tilt.softcap_band_deg,
+                tilt.hardcap_margin_deg,
+                tilt.hardcap_level_kp,
+                tilt.hardcap_max_level_rate_deg_s,
+            )
+            pitch_rate, pitch_factor, pitch_weight = _apply_tilt_axis(
+                pitch_rate,
+                attitude[1],
+                tilt.max_pitch_angle_deg,
+                tilt.softcap_band_deg,
+                tilt.hardcap_margin_deg,
+                tilt.hardcap_level_kp,
+                tilt.hardcap_max_level_rate_deg_s,
+            )
+
+        shaped = replace(
+            setpoint,
+            roll_rate_deg_s=roll_rate,
+            pitch_rate_deg_s=pitch_rate,
+        )
+        return shaped, GuidanceCommandShapingDiagnostics(
+            input_roll_rate_deg_s=input_roll,
+            input_pitch_rate_deg_s=input_pitch,
+            output_roll_rate_deg_s=roll_rate,
+            output_pitch_rate_deg_s=pitch_rate,
+            entry_active=entry_active,
+            entry_progress=entry_progress,
+            entry_source=self._entry_source,
+            entry_start_roll_rate_deg_s=self._entry_start_roll_rate_deg_s,
+            entry_start_pitch_rate_deg_s=self._entry_start_pitch_rate_deg_s,
+            roll_attitude_deg=None if attitude is None else attitude[0],
+            pitch_attitude_deg=None if attitude is None else attitude[1],
+            roll_softcap_factor=roll_factor,
+            pitch_softcap_factor=pitch_factor,
+            roll_level_weight=roll_weight,
+            pitch_level_weight=pitch_weight,
+            hardcap_active=max(roll_weight, pitch_weight) > 0.5,
+        )
+
+    def _start_entry(
+        self,
+        timestamp: float,
+        gyro_deg_s: Sequence[float] | None,
+        gyro_age_s: float | None,
+    ) -> None:
+        self._engaged = True
+        self._entry_start_s = timestamp
+        self._entry_start_roll_rate_deg_s = 0.0
+        self._entry_start_pitch_rate_deg_s = 0.0
+        self._entry_source = "zero"
+        entry = self.config.entry_handoff
+        gyro = _finite_pair(gyro_deg_s)
+        gyro_fresh = (
+            gyro is not None
+            and gyro_age_s is not None
+            and np.isfinite(gyro_age_s)
+            and 0.0 <= float(gyro_age_s) <= entry.gyro_max_age_s
+        )
+        if entry.enabled and entry.rate_source == "gyro" and gyro_fresh and gyro is not None:
+            self._entry_start_roll_rate_deg_s = gyro[0]
+            self._entry_start_pitch_rate_deg_s = gyro[1]
+            self._entry_source = "gyro"
+        elif not entry.enabled:
+            self._entry_source = "disabled"
+
+    def _apply_entry(
+        self,
+        target_roll_rate_deg_s: float,
+        target_pitch_rate_deg_s: float,
+        timestamp: float,
+    ) -> tuple[float, float, bool, float]:
+        entry = self.config.entry_handoff
+        if not entry.enabled or entry.duration_s <= 0.0 or self._entry_start_s is None:
+            return target_roll_rate_deg_s, target_pitch_rate_deg_s, False, 1.0
+        elapsed_s = max(0.0, timestamp - self._entry_start_s)
+        linear_progress = float(np.clip(elapsed_s / max(1.0e-9, entry.duration_s), 0.0, 1.0))
+        progress = linear_progress * linear_progress * (3.0 - 2.0 * linear_progress)
+        roll_rate = _lerp(self._entry_start_roll_rate_deg_s, target_roll_rate_deg_s, progress)
+        pitch_rate = _lerp(self._entry_start_pitch_rate_deg_s, target_pitch_rate_deg_s, progress)
+        return roll_rate, pitch_rate, linear_progress < 1.0, progress
+
+
+def _finite_pair(values: Sequence[float] | None) -> tuple[float, float] | None:
+    if values is None or len(values) < 2:
+        return None
+    pair = (float(values[0]), float(values[1]))
+    return pair if np.all(np.isfinite(pair)) else None
+
+
+def _lerp(start: float, end: float, progress: float) -> float:
+    return float(start + (end - start) * progress)
+
+
+def _smoothstep01(value: float) -> float:
+    x = float(np.clip(value, 0.0, 1.0))
+    return x * x * (3.0 - 2.0 * x)
+
+
+def _apply_tilt_axis(
+    command_rate_deg_s: float,
+    attitude_deg: float,
+    max_angle_deg: float,
+    softcap_band_deg: float,
+    hardcap_margin_deg: float,
+    level_kp: float,
+    max_level_rate_deg_s: float,
+) -> tuple[float, float, float]:
+    command = float(command_rate_deg_s)
+    attitude = float(attitude_deg)
+    outward = attitude * command > 0.0
+    abs_attitude = abs(attitude)
+    if not outward or abs_attitude < max_angle_deg - softcap_band_deg:
+        softcap_factor = 1.0
+    elif abs_attitude >= max_angle_deg:
+        softcap_factor = 0.0
+    elif softcap_band_deg > 0.0:
+        softcap_factor = 1.0 - float(
+            np.clip(
+                (abs_attitude - (max_angle_deg - softcap_band_deg)) / softcap_band_deg,
+                0.0,
+                1.0,
+            )
+        )
+    else:
+        softcap_factor = 1.0
+    soft_command = command * softcap_factor
+    level_rate = float(np.clip(-level_kp * attitude, -max_level_rate_deg_s, max_level_rate_deg_s))
+    if hardcap_margin_deg > 1.0e-9:
+        level_weight = _smoothstep01((abs_attitude - max_angle_deg) / hardcap_margin_deg)
+    else:
+        level_weight = 1.0 if abs_attitude >= max_angle_deg else 0.0
+    output = _lerp(soft_command, level_rate, level_weight)
+    return output, softcap_factor, level_weight
+
+
+@dataclass(frozen=True)
 class RcCommand:
     timestamp: float
     channels: tuple[int, ...]
@@ -477,6 +806,7 @@ class SafetyInputs:
     override_available: bool = False
     override_active: bool = False
     prefill_ready: bool = True
+    msp_response_fresh: bool = True
     physical_rc_fresh: bool = False
     snapshot_approved: bool = False
     config_conflict_free: bool = False
@@ -508,6 +838,8 @@ class BetaflightSafetyStateMachine:
             return self._set(SafetyState.READY, False, "msp_override_inactive")
         if not inputs.prefill_ready:
             return self._set(SafetyState.FAILSAFE, False, "msp_prefill_not_ready")
+        if not inputs.msp_response_fresh:
+            return self._set(SafetyState.FAILSAFE, False, "msp_set_raw_rc_ack_stale")
         if not inputs.armed:
             return self._set(SafetyState.READY, False, "not_armed")
         if not inputs.physical_rc_fresh:

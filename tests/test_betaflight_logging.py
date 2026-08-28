@@ -16,7 +16,11 @@ from vision_guidance.betaflight_msp import (
     RawImuTelemetry,
     StatusTelemetry,
 )
-from vision_guidance.flight_control import GuidanceSetpoint, RcCommand
+from vision_guidance.flight_control import (
+    GuidanceCommandShapingDiagnostics,
+    GuidanceSetpoint,
+    RcCommand,
+)
 from vision_guidance.fusion import VisionGuidanceResult
 from vision_guidance.types import CameraIntrinsics, FrameDetection, GuidanceEval, LOSEstimate, TTCState
 
@@ -288,6 +292,24 @@ class BetaflightLoggingTest(unittest.TestCase):
 
         self.assertEqual(error, "msp_io_worker_required")
 
+    def test_override_mode_can_explicitly_satisfy_shared_rc7_aux_gate(self):
+        telemetry = BetaflightTelemetry(
+            timestamp=1.0,
+            rc_channels=(885, 885, 885, 885, 1000, 1000, 1000, 1000),
+        )
+        safety = {
+            "require_aux_enable": True,
+            "aux_enable": {
+                "channel_index": 7,
+                "min_us": 1700,
+                "max_us": 2100,
+                "satisfied_by_override_mode": True,
+            },
+        }
+
+        self.assertFalse(runner._aux_enabled(telemetry, safety, override_active=False))
+        self.assertTrue(runner._aux_enabled(telemetry, safety, override_active=True))
+
     def test_rk3588_torch_runtime_disables_mkldnn_and_limits_threads(self):
         fake_torch = SimpleNamespace(
             backends=SimpleNamespace(mkldnn=SimpleNamespace(enabled=True)),
@@ -359,6 +381,31 @@ class BetaflightLoggingTest(unittest.TestCase):
             thrust=0.5,
             source="guidance_eval",
         )
+        pre_shape_setpoint = GuidanceSetpoint(
+            timestamp=10.1,
+            roll_rate_deg_s=4.0,
+            pitch_rate_deg_s=6.0,
+            yaw_rate_deg_s=3.0,
+            thrust=0.5,
+            source="guidance_eval",
+        )
+        shaping = GuidanceCommandShapingDiagnostics(
+            input_roll_rate_deg_s=4.0,
+            input_pitch_rate_deg_s=6.0,
+            output_roll_rate_deg_s=1.0,
+            output_pitch_rate_deg_s=2.0,
+            entry_active=True,
+            entry_progress=0.25,
+            entry_source="gyro",
+            entry_start_roll_rate_deg_s=0.5,
+            entry_start_pitch_rate_deg_s=-0.5,
+            roll_attitude_deg=30.0,
+            pitch_attitude_deg=-20.0,
+            roll_softcap_factor=0.5,
+            pitch_softcap_factor=1.0,
+            roll_level_weight=0.0,
+            pitch_level_weight=0.0,
+        )
         rc_command = RcCommand(
             timestamp=10.1,
             channels=(1500, 1500, 1000, 1500, 1800, 1500, 1500, 1500),
@@ -409,7 +456,9 @@ class BetaflightLoggingTest(unittest.TestCase):
             },
             detection=detection,
             result=result,
+            pre_shape_setpoint=pre_shape_setpoint,
             setpoint=setpoint,
+            shaping=shaping,
             rc_command=rc_command,
             safety_state="ACTIVE",
             safety_reason="active",
@@ -442,7 +491,8 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["rc_in_all"], "1000,1100,1200,1300,1800,1500,1500,1500")
         self.assertEqual(row["rc_sent_all"], ",".join(str(value) for value in range(1000, 1016)))
         self.assertEqual(row["rc_sent_ch8"], 1007)
-        self.assertEqual(row["gyro_roll_deg_s"], 4.0)
+        self.assertEqual(row["gyro_msp_raw_x"], 4.0)
+        self.assertEqual(row["gyro_roll_deg_s"], "")
         self.assertEqual(row["map_limited_roll_rate_deg_s"], 3.0)
         self.assertEqual(row["rc_target_ch3"], 1000)
         self.assertEqual(row["bbox_clip_left"], 1)
@@ -451,6 +501,12 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["lambda_dot_I_y"], "0.100000000")
         self.assertEqual(row["ttc_s"], "2.500000000")
         self.assertEqual(row["sp_source"], "guidance_eval")
+        self.assertEqual(row["pre_shape_sp_roll_rate_deg_s"], "4.000000")
+        self.assertEqual(row["sp_roll_rate_deg_s"], "1.000000")
+        self.assertEqual(row["entry_handoff_progress"], "0.250000")
+        self.assertEqual(row["entry_handoff_source"], "gyro")
+        self.assertEqual(row["tilt_roll_softcap_factor"], "0.500000")
+        self.assertEqual(row["tilt_roll_attitude_deg"], "30.000000")
         self.assertEqual(row["rc_raw_ch3"], 900)
         self.assertEqual(row["rc_clipped_ch3"], 1)
         self.assertEqual(row["rc_slew_limited_ch3"], 1)
@@ -467,7 +523,13 @@ class BetaflightLoggingTest(unittest.TestCase):
             detector_stats={"detector_source": "none", "detector_reject_reason": "detector_disabled"},
             detection=None,
             result=None,
+            pre_shape_setpoint=GuidanceSetpoint(
+                timestamp=1.0, valid=False, reject_reason="guidance_missing"
+            ),
             setpoint=GuidanceSetpoint(timestamp=1.0, valid=False, reject_reason="guidance_missing"),
+            shaping=GuidanceCommandShapingDiagnostics(
+                valid=False, reason="guidance_missing"
+            ),
             rc_command=rc_command,
             safety_state="LOG_ONLY",
             safety_reason="log_only",
@@ -514,7 +576,33 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 6)
+            self.assertEqual(data["log_schema_version"], 9)
+
+    def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):
+        legacy = {"camera": {"pitch_up_deg": 90.0}}
+        metadata = runner._camera_calibration_metadata(legacy, runner._camera_mount(legacy))
+        self.assertEqual(metadata["extrinsic"]["source"], "legacy_pitch_up_deg")
+        self.assertAlmostEqual(metadata["extrinsic"]["optical_axis_error_deg"], 90.0)
+        self.assertFalse(metadata["extrinsic"]["control_ready"])
+        with self.assertRaisesRegex(RuntimeError, "R_BC must be explicit"):
+            runner._camera_mount(legacy, require_control_ready=True)
+
+        explicit = {
+            "camera": {
+                "R_BC": [[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, -1.0]],
+                "extrinsic_validation": {
+                    "verified": True,
+                    "body_frame": "FRD",
+                    "camera_frame": "opencv_x_right_y_down_z_forward",
+                    "expected_optical_axis_body": [0.0, 0.0, -1.0],
+                    "max_optical_axis_error_deg": 5.0,
+                },
+            }
+        }
+        rotation = runner._camera_mount(explicit, require_control_ready=True)
+        metadata = runner._camera_calibration_metadata(explicit, rotation)
+        self.assertTrue(metadata["extrinsic"]["control_ready"])
+        self.assertFalse(metadata["timestamp"]["hardware_exposure"])
 
     def test_edge_event_logger_writes_only_state_changes(self):
         with tempfile.TemporaryDirectory() as tmpdir:

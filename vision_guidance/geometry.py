@@ -68,6 +68,50 @@ def camera_to_body_mount(pitch_up_deg: float = 45.0) -> np.ndarray:
     return rotation_y(math.radians(pitch_up_deg))
 
 
+def validated_rotation_matrix(
+    matrix: np.ndarray,
+    *,
+    name: str = "rotation matrix",
+    atol: float = 1.0e-6,
+) -> np.ndarray:
+    """Return a finite, proper orthonormal rotation matrix or raise."""
+
+    value = np.asarray(matrix, dtype=float)
+    if value.shape != (3, 3):
+        raise ValueError(f"{name} must be 3x3")
+    if not np.all(np.isfinite(value)):
+        raise ValueError(f"{name} must contain only finite values")
+    orthonormal_error = float(np.linalg.norm(value.T @ value - np.eye(3), ord="fro"))
+    determinant = float(np.linalg.det(value))
+    if orthonormal_error > float(atol):
+        raise ValueError(f"{name} must be orthonormal")
+    if abs(determinant - 1.0) > float(atol):
+        raise ValueError(f"{name} must be a proper rotation with determinant +1")
+    return value
+
+
+def camera_mount_diagnostics(
+    R_BC: np.ndarray,
+    *,
+    expected_optical_axis_body: np.ndarray | tuple[float, float, float] = (0.0, 0.0, -1.0),
+) -> dict[str, float | list[float]]:
+    """Describe how OpenCV camera axes map into the Betaflight FRD body frame."""
+
+    rotation = validated_rotation_matrix(R_BC, name="camera.R_BC")
+    expected = normalize(np.asarray(expected_optical_axis_body, dtype=float))
+    optical_axis_body = normalize(rotation @ np.array([0.0, 0.0, 1.0], dtype=float))
+    cosine = float(np.clip(np.dot(optical_axis_body, expected), -1.0, 1.0))
+    return {
+        "determinant": float(np.linalg.det(rotation)),
+        "orthonormal_error": float(np.linalg.norm(rotation.T @ rotation - np.eye(3), ord="fro")),
+        "camera_x_axis_body": [float(value) for value in rotation[:, 0]],
+        "camera_y_axis_body": [float(value) for value in rotation[:, 1]],
+        "optical_axis_body": [float(value) for value in optical_axis_body],
+        "expected_optical_axis_body": [float(value) for value in expected],
+        "optical_axis_error_deg": math.degrees(math.acos(cosine)),
+    }
+
+
 def airsim_camera_zero_to_body() -> np.ndarray:
     """Map AirSim camera ray coordinates to body NED axes at zero gimbal angle.
 

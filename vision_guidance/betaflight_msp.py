@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -66,6 +67,18 @@ class AttitudeTelemetry:
     yaw_deg: float
 
     @property
+    def pitch_nose_up_deg(self) -> float:
+        """Return FRD/NED pitch, where positive pitch raises the nose."""
+
+        return -self.pitch_deg
+
+    @property
+    def euler_frd_deg(self) -> tuple[float, float, float]:
+        """Return roll/pitch/yaw using the FRD body-to-NED convention."""
+
+        return self.roll_deg, self.pitch_nose_up_deg, self.yaw_deg
+
+    @property
     def R_IB(self) -> np.ndarray:
         return attitude_degrees_to_R_IB(self.roll_deg, self.pitch_deg, self.yaw_deg)
 
@@ -81,7 +94,7 @@ class AnalogTelemetry:
 @dataclass(frozen=True)
 class RawImuTelemetry:
     acc_raw: tuple[int, int, int]
-    gyro_deg_s: tuple[float, float, float]
+    gyro_msp_raw: tuple[int, int, int]
     mag_raw: tuple[int, int, int]
 
 
@@ -112,6 +125,21 @@ class MspCommandStats:
     last_error: str = ""
 
 
+@dataclass(frozen=True)
+class AsyncMspResponse:
+    frame: MSPFrame
+    request_id: int | None
+    request_monotonic_s: float | None
+    response_monotonic_s: float
+
+
+@dataclass(frozen=True)
+class _PendingAsyncRequest:
+    request_id: int
+    command: int
+    sent_monotonic_s: float
+
+
 @dataclass
 class _MutableMspCommandStats:
     attempt_count: int = 0
@@ -131,6 +159,24 @@ class MspAdapterStats:
     rx_bytes: int = 0
     set_raw_rc_attempt_count: int = 0
     set_raw_rc_success_count: int = 0
+    set_raw_rc_write_attempt_count: int = 0
+    set_raw_rc_write_success_count: int = 0
+    set_raw_rc_write_error_count: int = 0
+    set_raw_rc_ack_count: int = 0
+    set_raw_rc_pending_depth: int = 0
+    set_raw_rc_last_write_monotonic_s: float | None = None
+    set_raw_rc_last_ack_monotonic_s: float | None = None
+    set_raw_rc_write_interval_s: float | None = None
+    set_raw_rc_write_max_interval_s: float | None = None
+    set_raw_rc_write_rate_hz: float | None = None
+    set_raw_rc_write_p50_interval_s: float | None = None
+    set_raw_rc_write_p95_interval_s: float | None = None
+    set_raw_rc_write_p99_interval_s: float | None = None
+    set_raw_rc_write_p999_interval_s: float | None = None
+    async_pending_telemetry_count: int = 0
+    rx_discarded_bytes: int = 0
+    rx_checksum_error_count: int = 0
+    rx_parser_error_count: int = 0
     command_stats: tuple[MspCommandStats, ...] = ()
 
     def for_command(self, command: int) -> MspCommandStats | None:
@@ -242,7 +288,7 @@ def parse_raw_imu(payload: bytes | bytearray) -> RawImuTelemetry:
     values = struct.unpack_from("<9h", data, 0)
     return RawImuTelemetry(
         acc_raw=tuple(int(value) for value in values[0:3]),
-        gyro_deg_s=tuple(float(value) for value in values[3:6]),
+        gyro_msp_raw=tuple(int(value) for value in values[3:6]),
         mag_raw=tuple(int(value) for value in values[6:9]),
     )
 
@@ -284,8 +330,16 @@ def pack_rc_channels(channels: Sequence[int]) -> bytes:
 
 
 def attitude_degrees_to_R_IB(roll_deg: float, pitch_deg: float, yaw_deg: float) -> np.ndarray:
+    """Convert raw MSP_ATTITUDE Euler angles to an FRD body-to-NED rotation.
+
+    MSP_ATTITUDE reports pitch with the Betaflight display convention: raising
+    the nose makes pitch negative. FRD/NED right-handed pitch is positive for
+    the same motion, so only pitch is negated here. Roll and heading already
+    match the FRD/NED convention.
+    """
+
     roll = np.deg2rad(float(roll_deg))
-    pitch = np.deg2rad(float(pitch_deg))
+    pitch = -np.deg2rad(float(pitch_deg))
     yaw = np.deg2rad(float(yaw_deg))
     return rotation_z(yaw) @ rotation_y(pitch) @ rotation_x(roll)
 
@@ -311,6 +365,25 @@ class BetaflightMSPAdapter:
         self._rx_bytes = 0
         self._set_raw_rc_attempt_count = 0
         self._set_raw_rc_success_count = 0
+        self._set_raw_rc_write_attempt_count = 0
+        self._set_raw_rc_write_success_count = 0
+        self._set_raw_rc_write_error_count = 0
+        self._set_raw_rc_ack_count = 0
+        self._set_raw_rc_last_write_s: float | None = None
+        self._set_raw_rc_last_ack_s: float | None = None
+        self._set_raw_rc_write_interval_s: float | None = None
+        self._set_raw_rc_write_max_interval_s: float | None = None
+        self._set_raw_rc_write_times: deque[float] = deque(maxlen=4096)
+        self._set_raw_rc_write_intervals: deque[float] = deque(maxlen=4096)
+        self._async_active = False
+        self._async_original_timeout: float | None = None
+        self._async_rx_buffer = bytearray()
+        self._async_request_sequence = 0
+        self._async_pending_telemetry: dict[int, _PendingAsyncRequest] = {}
+        self._async_pending_set_raw_rc: deque[_PendingAsyncRequest] = deque(maxlen=4096)
+        self._rx_discarded_bytes = 0
+        self._rx_checksum_error_count = 0
+        self._rx_parser_error_count = 0
         self._command_stats: dict[int, _MutableMspCommandStats] = {}
 
     def open(self) -> None:
@@ -329,6 +402,7 @@ class BetaflightMSPAdapter:
         self._owns_transport = True
 
     def close(self) -> None:
+        self.end_async_pipeline()
         if self.transport is not None and self._owns_transport:
             close = getattr(self.transport, "close", None)
             if callable(close):
@@ -338,6 +412,8 @@ class BetaflightMSPAdapter:
 
     def request(self, command: int, payload: bytes | bytearray = b"") -> MSPFrame:
         with self._io_lock:
+            if self._async_active:
+                raise RuntimeError("synchronous MSP request is unavailable while async pipeline is active")
             command = int(command)
             started_s = time.monotonic()
             command_stats = self._command_stats.setdefault(command, _MutableMspCommandStats())
@@ -345,6 +421,7 @@ class BetaflightMSPAdapter:
             self._request_count += 1
             if command == MSP_SET_RAW_RC:
                 self._set_raw_rc_attempt_count += 1
+                self._set_raw_rc_write_attempt_count += 1
             request_frame = encode_msp_frame(command, payload, direction="<")
             self._tx_bytes += len(request_frame)
             try:
@@ -357,6 +434,8 @@ class BetaflightMSPAdapter:
                 command_stats.max_rtt_ms = max(command_stats.max_rtt_ms or 0.0, rtt_ms)
                 command_stats.last_error = f"{type(exc).__name__}: {exc}"
                 self._request_error_count += 1
+                if command == MSP_SET_RAW_RC:
+                    self._set_raw_rc_write_error_count += 1
                 raise
             completed_s = time.monotonic()
             rtt_ms = 1000.0 * max(0.0, completed_s - started_s)
@@ -368,6 +447,10 @@ class BetaflightMSPAdapter:
             self._rx_bytes += 6 + len(response.payload)
             if command == MSP_SET_RAW_RC:
                 self._set_raw_rc_success_count += 1
+                self._set_raw_rc_write_success_count += 1
+                self._set_raw_rc_ack_count += 1
+                self._record_set_raw_rc_write(completed_s)
+                self._set_raw_rc_last_ack_s = completed_s
             return response
 
     def _request_locked(
@@ -395,6 +478,8 @@ class BetaflightMSPAdapter:
 
     def snapshot_stats(self) -> MspAdapterStats:
         with self._io_lock:
+            intervals = tuple(self._set_raw_rc_write_intervals)
+            write_times = tuple(self._set_raw_rc_write_times)
             return MspAdapterStats(
                 request_count=self._request_count,
                 request_error_count=self._request_error_count,
@@ -402,6 +487,24 @@ class BetaflightMSPAdapter:
                 rx_bytes=self._rx_bytes,
                 set_raw_rc_attempt_count=self._set_raw_rc_attempt_count,
                 set_raw_rc_success_count=self._set_raw_rc_success_count,
+                set_raw_rc_write_attempt_count=self._set_raw_rc_write_attempt_count,
+                set_raw_rc_write_success_count=self._set_raw_rc_write_success_count,
+                set_raw_rc_write_error_count=self._set_raw_rc_write_error_count,
+                set_raw_rc_ack_count=self._set_raw_rc_ack_count,
+                set_raw_rc_pending_depth=len(self._async_pending_set_raw_rc),
+                set_raw_rc_last_write_monotonic_s=self._set_raw_rc_last_write_s,
+                set_raw_rc_last_ack_monotonic_s=self._set_raw_rc_last_ack_s,
+                set_raw_rc_write_interval_s=self._set_raw_rc_write_interval_s,
+                set_raw_rc_write_max_interval_s=self._set_raw_rc_write_max_interval_s,
+                set_raw_rc_write_rate_hz=_sample_rate_hz(write_times),
+                set_raw_rc_write_p50_interval_s=_percentile(intervals, 50.0),
+                set_raw_rc_write_p95_interval_s=_percentile(intervals, 95.0),
+                set_raw_rc_write_p99_interval_s=_percentile(intervals, 99.0),
+                set_raw_rc_write_p999_interval_s=_percentile(intervals, 99.9),
+                async_pending_telemetry_count=len(self._async_pending_telemetry),
+                rx_discarded_bytes=self._rx_discarded_bytes,
+                rx_checksum_error_count=self._rx_checksum_error_count,
+                rx_parser_error_count=self._rx_parser_error_count,
                 command_stats=tuple(
                     MspCommandStats(
                         command=command,
@@ -483,6 +586,230 @@ class BetaflightMSPAdapter:
     def send_rc(self, command: RcCommand) -> None:
         self.send_raw_rc(command)
 
+    def begin_async_pipeline(self) -> None:
+        with self._io_lock:
+            self.open()
+            if self._async_active:
+                return
+            assert self.transport is not None
+            if hasattr(self.transport, "timeout"):
+                self._async_original_timeout = getattr(self.transport, "timeout")
+                setattr(self.transport, "timeout", 0)
+            self._async_active = True
+
+    def end_async_pipeline(self) -> None:
+        with self._io_lock:
+            if not self._async_active:
+                return
+            if self.transport is not None and hasattr(self.transport, "timeout"):
+                setattr(self.transport, "timeout", self._async_original_timeout)
+            self._async_active = False
+            self._async_original_timeout = None
+
+    def write_raw_rc_async(self, command: RcCommand | Sequence[int]) -> int:
+        channels = command.channels if isinstance(command, RcCommand) else tuple(int(v) for v in command)
+        with self._io_lock:
+            self._require_async_pipeline()
+            request = self._write_async_request_locked(MSP_SET_RAW_RC, pack_rc_channels(channels))
+            if len(self._async_pending_set_raw_rc) == self._async_pending_set_raw_rc.maxlen:
+                self._async_pending_set_raw_rc.popleft()
+                self._record_command_error_locked(MSP_SET_RAW_RC, "async SET_RAW_RC pending FIFO overflow")
+            self._async_pending_set_raw_rc.append(request)
+            return request.request_id
+
+    def queue_async_request(self, command: int) -> int | None:
+        command = int(command)
+        if command == MSP_SET_RAW_RC:
+            raise ValueError("use write_raw_rc_async for MSP_SET_RAW_RC")
+        with self._io_lock:
+            self._require_async_pipeline()
+            if command in self._async_pending_telemetry:
+                return None
+            request = self._write_async_request_locked(command, b"")
+            self._async_pending_telemetry[command] = request
+            return request.request_id
+
+    def async_request_pending(self, command: int) -> bool:
+        with self._io_lock:
+            return int(command) in self._async_pending_telemetry
+
+    def expire_async_requests(self, timeout_s: float, timestamp: float | None = None) -> tuple[int, ...]:
+        now = time.monotonic() if timestamp is None else float(timestamp)
+        timeout = max(0.001, float(timeout_s))
+        with self._io_lock:
+            expired = tuple(
+                command
+                for command, request in self._async_pending_telemetry.items()
+                if now - request.sent_monotonic_s > timeout
+            )
+            for command in expired:
+                self._async_pending_telemetry.pop(command, None)
+                self._record_command_error_locked(command, "async response timeout")
+            return expired
+
+    def drain_async_responses(self, budget_ms: float = 3.0) -> tuple[AsyncMspResponse, ...]:
+        deadline = time.monotonic() + max(0.0, float(budget_ms)) / 1000.0
+        responses: list[AsyncMspResponse] = []
+        while True:
+            with self._io_lock:
+                self._require_async_pipeline()
+                responses.extend(self._extract_async_responses_locked())
+                chunk = self._read_async_available_locked()
+                if chunk:
+                    self._rx_bytes += len(chunk)
+                    self._async_rx_buffer.extend(chunk)
+                    responses.extend(self._extract_async_responses_locked())
+            if time.monotonic() >= deadline:
+                break
+            if not chunk:
+                time.sleep(min(0.0002, max(0.0, deadline - time.monotonic())))
+        return tuple(responses)
+
+    def _write_async_request_locked(self, command: int, payload: bytes) -> _PendingAsyncRequest:
+        assert self.transport is not None
+        command = int(command)
+        frame = encode_msp_frame(command, payload, direction="<")
+        stats = self._command_stats.setdefault(command, _MutableMspCommandStats())
+        stats.attempt_count += 1
+        self._request_count += 1
+        if command == MSP_SET_RAW_RC:
+            self._set_raw_rc_attempt_count += 1
+            self._set_raw_rc_write_attempt_count += 1
+        self._tx_bytes += len(frame)
+        try:
+            written = self.transport.write(frame)
+            if written is not None and int(written) != len(frame):
+                raise OSError(f"partial MSP write: {written}/{len(frame)} bytes")
+        except Exception as exc:
+            stats.error_count += 1
+            stats.last_error = f"{type(exc).__name__}: {exc}"
+            self._request_error_count += 1
+            if command == MSP_SET_RAW_RC:
+                self._set_raw_rc_write_error_count += 1
+            raise
+        sent_s = time.monotonic()
+        self._async_request_sequence += 1
+        if command == MSP_SET_RAW_RC:
+            self._set_raw_rc_write_success_count += 1
+            self._record_set_raw_rc_write(sent_s)
+        return _PendingAsyncRequest(self._async_request_sequence, command, sent_s)
+
+    def _read_async_available_locked(self) -> bytes:
+        assert self.transport is not None
+        waiting_value = getattr(self.transport, "in_waiting", None)
+        if waiting_value is not None:
+            waiting = int(waiting_value)
+            return b"" if waiting <= 0 else bytes(self.transport.read(min(waiting, 4096)))
+        return bytes(self.transport.read(4096))
+
+    def _extract_async_responses_locked(self) -> list[AsyncMspResponse]:
+        responses: list[AsyncMspResponse] = []
+        while True:
+            header = self._async_rx_buffer.find(b"$M")
+            if header < 0:
+                keep = 1 if self._async_rx_buffer.endswith(b"$") else 0
+                discarded = len(self._async_rx_buffer) - keep
+                if discarded > 0:
+                    del self._async_rx_buffer[:discarded]
+                    self._rx_discarded_bytes += discarded
+                break
+            if header > 0:
+                del self._async_rx_buffer[:header]
+                self._rx_discarded_bytes += header
+            if len(self._async_rx_buffer) < 6:
+                break
+            if self._async_rx_buffer[2] not in (ord(">"), ord("!")):
+                del self._async_rx_buffer[0]
+                self._rx_discarded_bytes += 1
+                self._rx_parser_error_count += 1
+                continue
+            size_marker = int(self._async_rx_buffer[3])
+            payload_offset = 5
+            if size_marker == 255:
+                if len(self._async_rx_buffer) < 8:
+                    break
+                size = struct.unpack_from("<H", self._async_rx_buffer, 5)[0]
+                payload_offset = 7
+            else:
+                size = size_marker
+            frame_size = payload_offset + size + 1
+            if len(self._async_rx_buffer) < frame_size:
+                break
+            raw = bytes(self._async_rx_buffer[:frame_size])
+            try:
+                frame = decode_msp_frame(raw)
+            except MSPError as exc:
+                del self._async_rx_buffer[0]
+                self._rx_discarded_bytes += 1
+                if "checksum" in str(exc):
+                    self._rx_checksum_error_count += 1
+                else:
+                    self._rx_parser_error_count += 1
+                continue
+            del self._async_rx_buffer[:frame_size]
+            now = time.monotonic()
+            pending: _PendingAsyncRequest | None
+            if frame.command == MSP_SET_RAW_RC:
+                pending = self._async_pending_set_raw_rc.popleft() if self._async_pending_set_raw_rc else None
+            else:
+                pending = self._async_pending_telemetry.pop(frame.command, None)
+            if pending is not None:
+                self._record_async_response_locked(frame, pending, now)
+            responses.append(
+                AsyncMspResponse(
+                    frame=frame,
+                    request_id=None if pending is None else pending.request_id,
+                    request_monotonic_s=None if pending is None else pending.sent_monotonic_s,
+                    response_monotonic_s=now,
+                )
+            )
+        return responses
+
+    def _record_async_response_locked(
+        self,
+        frame: MSPFrame,
+        pending: _PendingAsyncRequest,
+        timestamp: float,
+    ) -> None:
+        stats = self._command_stats.setdefault(frame.command, _MutableMspCommandStats())
+        rtt_ms = 1000.0 * max(0.0, timestamp - pending.sent_monotonic_s)
+        stats.last_rtt_ms = rtt_ms
+        stats.max_rtt_ms = max(stats.max_rtt_ms or 0.0, rtt_ms)
+        if frame.direction == "!":
+            stats.error_count += 1
+            stats.last_error = f"Betaflight returned MSP error for command {frame.command}"
+            self._request_error_count += 1
+            return
+        stats.success_count += 1
+        stats.last_success_monotonic_s = timestamp
+        stats.last_error = ""
+        if frame.command == MSP_SET_RAW_RC:
+            self._set_raw_rc_success_count += 1
+            self._set_raw_rc_ack_count += 1
+            self._set_raw_rc_last_ack_s = timestamp
+
+    def _record_command_error_locked(self, command: int, message: str) -> None:
+        stats = self._command_stats.setdefault(int(command), _MutableMspCommandStats())
+        stats.error_count += 1
+        stats.last_error = str(message)
+        self._request_error_count += 1
+
+    def _record_set_raw_rc_write(self, timestamp: float) -> None:
+        if self._set_raw_rc_last_write_s is not None:
+            interval = max(0.0, timestamp - self._set_raw_rc_last_write_s)
+            self._set_raw_rc_write_interval_s = interval
+            self._set_raw_rc_write_max_interval_s = max(
+                self._set_raw_rc_write_max_interval_s or 0.0,
+                interval,
+            )
+            self._set_raw_rc_write_intervals.append(interval)
+        self._set_raw_rc_last_write_s = timestamp
+        self._set_raw_rc_write_times.append(timestamp)
+
+    def _require_async_pipeline(self) -> None:
+        if not self._async_active or self.transport is None:
+            raise RuntimeError("MSP async pipeline is not active")
+
     def _read_frame(self, deadline: float) -> MSPFrame | None:
         assert self.transport is not None
         while time.monotonic() <= deadline:
@@ -522,3 +849,18 @@ def _msp_checksum(size: int, command: int, payload: bytes) -> int:
     for value in payload:
         checksum ^= int(value)
     return checksum & 0xFF
+
+
+def _sample_rate_hz(timestamps: Sequence[float]) -> float | None:
+    if len(timestamps) < 2:
+        return None
+    duration = float(timestamps[-1]) - float(timestamps[0])
+    return None if duration <= 0.0 else float(len(timestamps) - 1) / duration
+
+
+def _percentile(values: Sequence[float], percentile: float) -> float | None:
+    if not values:
+        return None
+    ordered = sorted(float(value) for value in values)
+    rank = max(0, min(len(ordered) - 1, int(np.ceil(float(percentile) * len(ordered) / 100.0)) - 1))
+    return ordered[rank]

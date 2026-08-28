@@ -6,9 +6,11 @@ from vision_guidance.geometry import (
     airsim_fixed_camera_to_body,
     airsim_camera_zero_to_body,
     airsim_gimbal_camera_to_body,
+    camera_mount_diagnostics,
     camera_ray_from_pixel,
     normalize,
     project_perpendicular,
+    validated_rotation_matrix,
 )
 from vision_guidance.types import CameraIntrinsics
 
@@ -47,6 +49,26 @@ class GeometryTest(unittest.TestCase):
         forward_B = R_BC @ np.array([0.0, 0.0, 1.0])
         self.assertLess(forward_B[2], 0.0)
         self.assertAlmostEqual(np.linalg.norm(forward_B), 1.0)
+
+    def test_upward_camera_mount_diagnostics_use_frd_body_up(self):
+        R_BC = np.array(
+            [
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ]
+        )
+        diagnostics = camera_mount_diagnostics(R_BC)
+
+        self.assertEqual(diagnostics["optical_axis_body"], [0.0, 0.0, -1.0])
+        self.assertAlmostEqual(diagnostics["optical_axis_error_deg"], 0.0)
+        self.assertAlmostEqual(diagnostics["determinant"], 1.0)
+
+    def test_rotation_validation_rejects_scale_and_reflection(self):
+        with self.assertRaisesRegex(ValueError, "orthonormal"):
+            validated_rotation_matrix(np.diag([1.0, 1.0, 2.0]))
+        with self.assertRaisesRegex(ValueError, "determinant"):
+            validated_rotation_matrix(np.diag([1.0, 1.0, -1.0]))
 
 
 if __name__ == "__main__":

@@ -6,6 +6,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
+import numpy as np
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,17 +25,84 @@ def _load_tool_module():
 tool = _load_tool_module()
 
 
+def _with_verified_upward_camera(config):
+    result = copy.deepcopy(config)
+    result["camera"]["R_BC"] = [
+        [0.0, 1.0, 0.0],
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, -1.0],
+    ]
+    result["camera"]["extrinsic_validation"]["verified"] = True
+    return result
+
+
 class BetaflightNoPropApprovalTest(unittest.TestCase):
-    def test_example_config_passes_noprop_limits(self):
-        config = json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+    def test_verified_example_config_passes_noprop_limits(self):
+        example = json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        config = _with_verified_upward_camera(example)
         output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
 
         tool._validate_noprop_config(config, output)
+
+        with self.assertRaisesRegex(RuntimeError, "R_BC must be explicit"):
+            tool._validate_noprop_config(example, output)
+
+        unverified = copy.deepcopy(config)
+        unverified["camera"]["extrinsic_validation"]["verified"] = False
+        with self.assertRaisesRegex(RuntimeError, "verified=true"):
+            tool._validate_noprop_config(unverified, output)
+
+        forward = copy.deepcopy(config)
+        forward["camera"]["R_BC"] = np.eye(3).tolist()
+        with self.assertRaisesRegex(RuntimeError, "not aligned with body-up"):
+            tool._validate_noprop_config(forward, output)
 
         unsafe = copy.deepcopy(config)
         unsafe["rc_mapping"]["roll_command_limit_deg_s"] = 3.1
         with self.assertRaisesRegex(RuntimeError, "roll_command_limit"):
             tool._validate_noprop_config(unsafe, output)
+
+        no_entry = copy.deepcopy(config)
+        no_entry["guidance_command"]["entry_handoff"]["enabled"] = False
+        with self.assertRaisesRegex(RuntimeError, "entry_handoff must be enabled"):
+            tool._validate_noprop_config(no_entry, output)
+
+        gyro_entry = copy.deepcopy(config)
+        gyro_entry["guidance_command"]["entry_handoff"]["rate_source"] = "gyro"
+        with self.assertRaisesRegex(RuntimeError, "rate_source must be zero"):
+            tool._validate_noprop_config(gyro_entry, output)
+
+        missing_rate_source = copy.deepcopy(config)
+        missing_rate_source["guidance_command"]["entry_handoff"].pop("rate_source")
+        with self.assertRaisesRegex(RuntimeError, "rate_source must be zero"):
+            tool._validate_noprop_config(missing_rate_source, output)
+
+        short_entry = copy.deepcopy(config)
+        short_entry["guidance_command"]["entry_handoff"]["duration_s"] = 0.5
+        with self.assertRaisesRegex(RuntimeError, "duration_s must be at least"):
+            tool._validate_noprop_config(short_entry, output)
+
+        stale_entry_gyro = copy.deepcopy(config)
+        stale_entry_gyro["guidance_command"]["entry_handoff"]["gyro_max_age_s"] = 0.3
+        with self.assertRaisesRegex(RuntimeError, "gyro_max_age_s"):
+            tool._validate_noprop_config(stale_entry_gyro, output)
+
+        no_tilt = copy.deepcopy(config)
+        no_tilt["guidance_command"]["tilt_envelope"]["enabled"] = False
+        with self.assertRaisesRegex(RuntimeError, "tilt_envelope must be enabled"):
+            tool._validate_noprop_config(no_tilt, output)
+
+        wide_tilt = copy.deepcopy(config)
+        wide_tilt["guidance_command"]["tilt_envelope"]["max_roll_angle_deg"] = 36.0
+        with self.assertRaisesRegex(RuntimeError, "max_roll_angle_deg"):
+            tool._validate_noprop_config(wide_tilt, output)
+
+        fast_leveling = copy.deepcopy(config)
+        fast_leveling["guidance_command"]["tilt_envelope"][
+            "hardcap_max_level_rate_deg_s"
+        ] = 3.1
+        with self.assertRaisesRegex(RuntimeError, "hardcap_max_level_rate_deg_s"):
+            tool._validate_noprop_config(fast_leveling, output)
 
     def test_snapshot_requires_verified_override_configuration(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -86,7 +155,9 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
             }
             snapshot_path.write_text(json.dumps(snapshot) + "\n", encoding="utf-8")
 
-            config = json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+            config = _with_verified_upward_camera(
+                json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+            )
             parsed_cli = tool._validate_snapshot(
                 snapshot,
                 snapshot_path,
@@ -116,7 +187,9 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
                 )
 
     def test_override_cli_mode_id_must_be_explicit(self):
-        config = json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        config = _with_verified_upward_camera(
+            json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        )
         del config["msp_runtime"]["override_mode_cli_id"]
         output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
 

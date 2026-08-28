@@ -6,12 +6,17 @@ import unittest
 from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
+    MSP_RC,
+    MSP_SET_RAW_RC,
     AnalogTelemetry,
     AttitudeTelemetry,
+    BetaflightMSPAdapter,
     BetaflightTelemetry,
     MspAdapterStats,
     RawImuTelemetry,
     StatusTelemetry,
+    decode_msp_frame,
+    encode_msp_frame,
 )
 from vision_guidance.betaflight_runtime import (
     BetaflightMspIoWorker,
@@ -70,6 +75,39 @@ class _Adapter:
         return MspAdapterStats(set_raw_rc_attempt_count=len(self.sent), set_raw_rc_success_count=len(self.sent))
 
 
+class _AsyncTransport:
+    def __init__(self, *, first_set_delay_s=0.0):
+        self.buffer = bytearray()
+        self.writes = []
+        self.write_times = []
+        self.timeout = 0.1
+        self.first_set_delay_s = float(first_set_delay_s)
+        self._set_count = 0
+
+    @property
+    def in_waiting(self):
+        return len(self.buffer)
+
+    def write(self, data):
+        frame = decode_msp_frame(data)
+        if frame.command == MSP_SET_RAW_RC:
+            self._set_count += 1
+            if self._set_count == 1 and self.first_set_delay_s > 0.0:
+                time.sleep(self.first_set_delay_s)
+        self.writes.append(bytes(data))
+        self.write_times.append(time.monotonic())
+        return len(data)
+
+    def read(self, size):
+        count = min(int(size), len(self.buffer))
+        result = bytes(self.buffer[:count])
+        del self.buffer[:count]
+        return result
+
+    def inject(self, *frames):
+        self.buffer.extend(b"".join(frames))
+
+
 class BetaflightRuntimeTest(unittest.TestCase):
     def test_runtime_config_records_cli_override_mode_id(self):
         config = MspRuntimeConfig.from_mapping({"override_mode_cli_id": 50})
@@ -86,7 +124,7 @@ class BetaflightRuntimeTest(unittest.TestCase):
             worker._poll_one(name)
         snapshot = worker.snapshot()
 
-        self.assertEqual(snapshot.telemetry.raw_imu.gyro_deg_s, (4.0, 5.0, 6.0))
+        self.assertEqual(snapshot.telemetry.raw_imu.gyro_msp_raw, (4.0, 5.0, 6.0))
         self.assertEqual(snapshot.telemetry.attitude.roll_deg, 1.0)
         self.assertEqual(snapshot.telemetry.analog.vbat_v, 16.0)
         self.assertEqual(snapshot.poll_count, 5)
@@ -420,6 +458,148 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertEqual(snapshot.prefill_success_count, 0)
         self.assertFalse(snapshot.prefill_ready)
         self.assertEqual(snapshot.send_error_count, 1)
+
+    def test_async_prefill_counts_acknowledged_passthrough_frames_only(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        config = MspRuntimeConfig(
+            transport_mode="async_pipeline",
+            prefill_enabled=True,
+            prefill_min_frames=1,
+            shutdown_passthrough_frames=0,
+        )
+        worker = BetaflightMspIoWorker(adapter, config, box_ids=(0, 50))
+        adapter.begin_async_pipeline()
+        now = time.monotonic()
+        worker._merge_poll_value("rc", (1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400), now)
+        worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 0, 0), now)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+
+        worker._publish(time.monotonic())
+        self.assertFalse(worker.snapshot().prefill_ready)
+        transport.inject(encode_msp_frame(MSP_SET_RAW_RC, direction=">"))
+        worker._handle_async_responses(adapter.drain_async_responses(1.0))
+
+        snapshot = worker.snapshot()
+        self.assertTrue(snapshot.prefill_ready)
+        self.assertTrue(snapshot.set_raw_rc_ack_fresh)
+        self.assertEqual(snapshot.adapter_stats.set_raw_rc_write_success_count, 1)
+        self.assertEqual(snapshot.adapter_stats.set_raw_rc_ack_count, 1)
+        adapter.end_async_pipeline()
+
+    def test_async_stale_set_ack_falls_back_to_passthrough(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        config = MspRuntimeConfig(
+            transport_mode="async_pipeline",
+            prefill_enabled=True,
+            prefill_min_frames=1,
+            response_stale_s=0.001,
+            shutdown_passthrough_frames=0,
+        )
+        worker = BetaflightMspIoWorker(adapter, config, box_ids=(0, 50))
+        adapter.begin_async_pipeline()
+        now = time.monotonic()
+        worker._merge_poll_value("rc", (1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400), now)
+        worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 0, 0), now)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(time.monotonic())
+        transport.inject(encode_msp_frame(MSP_SET_RAW_RC, direction=">"))
+        worker._handle_async_responses(adapter.drain_async_responses(1.0))
+        time.sleep(0.003)
+        worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 1 << 1, 0), time.monotonic())
+        command = RcCommand(
+            time.monotonic(),
+            (1600, 1400, 1050, 1550, 1000, 2000, 2000, 2000),
+            True,
+        )
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+
+        worker._publish(time.monotonic())
+
+        snapshot = worker.snapshot()
+        self.assertEqual(snapshot.publish_mode, "set_ack_stale")
+        self.assertFalse(snapshot.set_raw_rc_ack_fresh)
+        self.assertEqual(snapshot.last_sent_channels[:4], (1500, 1500, 1000, 1500))
+        adapter.end_async_pipeline()
+
+    def test_async_suspends_rc_poll_while_override_uses_latched_manual_rc(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(transport_mode="async_pipeline"),
+            box_ids=(0, 50),
+        )
+        adapter.begin_async_pipeline()
+        now = time.monotonic()
+        worker._merge_poll_value("rc", (1500, 1500, 1500, 1000, 1800, 1200, 1800, 1400), now)
+        worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 1 << 1, 0), now)
+        worker._next_poll_s = {"rc": 0.0}
+
+        worker._queue_one_async_poll(time.monotonic())
+        self.assertEqual(transport.writes, [])
+        self.assertTrue(worker.snapshot().rc_poll_suspended)
+
+        worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 0, 0), time.monotonic())
+        worker._next_poll_s["rc"] = 0.0
+        worker._queue_one_async_poll(time.monotonic())
+        self.assertEqual(decode_msp_frame(transport.writes[-1]).command, MSP_RC)
+        adapter.end_async_pipeline()
+
+    def test_async_cycle_writes_set_before_due_telemetry_poll(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                transport_mode="async_pipeline",
+                prefill_enabled=True,
+                shutdown_passthrough_frames=0,
+            ),
+        )
+        adapter.begin_async_pipeline()
+        now = time.monotonic()
+        worker._merge_poll_value("rc", (1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400), now)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._next_poll_s = {"status": 0.0}
+
+        worker._publish(time.monotonic())
+        worker._queue_one_async_poll(time.monotonic())
+
+        commands = [decode_msp_frame(frame).command for frame in transport.writes]
+        self.assertEqual(commands[0], MSP_SET_RAW_RC)
+        self.assertNotEqual(commands[1], MSP_SET_RAW_RC)
+        adapter.end_async_pipeline()
+
+    def test_async_worker_skips_missed_publish_periods_without_bursting(self):
+        transport = _AsyncTransport(first_set_delay_s=0.05)
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                transport_mode="async_pipeline",
+                control_publish_hz=50.0,
+                prefill_enabled=True,
+                shutdown_passthrough_frames=0,
+                response_drain_budget_ms=0.0,
+            ),
+        )
+        now = time.monotonic()
+        worker._merge_poll_value("rc", (1500, 1500, 1500, 1000, 1800, 1200, 1300, 1400), now)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+
+        worker.start()
+        time.sleep(0.15)
+        worker.close()
+
+        set_times = [
+            timestamp
+            for frame, timestamp in zip(transport.writes, transport.write_times)
+            if decode_msp_frame(frame).command == MSP_SET_RAW_RC
+        ]
+        self.assertGreaterEqual(len(set_times), 3)
+        self.assertGreaterEqual(min(b - a for a, b in zip(set_times, set_times[1:])), 0.015)
 
 
 if __name__ == "__main__":

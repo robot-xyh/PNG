@@ -8,7 +8,23 @@ from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any, Sequence
 
-from .betaflight_msp import BetaflightMSPAdapter, BetaflightTelemetry, MspAdapterStats
+from .betaflight_msp import (
+    MSP_ANALOG,
+    MSP_ATTITUDE,
+    MSP_RAW_IMU,
+    MSP_RC,
+    MSP_SET_RAW_RC,
+    MSP_STATUS,
+    AsyncMspResponse,
+    BetaflightMSPAdapter,
+    BetaflightTelemetry,
+    MspAdapterStats,
+    parse_analog,
+    parse_attitude,
+    parse_raw_imu,
+    parse_rc_channels,
+    parse_status,
+)
 from .flight_control import RcCommand
 
 
@@ -31,6 +47,7 @@ class ControlAuthorizationStatus:
 @dataclass(frozen=True)
 class MspRuntimeConfig:
     io_worker_enabled: bool = False
+    transport_mode: str = "synchronous"
     telemetry_poll_hz: float = 5.0
     status_poll_hz: float = 5.0
     attitude_poll_hz: float = 5.0
@@ -51,12 +68,15 @@ class MspRuntimeConfig:
     prefill_valid_max_us: int = 2100
     staged_command_timeout_s: float = 0.15
     shutdown_passthrough_frames: int = 3
+    response_drain_budget_ms: float = 3.0
+    response_stale_s: float = 0.25
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "MspRuntimeConfig":
         legacy_poll_hz = float(values.get("telemetry_poll_hz", 5.0))
         config = cls(
             io_worker_enabled=bool(values.get("io_worker_enabled", False)),
+            transport_mode=str(values.get("transport_mode", "synchronous")).strip().lower(),
             telemetry_poll_hz=legacy_poll_hz,
             status_poll_hz=float(values.get("status_poll_hz", legacy_poll_hz)),
             attitude_poll_hz=float(values.get("attitude_poll_hz", legacy_poll_hz)),
@@ -77,7 +97,11 @@ class MspRuntimeConfig:
             prefill_valid_max_us=int(values.get("prefill_valid_max_us", 2100)),
             staged_command_timeout_s=float(values.get("staged_command_timeout_s", 0.15)),
             shutdown_passthrough_frames=int(values.get("shutdown_passthrough_frames", 3)),
+            response_drain_budget_ms=float(values.get("response_drain_budget_ms", 3.0)),
+            response_stale_s=float(values.get("response_stale_s", 0.25)),
         )
+        if config.transport_mode not in {"synchronous", "async_pipeline"}:
+            raise ValueError("msp_runtime.transport_mode must be synchronous or async_pipeline")
         if config.telemetry_poll_hz <= 0.0 or config.control_publish_hz <= 0.0:
             raise ValueError("MSP worker rates must be positive")
         if any(
@@ -107,6 +131,8 @@ class MspRuntimeConfig:
             raise ValueError("throttle_channel_zero_based must match set_raw_rc_channel_map")
         if config.shutdown_passthrough_frames < 0:
             raise ValueError("shutdown_passthrough_frames must be non-negative")
+        if config.response_drain_budget_ms < 0.0 or config.response_stale_s <= 0.0:
+            raise ValueError("MSP async response budget/stale timeout values are invalid")
         return config
 
 
@@ -144,6 +170,7 @@ class MspWorkerSnapshot:
     last_publish_prefill_ready: bool
     last_publish_physical_rc_fresh: bool
     last_publish_command_fresh: bool
+    last_publish_set_raw_rc_ack_fresh: bool
     publish_tick_interval_s: float | None
     publish_tick_max_interval_s: float | None
     publish_deadline_miss_count: int
@@ -151,6 +178,9 @@ class MspWorkerSnapshot:
     send_success_max_interval_s: float | None
     last_send_success_age_s: float | None
     consecutive_send_error_count: int
+    set_raw_rc_ack_age_s: float | None
+    set_raw_rc_ack_fresh: bool
+    rc_poll_suspended: bool
     throttle_handover: "ThrottleHandoverSnapshot"
     adapter_stats: MspAdapterStats
 
@@ -425,6 +455,7 @@ class BetaflightMspIoWorker:
         self._last_publish_prefill_ready = False
         self._last_publish_physical_rc_fresh = False
         self._last_publish_command_fresh = False
+        self._last_publish_set_raw_rc_ack_fresh = False
         self._last_publish_tick_s: float | None = None
         self._publish_tick_interval_s: float | None = None
         self._publish_tick_max_interval_s: float | None = None
@@ -433,6 +464,7 @@ class BetaflightMspIoWorker:
         self._send_success_interval_s: float | None = None
         self._send_success_max_interval_s: float | None = None
         self._consecutive_send_error_count = 0
+        self._async_set_writes: dict[int, tuple[str, bool]] = {}
         self._override_mode_index = box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID)
         self._poll_rates_hz = {
             "status": config.status_poll_hz,
@@ -461,7 +493,13 @@ class BetaflightMspIoWorker:
         if output_enabled and self.config.prefill_enabled:
             for _ in range(self.config.shutdown_passthrough_frames):
                 self._publish(time.monotonic())
+                if self.config.transport_mode == "async_pipeline":
+                    self._handle_async_responses(
+                        self.adapter.drain_async_responses(self.config.response_drain_budget_ms)
+                    )
                 time.sleep(min(0.02, 1.0 / self.config.control_publish_hz))
+        if self.config.transport_mode == "async_pipeline":
+            self.adapter.end_async_pipeline()
         self._thread = None
 
     def stage(
@@ -513,6 +551,16 @@ class BetaflightMspIoWorker:
             send_success_age = (
                 None if self._last_send_success_s is None else max(0.0, now - self._last_send_success_s)
             )
+            adapter_stats = self.adapter.snapshot_stats()
+            ack_age = (
+                None
+                if adapter_stats.set_raw_rc_last_ack_monotonic_s is None
+                else max(0.0, now - adapter_stats.set_raw_rc_last_ack_monotonic_s)
+            )
+            ack_fresh = self.config.transport_mode != "async_pipeline" or (
+                ack_age is not None and ack_age <= self.config.response_stale_s
+            )
+            rc_poll_suspended = bool(self._override_active and self._manual_rc)
             return MspWorkerSnapshot(
                 telemetry=telemetry,
                 telemetry_error=self._telemetry_error,
@@ -522,7 +570,10 @@ class BetaflightMspIoWorker:
                 analog_age_s=analog_age,
                 raw_imu_age_s=raw_imu_age,
                 physical_rc_age_s=rc_age,
-                physical_rc_fresh=rc_age is not None and rc_age <= self.config.physical_rc_timeout_s,
+                physical_rc_fresh=bool(
+                    self._override_active and self._manual_rc
+                    or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+                ),
                 poll_count=self._poll_count,
                 poll_error_count=self._poll_error_count,
                 staged_count=self._staged_count,
@@ -546,6 +597,7 @@ class BetaflightMspIoWorker:
                 last_publish_prefill_ready=self._last_publish_prefill_ready,
                 last_publish_physical_rc_fresh=self._last_publish_physical_rc_fresh,
                 last_publish_command_fresh=self._last_publish_command_fresh,
+                last_publish_set_raw_rc_ack_fresh=self._last_publish_set_raw_rc_ack_fresh,
                 publish_tick_interval_s=self._publish_tick_interval_s,
                 publish_tick_max_interval_s=self._publish_tick_max_interval_s,
                 publish_deadline_miss_count=self._publish_deadline_miss_count,
@@ -553,11 +605,20 @@ class BetaflightMspIoWorker:
                 send_success_max_interval_s=self._send_success_max_interval_s,
                 last_send_success_age_s=send_success_age,
                 consecutive_send_error_count=self._consecutive_send_error_count,
+                set_raw_rc_ack_age_s=ack_age,
+                set_raw_rc_ack_fresh=ack_fresh,
+                rc_poll_suspended=rc_poll_suspended,
                 throttle_handover=self._handover.snapshot(),
-                adapter_stats=self.adapter.snapshot_stats(),
+                adapter_stats=adapter_stats,
             )
 
     def _run(self) -> None:
+        if self.config.transport_mode == "async_pipeline":
+            self._run_async()
+            return
+        self._run_synchronous()
+
+    def _run_synchronous(self) -> None:
         publish_period = 1.0 / self.config.control_publish_hz
         next_publish = time.monotonic()
         poll_budget = False
@@ -580,6 +641,113 @@ class BetaflightMspIoWorker:
             wait_s = max(0.0, min(deadlines) - time.monotonic())
             self._stop.wait(min(0.005, wait_s))
 
+    def _run_async(self) -> None:
+        try:
+            self.adapter.begin_async_pipeline()
+            publish_period = 1.0 / self.config.control_publish_hz
+            next_publish = time.monotonic()
+            while not self._stop.is_set():
+                now = time.monotonic()
+                if now < next_publish:
+                    self._stop.wait(min(0.001, next_publish - now))
+                    continue
+                self._publish(now)
+                self.adapter.expire_async_requests(self.config.response_stale_s, now)
+                self._queue_one_async_poll(time.monotonic())
+                self._handle_async_responses(
+                    self.adapter.drain_async_responses(self.config.response_drain_budget_ms)
+                )
+                completed = time.monotonic()
+                if completed > next_publish + publish_period:
+                    next_publish = completed + publish_period
+                else:
+                    next_publish += publish_period
+        except Exception as exc:
+            with self._lock:
+                self._worker_error = str(exc)
+                self._poll_error_count += 1
+
+    def _queue_one_async_poll(self, now: float) -> None:
+        due = sorted(
+            (name for name, timestamp in self._next_poll_s.items() if now >= timestamp),
+            key=lambda name: self._next_poll_s[name],
+        )
+        command_by_name = {
+            "status": MSP_STATUS,
+            "attitude": MSP_ATTITUDE,
+            "raw_imu": MSP_RAW_IMU,
+            "rc": MSP_RC,
+            "analog": MSP_ANALOG,
+        }
+        with self._lock:
+            suspend_rc = bool(self._override_active and self._manual_rc)
+        for name in due:
+            if name == "rc" and suspend_rc:
+                self._next_poll_s[name] = now + 1.0 / self._poll_rates_hz[name]
+                continue
+            command = command_by_name[name]
+            if self.adapter.async_request_pending(command):
+                continue
+            try:
+                queued = self.adapter.queue_async_request(command)
+            except Exception as exc:
+                self._record_poll_error(name, exc)
+                queued = None
+            if queued is not None:
+                self._next_poll_s[name] = now + 1.0 / self._poll_rates_hz[name]
+                return
+
+    def _handle_async_responses(self, responses: Sequence[AsyncMspResponse]) -> None:
+        name_by_command = {
+            MSP_STATUS: "status",
+            MSP_ATTITUDE: "attitude",
+            MSP_RAW_IMU: "raw_imu",
+            MSP_RC: "rc",
+            MSP_ANALOG: "analog",
+        }
+        parser_by_command = {
+            MSP_STATUS: parse_status,
+            MSP_ATTITUDE: parse_attitude,
+            MSP_RAW_IMU: parse_raw_imu,
+            MSP_RC: parse_rc_channels,
+            MSP_ANALOG: parse_analog,
+        }
+        for response in responses:
+            frame = response.frame
+            if frame.command == MSP_SET_RAW_RC:
+                self._handle_async_set_response(response)
+                continue
+            name = name_by_command.get(frame.command)
+            if name is None or response.request_id is None:
+                continue
+            if frame.direction == "!":
+                self._record_poll_error(name, RuntimeError(f"MSP error response for {frame.command}"))
+                continue
+            try:
+                value = parser_by_command[frame.command](frame.payload)
+                self._merge_poll_value(name, value, response.response_monotonic_s)
+            except Exception as exc:
+                self._record_poll_error(name, exc)
+
+    def _handle_async_set_response(self, response: AsyncMspResponse) -> None:
+        if response.request_id is None:
+            return
+        with self._lock:
+            context = self._async_set_writes.pop(response.request_id, None)
+            if response.frame.direction == "!":
+                self._send_error_count += 1
+                self._consecutive_send_error_count += 1
+                self._worker_error = "MSP error response for SET_RAW_RC"
+                self._prefill_success_count = 0
+                return
+            if context is None:
+                return
+            publish_mode, use_algorithm = context
+            if use_algorithm:
+                return
+            if publish_mode in {"prefill", "passthrough", "set_ack_stale"}:
+                self._prefill_success_count += 1
+
     def _next_due_poll_name(self, now: float) -> str | None:
         due = [name for name, timestamp in self._next_poll_s.items() if now >= timestamp]
         if not due:
@@ -600,68 +768,77 @@ class BetaflightMspIoWorker:
                 value = self.adapter.read_analog()
             else:
                 raise ValueError(f"unsupported MSP poll source: {name}")
-            received_s = time.monotonic()
-            with self._lock:
-                telemetry = self._telemetry or BetaflightTelemetry(timestamp=received_s)
-                if name == "status":
-                    telemetry = replace(
-                        telemetry,
-                        timestamp=received_s,
-                        status=value,
-                        status_timestamp_s=received_s,
-                    )
-                    if self._override_mode_index is not None:
-                        self._override_active = bool(value.mode_flags & (1 << self._override_mode_index))
-                elif name == "attitude":
-                    telemetry = replace(
-                        telemetry,
-                        timestamp=received_s,
-                        attitude=value,
-                        attitude_timestamp_s=received_s,
-                    )
-                elif name == "raw_imu":
-                    telemetry = replace(
-                        telemetry,
-                        timestamp=received_s,
-                        raw_imu=value,
-                        raw_imu_timestamp_s=received_s,
-                    )
-                elif name == "rc":
-                    telemetry = replace(
-                        telemetry,
-                        timestamp=received_s,
-                        rc_channels=value,
-                        rc_timestamp_s=received_s,
-                    )
-                    self._physical_rc_received_s = received_s
-                    physical = reorder_msp_rc_to_set_raw_rc(value, self.config.set_raw_rc_channel_map)
-                    if not self._override_active and self._physical_rc_valid(physical):
-                        self._manual_rc = physical
-                elif name == "analog":
-                    telemetry = replace(
-                        telemetry,
-                        timestamp=received_s,
-                        analog=value,
-                        analog_timestamp_s=received_s,
-                    )
-                self._telemetry = telemetry
-                self._telemetry_received_s = received_s
-                self._poll_count += 1
-                self._poll_errors.pop(name, None)
-                self._telemetry_error = "; ".join(
-                    f"{source}:{message}" for source, message in sorted(self._poll_errors.items())
-                )
+            self._merge_poll_value(name, value, time.monotonic())
         except Exception as exc:
-            with self._lock:
-                self._poll_errors[name] = str(exc)
-                self._telemetry_error = "; ".join(
-                    f"{source}:{message}" for source, message in sorted(self._poll_errors.items())
-                )
-                self._poll_error_count += 1
+            self._record_poll_error(name, exc)
         finally:
             rate = self._poll_rates_hz.get(name, 0.0)
             if rate > 0.0:
                 self._next_poll_s[name] = time.monotonic() + 1.0 / rate
+
+    def _merge_poll_value(self, name: str, value: Any, received_s: float) -> None:
+        with self._lock:
+            telemetry = self._telemetry or BetaflightTelemetry(timestamp=received_s)
+            if name == "status":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    status=value,
+                    status_timestamp_s=received_s,
+                )
+                if self._override_mode_index is not None:
+                    self._override_active = bool(value.mode_flags & (1 << self._override_mode_index))
+            elif name == "attitude":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    attitude=value,
+                    attitude_timestamp_s=received_s,
+                )
+            elif name == "raw_imu":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    raw_imu=value,
+                    raw_imu_timestamp_s=received_s,
+                )
+            elif name == "rc":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    rc_channels=tuple(value),
+                    rc_timestamp_s=received_s,
+                )
+                physical = reorder_msp_rc_to_set_raw_rc(value, self.config.set_raw_rc_channel_map)
+                if not self._override_active and self._physical_rc_valid(physical):
+                    self._manual_rc = physical
+                    self._physical_rc_received_s = received_s
+                elif not self._manual_rc:
+                    self._physical_rc_received_s = received_s
+            elif name == "analog":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    analog=value,
+                    analog_timestamp_s=received_s,
+                )
+            else:
+                raise ValueError(f"unsupported MSP poll source: {name}")
+            self._telemetry = telemetry
+            self._telemetry_received_s = received_s
+            self._poll_count += 1
+            self._poll_errors.pop(name, None)
+            self._telemetry_error = "; ".join(
+                f"{source}:{message}" for source, message in sorted(self._poll_errors.items())
+            )
+
+    def _record_poll_error(self, name: str, exc: Exception) -> None:
+        with self._lock:
+            self._poll_errors[name] = str(exc)
+            self._telemetry_error = "; ".join(
+                f"{source}:{message}" for source, message in sorted(self._poll_errors.items())
+            )
+            self._poll_error_count += 1
 
     def _poll(self, now: float) -> None:
         del now
@@ -736,8 +913,20 @@ class BetaflightMspIoWorker:
             telemetry = self._telemetry
             manual_rc = self._manual_rc
             rc_age = None if self._physical_rc_received_s is None else now - self._physical_rc_received_s
-            fresh = rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+            fresh = bool(
+                override_active and manual_rc
+                or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+            )
             prefill_ready = self._prefill_ready()
+        adapter_stats = self.adapter.snapshot_stats()
+        ack_age = (
+            None
+            if adapter_stats.set_raw_rc_last_ack_monotonic_s is None
+            else max(0.0, now - adapter_stats.set_raw_rc_last_ack_monotonic_s)
+        )
+        ack_fresh = self.config.transport_mode != "async_pipeline" or (
+            ack_age is not None and ack_age <= self.config.response_stale_s
+        )
         if not output_enabled:
             with self._lock:
                 self._send_skip_count += 1
@@ -755,9 +944,13 @@ class BetaflightMspIoWorker:
                 self._handover.clear()
             return
         try:
-            physical = reorder_msp_rc_to_set_raw_rc(
-                telemetry.rc_channels,
-                self.config.set_raw_rc_channel_map,
+            physical = (
+                tuple(manual_rc)
+                if override_active and manual_rc
+                else reorder_msp_rc_to_set_raw_rc(
+                    telemetry.rc_channels,
+                    self.config.set_raw_rc_channel_map,
+                )
             )
         except ValueError as exc:
             with self._lock:
@@ -789,6 +982,7 @@ class BetaflightMspIoWorker:
             and command is not None
             and command_fresh
             and (prefill_ready or not self.config.prefill_enabled)
+            and ack_fresh
         )
         if algorithm_authorized and not command_fresh:
             with self._lock:
@@ -815,7 +1009,10 @@ class BetaflightMspIoWorker:
             publish_mode = "algorithm"
         elif self.config.prefill_enabled:
             channels = list(self._passthrough_channels(physical, manual_rc, override_active))
-            publish_mode = "prefill" if not prefill_ready else "passthrough"
+            if not ack_fresh and prefill_ready:
+                publish_mode = "set_ack_stale"
+            else:
+                publish_mode = "prefill" if not prefill_ready else "passthrough"
             self._handover.clear()
         else:
             with self._lock:
@@ -825,16 +1022,27 @@ class BetaflightMspIoWorker:
                 self._handover.clear()
             return
         try:
-            self.adapter.send_raw_rc(tuple(channels))
+            request_id = None
+            if self.config.transport_mode == "async_pipeline":
+                request_id = self.adapter.write_raw_rc_async(tuple(channels))
+            else:
+                self.adapter.send_raw_rc(tuple(channels))
+            sent_s = now
+            write_stats = self.adapter.snapshot_stats()
+            if (
+                self.config.transport_mode == "async_pipeline"
+                and write_stats.set_raw_rc_last_write_monotonic_s is not None
+            ):
+                sent_s = write_stats.set_raw_rc_last_write_monotonic_s
             with self._lock:
                 if self._last_send_success_s is not None:
-                    send_interval_s = max(0.0, now - self._last_send_success_s)
+                    send_interval_s = max(0.0, sent_s - self._last_send_success_s)
                     self._send_success_interval_s = send_interval_s
                     self._send_success_max_interval_s = max(
                         self._send_success_max_interval_s or 0.0,
                         send_interval_s,
                     )
-                self._last_send_success_s = now
+                self._last_send_success_s = sent_s
                 self._consecutive_send_error_count = 0
                 self._worker_error = ""
                 self._last_sent_channels = tuple(channels)
@@ -845,11 +1053,17 @@ class BetaflightMspIoWorker:
                 self._last_publish_prefill_ready = prefill_ready or not self.config.prefill_enabled
                 self._last_publish_physical_rc_fresh = fresh
                 self._last_publish_command_fresh = command_fresh
+                self._last_publish_set_raw_rc_ack_fresh = ack_fresh
                 if use_algorithm:
                     self._algorithm_send_count += 1
                 else:
                     self._passthrough_send_count += 1
-                    self._prefill_success_count += 1
+                    if self.config.transport_mode != "async_pipeline":
+                        self._prefill_success_count += 1
+                if request_id is not None:
+                    if len(self._async_set_writes) >= 4096:
+                        self._async_set_writes.pop(min(self._async_set_writes), None)
+                    self._async_set_writes[request_id] = (publish_mode, use_algorithm)
                 self._was_algorithm_authorized = use_algorithm
         except Exception as exc:
             with self._lock:

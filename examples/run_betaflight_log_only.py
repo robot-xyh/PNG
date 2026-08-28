@@ -51,6 +51,9 @@ from vision_guidance.betaflight_web import (  # noqa: E402
 from vision_guidance.flight_control import (  # noqa: E402
     BetaflightSafetyStateMachine,
     CommandWatchdog,
+    GuidanceCommandShaper,
+    GuidanceCommandShaperConfig,
+    GuidanceCommandShapingDiagnostics,
     GuidanceSetpoint,
     GuidanceSetpointHold,
     RcCommand,
@@ -65,7 +68,11 @@ from vision_guidance.fusion import (  # noqa: E402
     PureVisionGuidancePipeline,
     VisionGuidanceResult,
 )
-from vision_guidance.geometry import camera_to_body_mount  # noqa: E402
+from vision_guidance.geometry import (  # noqa: E402
+    camera_mount_diagnostics,
+    camera_to_body_mount,
+    validated_rotation_matrix,
+)
 from vision_guidance.platform_health import PlatformHealthSampler  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
 from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
@@ -74,7 +81,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 6
+LOG_SCHEMA_VERSION = 9
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
@@ -823,7 +830,22 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     baudrate = int(args.msp_baud or serial_cfg.get("baud", 115200))
     timeout_s = float(serial_cfg.get("timeout_s", 0.2))
 
+    control_output_requested = args.control_mode == "msp_raw_rc" and bool(args.allow_control)
+    intrinsics = _camera_intrinsics(config)
+    camera_R_BC = _camera_mount(config, require_control_ready=control_output_requested)
+    camera_calibration = _camera_calibration_metadata(config, camera_R_BC)
     rc_mapper = RcCommandMapper(_rc_mapping_config(config))
+    command_shaper_config = GuidanceCommandShaperConfig.from_mapping(
+        dict(config.get("guidance_command", {}))
+    )
+    entry_handoff_values = dict(dict(config.get("guidance_command", {})).get("entry_handoff", {}))
+    if control_output_requested and entry_handoff_values.get("rate_source") != "zero":
+        raise RuntimeError("control requires explicit guidance_command.entry_handoff.rate_source=zero")
+    if command_shaper_config.entry_handoff.rate_source != "zero":
+        raise RuntimeError(
+            "Betaflight entry_handoff.rate_source must remain zero until MSP_RAW_IMU units are verified"
+        )
+    command_shaper = GuidanceCommandShaper(command_shaper_config)
     safety_cfg = dict(config.get("safety", {}))
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
@@ -842,17 +864,22 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
     if args.control_mode == "msp_raw_rc" and args.allow_control and not msp_runtime_config.io_worker_enabled:
         raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
+    if (
+        args.control_mode == "msp_raw_rc"
+        and args.allow_control
+        and msp_runtime_config.transport_mode != "async_pipeline"
+    ):
+        raise RuntimeError("msp_runtime.transport_mode=async_pipeline is required for any RC output")
     msp_worker = None
     if msp_runtime_config.io_worker_enabled:
         msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config, box_ids=box_ids)
         msp_worker.start()
 
     detection_source = _create_detection_source(args, config, preview_sink=web_service)
-    intrinsics = _camera_intrinsics(config)
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
     pipeline = PureVisionGuidancePipeline(
         intrinsics=intrinsics,
-        R_BC=_camera_mount(config),
+        R_BC=camera_R_BC,
         attitude_buffer=attitude_buffer,
     )
     fusion_cfg = dict(config.get("attitude_fusion", {}))
@@ -896,6 +923,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "max_wait_s": deferred_fusion.max_wait_s,
             "max_pending": deferred_fusion.max_pending,
         },
+        camera_calibration=camera_calibration,
         platform_health={} if platform_health is None else platform_health.metadata(),
         web_telemetry=web_service.metadata(),
     )
@@ -911,6 +939,18 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     print(
         f"Authorization: approved={int(authorization.approved)} reason={authorization.reason} "
         f"scope={authorization.scope or '-'}"
+    )
+    extrinsic = camera_calibration["extrinsic"]
+    print(
+        "Camera extrinsic: "
+        f"source={extrinsic['source']} verified={int(extrinsic['verified'])} "
+        f"up_axis_error_deg={extrinsic['optical_axis_error_deg']:.3f} "
+        f"control_ready={int(extrinsic['control_ready'])}"
+    )
+    print(
+        "Camera timestamp: "
+        f"source={camera_calibration['timestamp']['source']} "
+        f"hardware_exposure={int(camera_calibration['timestamp']['hardware_exposure'])}"
     )
     event_logger = EdgeEventLogger(events_path, start_s=start)
     event_logger.write(
@@ -1014,7 +1054,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 telemetry_fresh = telemetry_age_s is not None and telemetry_age_s <= float(safety_cfg.get("telemetry_timeout_s", 0.5))
                 attitude_synced = attitude_age_s is not None and attitude_age_s <= float(safety_cfg.get("attitude_timeout_s", 0.5))
                 voltage_ok = _voltage_ok(telemetry, safety_cfg)
-                aux_enabled = _aux_enabled(telemetry, safety_cfg)
                 watchdog_ok = watchdog.fresh(loop_start)
                 physical_rc_age_s = (
                     worker_snapshot.physical_rc_age_s
@@ -1034,6 +1073,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and telemetry.status is not None
                     and box_mode_active(telemetry.status.mode_flags, box_ids, MSP_OVERRIDE_PERMANENT_ID)
                 )
+                aux_enabled = _aux_enabled(telemetry, safety_cfg, override_active=override_active)
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
                 prefill_ready = bool(
@@ -1041,27 +1081,53 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     if worker_snapshot is not None
                     else not msp_runtime_config.prefill_enabled
                 )
-                setpoint = setpoint_hold.update(
+                msp_response_fresh = bool(
+                    worker_snapshot.set_raw_rc_ack_fresh
+                    if worker_snapshot is not None
+                    else True
+                )
+                command_gate_open = bool(
+                    control_requested
+                    and allow_control
+                    and authorization.approved
+                    and authorization.config_conflict_free
+                    and override_available
+                    and override_active
+                    and prefill_ready
+                    and msp_response_fresh
+                    and armed
+                    and physical_rc_fresh
+                    and telemetry_fresh
+                    and attitude_synced
+                    and voltage_ok
+                    and aux_enabled
+                    and watchdog_ok
+                )
+                held_setpoint = setpoint_hold.update(
                     raw_setpoint,
                     timestamp=loop_start,
                     allow_hold=detector_stats.get("detector_reject_reason")
                     in {"perception_no_new_result", "fusion_waiting_for_attitude"},
-                    gate_open=bool(
-                        control_requested
-                        and allow_control
-                        and authorization.approved
-                        and authorization.config_conflict_free
-                        and override_available
-                        and override_active
-                        and prefill_ready
-                        and armed
-                        and physical_rc_fresh
-                        and telemetry_fresh
-                        and attitude_synced
-                        and voltage_ok
-                        and aux_enabled
-                        and watchdog_ok
+                    gate_open=command_gate_open,
+                )
+                gyro_age_s = (
+                    worker_snapshot.raw_imu_age_s
+                    if worker_snapshot is not None
+                    else None
+                    if telemetry is None or telemetry.raw_imu_timestamp_s is None
+                    else max(0.0, loop_start - telemetry.raw_imu_timestamp_s)
+                )
+                setpoint, shaping = command_shaper.update(
+                    held_setpoint,
+                    timestamp=loop_start,
+                    gate_open=command_gate_open,
+                    attitude_deg=(
+                        None
+                        if telemetry is None or telemetry.attitude is None
+                        else telemetry.attitude.euler_frd_deg[:2]
                     ),
+                    gyro_deg_s=None,
+                    gyro_age_s=gyro_age_s,
                 )
                 target_valid = bool(setpoint.valid)
                 decision = safety.update(
@@ -1078,6 +1144,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         override_available=override_available,
                         override_active=override_active,
                         prefill_ready=prefill_ready,
+                        msp_response_fresh=msp_response_fresh,
                         physical_rc_fresh=physical_rc_fresh,
                         snapshot_approved=authorization.approved,
                         config_conflict_free=(
@@ -1126,9 +1193,12 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "armed": int(armed),
                         "msp_override_active": int(override_active),
                         "prefill_ready": int(prefill_ready),
+                        "set_raw_rc_ack_fresh": int(msp_response_fresh),
                         "safety_state": str(decision.state.value),
                         "publish_mode": "" if worker_snapshot is None else worker_snapshot.publish_mode,
                         "target_valid": int(target_valid),
+                        "entry_handoff_active": int(shaping.entry_active),
+                        "tilt_hardcap_active": int(shaping.hardcap_active),
                         "track_id": None if detection is None else detection.track_id,
                         "telemetry_fresh": int(telemetry_fresh),
                         "attitude_synced": int(attitude_synced),
@@ -1174,7 +1244,9 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     detector_stats=detector_stats,
                     detection=detection,
                     result=result,
+                    pre_shape_setpoint=held_setpoint,
                     setpoint=setpoint,
+                    shaping=shaping,
                     rc_command=rc_command,
                     safety_state=str(decision.state.value),
                     safety_reason=decision.reason,
@@ -1282,14 +1354,86 @@ def _camera_intrinsics(config: dict[str, Any]) -> CameraIntrinsics:
     )
 
 
-def _camera_mount(config: dict[str, Any]) -> np.ndarray:
+def _camera_mount(config: dict[str, Any], *, require_control_ready: bool = False) -> np.ndarray:
     camera = dict(config.get("camera", {}))
-    if "R_BC" in camera:
+    explicit = camera.get("R_BC") is not None
+    if explicit:
         matrix = np.asarray(camera["R_BC"], dtype=float)
-        if matrix.shape != (3, 3):
-            raise ValueError("camera.R_BC must be 3x3")
-        return matrix
-    return camera_to_body_mount(float(camera.get("pitch_up_deg", 90.0)))
+    else:
+        matrix = camera_to_body_mount(float(camera.get("pitch_up_deg", 90.0)))
+    matrix = validated_rotation_matrix(matrix, name="camera.R_BC")
+    validation = dict(camera.get("extrinsic_validation", {}))
+    expected_axis = validation.get("expected_optical_axis_body", [0.0, 0.0, -1.0])
+    diagnostics = camera_mount_diagnostics(matrix, expected_optical_axis_body=expected_axis)
+    max_error_deg = float(validation.get("max_optical_axis_error_deg", 5.0))
+    if require_control_ready:
+        if not explicit:
+            raise RuntimeError("camera.R_BC must be explicit before Betaflight RC output is allowed")
+        if validation.get("verified") is not True:
+            raise RuntimeError("camera.extrinsic_validation.verified=true is required for RC output")
+        if str(validation.get("body_frame", "")).upper() != "FRD":
+            raise RuntimeError("camera extrinsic body_frame must be FRD for Betaflight RC output")
+        if str(validation.get("camera_frame", "")) != "opencv_x_right_y_down_z_forward":
+            raise RuntimeError("camera extrinsic camera_frame must use the OpenCV ray convention")
+        if diagnostics["optical_axis_error_deg"] > max_error_deg:
+            raise RuntimeError(
+                "camera optical axis does not point body-up within the configured tolerance: "
+                f"{diagnostics['optical_axis_error_deg']:.3f} deg"
+            )
+    return matrix
+
+
+def _camera_calibration_metadata(config: dict[str, Any], R_BC: np.ndarray) -> dict[str, Any]:
+    camera = dict(config.get("camera", {}))
+    validation = dict(camera.get("extrinsic_validation", {}))
+    expected_axis = validation.get("expected_optical_axis_body", [0.0, 0.0, -1.0])
+    diagnostics = camera_mount_diagnostics(R_BC, expected_optical_axis_body=expected_axis)
+    max_error_deg = float(validation.get("max_optical_axis_error_deg", 5.0))
+    explicit = camera.get("R_BC") is not None
+    verified = validation.get("verified") is True
+    frame_conventions_valid = bool(
+        str(validation.get("body_frame", "")).upper() == "FRD"
+        and str(validation.get("camera_frame", "")) == "opencv_x_right_y_down_z_forward"
+    )
+    timestamp_source = str(camera.get("timestamp_source", "capture_return_monotonic"))
+    return {
+        "intrinsics": {
+            "width": int(camera.get("width", 640)),
+            "height": int(camera.get("height", 480)),
+            "fx": float(camera.get("fx", 500.0)),
+            "fy": float(camera.get("fy", 500.0)),
+            "cx": float(camera.get("cx", float(camera.get("width", 640)) / 2.0)),
+            "cy": float(camera.get("cy", float(camera.get("height", 480)) / 2.0)),
+            "distortion_coefficients": [
+                float(value) for value in camera.get("distortion_coefficients", [])
+            ],
+            "calibration_id": str(camera.get("intrinsic_calibration_id", "")),
+        },
+        "extrinsic": {
+            "source": "R_BC" if explicit else "legacy_pitch_up_deg",
+            "R_BC": [[float(value) for value in row] for row in np.asarray(R_BC)],
+            "verified": verified,
+            "body_frame": str(validation.get("body_frame", "")),
+            "camera_frame": str(validation.get("camera_frame", "")),
+            "max_optical_axis_error_deg": max_error_deg,
+            **diagnostics,
+            "control_ready": bool(
+                explicit
+                and verified
+                and frame_conventions_valid
+                and diagnostics["optical_axis_error_deg"] <= max_error_deg
+            ),
+        },
+        "timestamp": {
+            "source": timestamp_source,
+            "hardware_exposure": timestamp_source == "v4l2_hardware_exposure_monotonic",
+            "note": (
+                "exposure timestamp"
+                if timestamp_source == "v4l2_hardware_exposure_monotonic"
+                else "software approximation; not the hardware exposure instant"
+            ),
+        },
+    }
 
 
 def _configure_torch_runtime(config: dict[str, Any], *, torch_module: Any = None) -> None:
@@ -1407,12 +1551,40 @@ def _msp_log_stats(
         "control_authorization_reason": authorization.reason,
         "config_conflict_free": int(authorization.config_conflict_free),
         "msp_io_worker_enabled": int(runtime_config.io_worker_enabled),
+        "msp_transport_mode": runtime_config.transport_mode,
         "msp_request_count": stats.request_count,
         "msp_request_error_count": stats.request_error_count,
         "msp_tx_bytes": stats.tx_bytes,
         "msp_rx_bytes": stats.rx_bytes,
         "msp_set_raw_rc_attempt_count": stats.set_raw_rc_attempt_count,
         "msp_set_raw_rc_success_count": stats.set_raw_rc_success_count,
+        "msp_set_raw_rc_write_attempt_count": stats.set_raw_rc_write_attempt_count,
+        "msp_set_raw_rc_write_success_count": stats.set_raw_rc_write_success_count,
+        "msp_set_raw_rc_write_error_count": stats.set_raw_rc_write_error_count,
+        "msp_set_raw_rc_ack_count": stats.set_raw_rc_ack_count,
+        "msp_set_raw_rc_pending_depth": stats.set_raw_rc_pending_depth,
+        "msp_set_raw_rc_last_write_age_s": (
+            ""
+            if stats.set_raw_rc_last_write_monotonic_s is None
+            else max(0.0, timestamp - stats.set_raw_rc_last_write_monotonic_s)
+        ),
+        "msp_set_raw_rc_ack_age_s": (
+            ""
+            if stats.set_raw_rc_last_ack_monotonic_s is None
+            else max(0.0, timestamp - stats.set_raw_rc_last_ack_monotonic_s)
+        ),
+        "msp_set_raw_rc_ack_fresh": "",
+        "msp_set_raw_rc_write_interval_s": stats.set_raw_rc_write_interval_s,
+        "msp_set_raw_rc_write_max_interval_s": stats.set_raw_rc_write_max_interval_s,
+        "msp_set_raw_rc_write_rate_hz": stats.set_raw_rc_write_rate_hz,
+        "msp_set_raw_rc_write_p50_interval_s": stats.set_raw_rc_write_p50_interval_s,
+        "msp_set_raw_rc_write_p95_interval_s": stats.set_raw_rc_write_p95_interval_s,
+        "msp_set_raw_rc_write_p99_interval_s": stats.set_raw_rc_write_p99_interval_s,
+        "msp_set_raw_rc_write_p999_interval_s": stats.set_raw_rc_write_p999_interval_s,
+        "msp_async_pending_telemetry_count": stats.async_pending_telemetry_count,
+        "msp_rx_discarded_bytes": stats.rx_discarded_bytes,
+        "msp_rx_checksum_error_count": stats.rx_checksum_error_count,
+        "msp_rx_parser_error_count": stats.rx_parser_error_count,
         "msp_worker_poll_count": "",
         "msp_worker_poll_error_count": "",
         "msp_worker_staged_count": "",
@@ -1435,6 +1607,8 @@ def _msp_log_stats(
         "msp_last_publish_prefill_ready": "",
         "msp_last_publish_physical_rc_fresh": "",
         "msp_last_publish_command_fresh": "",
+        "msp_last_publish_set_raw_rc_ack_fresh": "",
+        "msp_rc_poll_suspended": "",
         "msp_last_sent_channels": (),
         "msp_status_age_s": "",
         "msp_attitude_age_s": "",
@@ -1498,6 +1672,11 @@ def _msp_log_stats(
                 worker_snapshot.last_publish_physical_rc_fresh
             ),
             msp_last_publish_command_fresh=int(worker_snapshot.last_publish_command_fresh),
+            msp_last_publish_set_raw_rc_ack_fresh=int(
+                worker_snapshot.last_publish_set_raw_rc_ack_fresh
+            ),
+            msp_set_raw_rc_ack_fresh=int(worker_snapshot.set_raw_rc_ack_fresh),
+            msp_rc_poll_suspended=int(worker_snapshot.rc_poll_suspended),
             msp_last_sent_channels=worker_snapshot.last_sent_channels,
             msp_status_age_s=worker_snapshot.status_age_s,
             msp_attitude_age_s=worker_snapshot.attitude_age_s,
@@ -1581,12 +1760,19 @@ def _voltage_ok(telemetry: BetaflightTelemetry | None, safety_cfg: dict[str, Any
     return bool(telemetry is not None and telemetry.analog is not None and telemetry.analog.vbat_v >= threshold)
 
 
-def _aux_enabled(telemetry: BetaflightTelemetry | None, safety_cfg: dict[str, Any]) -> bool:
+def _aux_enabled(
+    telemetry: BetaflightTelemetry | None,
+    safety_cfg: dict[str, Any],
+    *,
+    override_active: bool = False,
+) -> bool:
     if not bool(safety_cfg.get("require_aux_enable", True)):
+        return True
+    aux = dict(safety_cfg.get("aux_enable", {}))
+    if bool(aux.get("satisfied_by_override_mode", False)) and override_active:
         return True
     if telemetry is None or not telemetry.rc_channels:
         return False
-    aux = dict(safety_cfg.get("aux_enable", {}))
     return aux_range_enabled(
         telemetry.rc_channels,
         channel_index=int(aux.get("channel_index", 5)),
@@ -1639,6 +1825,7 @@ def _write_run_meta(
     control_authorization: dict[str, Any] | None = None,
     msp_runtime: dict[str, Any] | None = None,
     attitude_fusion: dict[str, Any] | None = None,
+    camera_calibration: dict[str, Any] | None = None,
     platform_health: dict[str, Any] | None = None,
     web_telemetry: dict[str, Any] | None = None,
 ) -> None:
@@ -1672,6 +1859,7 @@ def _write_run_meta(
         "control_authorization": control_authorization or {},
         "msp_runtime": msp_runtime or {},
         "attitude_fusion": attitude_fusion or {},
+        "camera_calibration": camera_calibration or {},
         "platform_health": platform_health or {},
         "web_telemetry": web_telemetry or {},
         "detector": detector_metadata or {},
@@ -1718,12 +1906,32 @@ def _log_fields(channel_count: int) -> list[str]:
         "control_authorization_reason",
         "config_conflict_free",
         "msp_io_worker_enabled",
+        "msp_transport_mode",
         "msp_request_count",
         "msp_request_error_count",
         "msp_tx_bytes",
         "msp_rx_bytes",
         "msp_set_raw_rc_attempt_count",
         "msp_set_raw_rc_success_count",
+        "msp_set_raw_rc_write_attempt_count",
+        "msp_set_raw_rc_write_success_count",
+        "msp_set_raw_rc_write_error_count",
+        "msp_set_raw_rc_ack_count",
+        "msp_set_raw_rc_pending_depth",
+        "msp_set_raw_rc_last_write_age_s",
+        "msp_set_raw_rc_ack_age_s",
+        "msp_set_raw_rc_ack_fresh",
+        "msp_set_raw_rc_write_interval_s",
+        "msp_set_raw_rc_write_max_interval_s",
+        "msp_set_raw_rc_write_rate_hz",
+        "msp_set_raw_rc_write_p50_interval_s",
+        "msp_set_raw_rc_write_p95_interval_s",
+        "msp_set_raw_rc_write_p99_interval_s",
+        "msp_set_raw_rc_write_p999_interval_s",
+        "msp_async_pending_telemetry_count",
+        "msp_rx_discarded_bytes",
+        "msp_rx_checksum_error_count",
+        "msp_rx_parser_error_count",
         "msp_worker_poll_count",
         "msp_worker_poll_error_count",
         "msp_worker_staged_count",
@@ -1746,6 +1954,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_last_publish_prefill_ready",
         "msp_last_publish_physical_rc_fresh",
         "msp_last_publish_command_fresh",
+        "msp_last_publish_set_raw_rc_ack_fresh",
+        "msp_rc_poll_suspended",
         "msp_status_age_s",
         "msp_attitude_age_s",
         "msp_analog_age_s",
@@ -1788,6 +1998,9 @@ def _log_fields(channel_count: int) -> list[str]:
         "acc_raw_x",
         "acc_raw_y",
         "acc_raw_z",
+        "gyro_msp_raw_x",
+        "gyro_msp_raw_y",
+        "gyro_msp_raw_z",
         "gyro_roll_deg_s",
         "gyro_pitch_deg_s",
         "gyro_yaw_deg_s",
@@ -1892,6 +2105,25 @@ def _log_fields(channel_count: int) -> list[str]:
         "g_eval_x",
         "g_eval_y",
         "g_eval_z",
+        "pre_shape_sp_valid",
+        "pre_shape_sp_source",
+        "pre_shape_sp_reject_reason",
+        "pre_shape_sp_roll_rate_deg_s",
+        "pre_shape_sp_pitch_rate_deg_s",
+        "shaping_valid",
+        "shaping_reason",
+        "entry_handoff_active",
+        "entry_handoff_progress",
+        "entry_handoff_source",
+        "entry_handoff_start_roll_rate_deg_s",
+        "entry_handoff_start_pitch_rate_deg_s",
+        "tilt_roll_attitude_deg",
+        "tilt_pitch_attitude_deg",
+        "tilt_roll_softcap_factor",
+        "tilt_pitch_softcap_factor",
+        "tilt_roll_level_weight",
+        "tilt_pitch_level_weight",
+        "tilt_hardcap_active",
         "sp_valid",
         "sp_source",
         "sp_reject_reason",
@@ -1967,7 +2199,9 @@ def _log_row(
     detector_stats: dict[str, Any],
     detection: FrameDetection | None,
     result: VisionGuidanceResult | None,
+    pre_shape_setpoint: GuidanceSetpoint,
     setpoint: GuidanceSetpoint,
+    shaping: GuidanceCommandShapingDiagnostics,
     rc_command: RcCommand,
     safety_state: str,
     safety_reason: str,
@@ -2015,12 +2249,58 @@ def _log_row(
         "control_authorization_reason": detector_stats.get("control_authorization_reason", ""),
         "config_conflict_free": detector_stats.get("config_conflict_free", ""),
         "msp_io_worker_enabled": detector_stats.get("msp_io_worker_enabled", ""),
+        "msp_transport_mode": detector_stats.get("msp_transport_mode", ""),
         "msp_request_count": detector_stats.get("msp_request_count", ""),
         "msp_request_error_count": detector_stats.get("msp_request_error_count", ""),
         "msp_tx_bytes": detector_stats.get("msp_tx_bytes", ""),
         "msp_rx_bytes": detector_stats.get("msp_rx_bytes", ""),
         "msp_set_raw_rc_attempt_count": detector_stats.get("msp_set_raw_rc_attempt_count", ""),
         "msp_set_raw_rc_success_count": detector_stats.get("msp_set_raw_rc_success_count", ""),
+        "msp_set_raw_rc_write_attempt_count": detector_stats.get(
+            "msp_set_raw_rc_write_attempt_count", ""
+        ),
+        "msp_set_raw_rc_write_success_count": detector_stats.get(
+            "msp_set_raw_rc_write_success_count", ""
+        ),
+        "msp_set_raw_rc_write_error_count": detector_stats.get(
+            "msp_set_raw_rc_write_error_count", ""
+        ),
+        "msp_set_raw_rc_ack_count": detector_stats.get("msp_set_raw_rc_ack_count", ""),
+        "msp_set_raw_rc_pending_depth": detector_stats.get("msp_set_raw_rc_pending_depth", ""),
+        "msp_set_raw_rc_last_write_age_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_last_write_age_s", precision=6
+        ),
+        "msp_set_raw_rc_ack_age_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_ack_age_s", precision=6
+        ),
+        "msp_set_raw_rc_ack_fresh": detector_stats.get("msp_set_raw_rc_ack_fresh", ""),
+        "msp_set_raw_rc_write_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_interval_s", precision=6
+        ),
+        "msp_set_raw_rc_write_max_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_max_interval_s", precision=6
+        ),
+        "msp_set_raw_rc_write_rate_hz": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_rate_hz", precision=3
+        ),
+        "msp_set_raw_rc_write_p50_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_p50_interval_s", precision=6
+        ),
+        "msp_set_raw_rc_write_p95_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_p95_interval_s", precision=6
+        ),
+        "msp_set_raw_rc_write_p99_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_p99_interval_s", precision=6
+        ),
+        "msp_set_raw_rc_write_p999_interval_s": _stats_float(
+            detector_stats, "msp_set_raw_rc_write_p999_interval_s", precision=6
+        ),
+        "msp_async_pending_telemetry_count": detector_stats.get(
+            "msp_async_pending_telemetry_count", ""
+        ),
+        "msp_rx_discarded_bytes": detector_stats.get("msp_rx_discarded_bytes", ""),
+        "msp_rx_checksum_error_count": detector_stats.get("msp_rx_checksum_error_count", ""),
+        "msp_rx_parser_error_count": detector_stats.get("msp_rx_parser_error_count", ""),
         "msp_worker_poll_count": detector_stats.get("msp_worker_poll_count", ""),
         "msp_worker_poll_error_count": detector_stats.get("msp_worker_poll_error_count", ""),
         "msp_worker_staged_count": detector_stats.get("msp_worker_staged_count", ""),
@@ -2055,6 +2335,10 @@ def _log_row(
         "msp_last_publish_command_fresh": detector_stats.get(
             "msp_last_publish_command_fresh", ""
         ),
+        "msp_last_publish_set_raw_rc_ack_fresh": detector_stats.get(
+            "msp_last_publish_set_raw_rc_ack_fresh", ""
+        ),
+        "msp_rc_poll_suspended": detector_stats.get("msp_rc_poll_suspended", ""),
         "msp_status_age_s": _stats_float(detector_stats, "msp_status_age_s", precision=6),
         "msp_attitude_age_s": _stats_float(detector_stats, "msp_attitude_age_s", precision=6),
         "msp_analog_age_s": _stats_float(detector_stats, "msp_analog_age_s", precision=6),
@@ -2107,9 +2391,12 @@ def _log_row(
         "acc_raw_x": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 0),
         "acc_raw_y": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 1),
         "acc_raw_z": _sequence_field(None if raw_imu is None else raw_imu.acc_raw, 2),
-        "gyro_roll_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 0),
-        "gyro_pitch_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 1),
-        "gyro_yaw_deg_s": _sequence_field(None if raw_imu is None else raw_imu.gyro_deg_s, 2),
+        "gyro_msp_raw_x": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 0),
+        "gyro_msp_raw_y": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 1),
+        "gyro_msp_raw_z": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 2),
+        "gyro_roll_deg_s": "",
+        "gyro_pitch_deg_s": "",
+        "gyro_yaw_deg_s": "",
         "mag_raw_x": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 0),
         "mag_raw_y": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 1),
         "mag_raw_z": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 2),
@@ -2213,6 +2500,33 @@ def _log_row(
         "g_eval_x": "" if guidance is None else f"{guidance.g_eval[0]:.9f}",
         "g_eval_y": "" if guidance is None else f"{guidance.g_eval[1]:.9f}",
         "g_eval_z": "" if guidance is None else f"{guidance.g_eval[2]:.9f}",
+        "pre_shape_sp_valid": int(pre_shape_setpoint.valid),
+        "pre_shape_sp_source": pre_shape_setpoint.source,
+        "pre_shape_sp_reject_reason": pre_shape_setpoint.reject_reason,
+        "pre_shape_sp_roll_rate_deg_s": f"{pre_shape_setpoint.roll_rate_deg_s:.6f}",
+        "pre_shape_sp_pitch_rate_deg_s": f"{pre_shape_setpoint.pitch_rate_deg_s:.6f}",
+        "shaping_valid": int(shaping.valid),
+        "shaping_reason": shaping.reason,
+        "entry_handoff_active": int(shaping.entry_active),
+        "entry_handoff_progress": f"{shaping.entry_progress:.6f}",
+        "entry_handoff_source": shaping.entry_source,
+        "entry_handoff_start_roll_rate_deg_s": (
+            f"{shaping.entry_start_roll_rate_deg_s:.6f}"
+        ),
+        "entry_handoff_start_pitch_rate_deg_s": (
+            f"{shaping.entry_start_pitch_rate_deg_s:.6f}"
+        ),
+        "tilt_roll_attitude_deg": _format_optional_float(
+            shaping.roll_attitude_deg, precision=6
+        ),
+        "tilt_pitch_attitude_deg": _format_optional_float(
+            shaping.pitch_attitude_deg, precision=6
+        ),
+        "tilt_roll_softcap_factor": f"{shaping.roll_softcap_factor:.6f}",
+        "tilt_pitch_softcap_factor": f"{shaping.pitch_softcap_factor:.6f}",
+        "tilt_roll_level_weight": f"{shaping.roll_level_weight:.6f}",
+        "tilt_pitch_level_weight": f"{shaping.pitch_level_weight:.6f}",
+        "tilt_hardcap_active": int(shaping.hardcap_active),
         "sp_valid": int(setpoint.valid),
         "sp_source": setpoint.source,
         "sp_reject_reason": setpoint.reject_reason,
