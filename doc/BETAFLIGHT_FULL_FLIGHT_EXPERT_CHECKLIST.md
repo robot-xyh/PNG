@@ -125,7 +125,9 @@ src当前主要读取STATUS、ATTITUDE和RC；Betaflight路径中的三轴角速
 状态不完整。完整飞行至少需要：armed、OVERRIDE、physical RC fresh、MSP fresh、gyro/attitude
 fresh、camera fresh、detection fresh、VBAT/cell/current/LQ、watchdog、target和物理DISARM门禁。
 
-需要确认MSP RAW IMU或其他gyro来源及BMI270缩放，并和Blackbox交叉校验。任何门禁失败
+需要确认MSP RAW IMU或其他gyro来源及BMI270/固件缩放，并和Blackbox交叉校验。当前定制固件
+动态积分实测约为16 raw unit/deg，但官方同代代码声称输出`gyroRateDps()`，因此在Blackbox确认
+前只记录`gyro_msp_raw_*`，接管从零rate开始。任何门禁失败
 都必须明确进入人工RC、受控保持或DISARM之一，不能默认发送中心杆量或上次指令。
 
 ## S6. 供电、进程和systemd
@@ -181,9 +183,12 @@ src存在冲突值：默认 `hover/strike=0.078/0.082`，速度profile为 `0.283
 
 ## J3. 相机、时间戳和坐标系
 
-确认640x512输出对应的内参、畸变、上视外参 `R_BC`、安装刚性、振动和R/P输出符号。当前
-时间戳不等于可信曝光时刻；需使用V4L2单调时间戳，记录dequeue、预处理、推理、PNG和发送
-时间，并用LED或机体动作与Blackbox gyro对齐。零拷贝当前失败，延迟必须按单槽回退路径统计。
+确认640x512输出对应的内参、畸变、上视外参 `R_BC`、安装刚性、振动和R/P输出符号。坐标定义
+固定为OpenCV `x右/y下/z光轴` 到Betaflight FRD `x前/y右/z下`，所以中心光轴必须映射到
+`[0,0,-1]`。当前 `pitch_up_deg=90` 实际映射到机体 `+X`，只允许LOG_ONLY；批准工具要求显式
+正交、det=+1的 `R_BC` 和实物方向验证记录。时间戳不等于可信曝光时刻；需使用V4L2单调
+时间戳，记录dequeue、预处理、推理、PNG和发送时间，并用LED或机体动作与Blackbox gyro
+对齐。负的 `detection_attitude_offset_ms` 只表示最新姿态晚于历史图像，不可直接当同步误差。
 
 ## J4. RKNN检测与跟踪
 

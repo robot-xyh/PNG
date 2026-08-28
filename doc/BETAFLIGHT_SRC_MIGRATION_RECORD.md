@@ -4,7 +4,8 @@
 
 本文记录从 Orange Pi `/home/orangepi/src/circle_pilot` 参考或移植到当前 Python 工程的
 非视觉能力。原目录不修改；历史 Python 实机验证保持无桨、`LOG_ONLY`。2026-07-15 新增的
-Python `noprop_bench` 输出路径仍须在 Orange Pi 实测，不能把代码测试当作实机验收。机器可读来源、哈希和候选参数保存在
+Python `noprop_bench` 已完成多轮无桨实测；2026-08-27 新增的异步单 UART 调度仍须重新部署
+验证，不能把代码测试当作实机验收。机器可读来源、哈希和候选参数保存在
 `config/betaflight.src-reference.json`，该文件明确禁止作为运行配置加载。
 
 ## 来源基线
@@ -49,7 +50,9 @@ Python `noprop_bench` 输出路径仍须在 Orange Pi 实测，不能把代码�
 |S4 Orange Pi 验证|完成|60 s 日志、RAW RC 发送计数为 0、文件哈希一致|
 |S5 配置审计工具|完成|schema v2、diff/dump 解析、一致性审计、时钟与 artifact 哈希|
 |S6 真实 CLI 审计|完成|八类配置完整，解析错误/重复/跨导出冲突均为 0|
-|S7 Python PNG 无桨 RC 验证|代码完成、实机待执行|受限profile、预填状态机和测试已完成；缺新快照与板端CSV/Blackbox证据|
+|S7 Python PNG 无桨 RC 验证|完成但未放桨|多轮 ARM/RC7/动态目标 CSV；包线正确但同步 MSP 有 65--69 ms 尖峰|
+|S8 异步单 UART 调度|代码完成、实机待执行|本地 244 项测试；Orange Pi 断电，尚无 schema v7 板端证据|
+|S9 接管平滑与倾角包络|代码完成、实机待执行|本地 252 项测试；旧批准失效，尚无 schema v8 板端证据|
 
 ## 留档规则
 
@@ -499,3 +502,225 @@ RAW_IMU、RC、ATTITUDE、ANALOG 轮询共享时隙；本轮各命令最坏 RTT 
 `logs/archives/noprop_isolated_algorithm_validation_20260827.tar.gz`，SHA256 为
 `49a55c3cd3641a30188cac24584bbd2910ffc3f47a9e2a8cbd0eae84f3f407b9`。修改后本地
 `python3 -m unittest discover -s tests -v` 为 234/234 通过。
+
+## 2026-08-27 异步单 UART MSP pipeline（离线实现）
+
+历史 C++ `src/circle_pilot` 的关键设计是 `writeRawRc()` 写后即返、持久 RX buffer、每周期先
+SET 后查询并限制响应 drain 时间。Python 旧实现虽然有独立 worker，仍对每个 SET_RAW_RC 和
+遥测请求同步等待响应，实机 RTT 13--36 ms 时会直接拉长 50 Hz 发送间隔。本次按来源架构迁移，
+但没有复制其单一 SET 时间戳缺陷，而是用 FIFO 为每个 SET 写入保存独立 request ID 和时间。
+
+实现分层如下：
+
+- `BetaflightMSPAdapter` 保留同步 `request()` 供启动 identity、版本和 BOXID 探测；运行时切换
+  `async_pipeline` 后串口 timeout 为 0，SET 写入不调用 `flush()`、不等待 ACK。
+- RX parser 使用跨周期 byte buffer，支持分片/粘包/jumbo 帧，遇噪声或坏 checksum 后逐字节
+  重同步；遥测按 command 保证最多一个未决请求，SET ACK 按 FIFO 返回原 request ID。
+- worker 每 20 ms 先写最新 SET，再排入最多一个到期 STATUS/ATTITUDE/RAW_IMU/RC/ANALOG，
+  最后 drain 最多 3 ms；阻塞后从当前完成时间重新排期，不突发补发遗漏周期。
+- 当前预算从历史 5/10/20/10/2 Hz 调整为 5/10/5/10/1 Hz。OVERRIDE active 且已有有效人工
+  锁存后暂停 RC 请求，STATUS 报告关闭后恢复，避免 885 us 回读既占带宽又污染人工基线。
+- `prefill_success_count` 只由人工透传 ACK 增加，批准配置仍要求 10 帧。最后 SET ACK 超过
+  250 ms 时主安全状态机和 worker 双重阻断算法，worker 继续发送人工透传以支持恢复。
+- 当前 RC7 同时是 OVERRIDE 和 AUX 控制许可；配置显式声明
+  `satisfied_by_override_mode=true`，避免暂停 RC 查询后用切换前 RC7 低位误判 `aux_disabled`。
+  独立 AUX 方案不得启用该声明。
+
+CSV 升级为 schema v7，区分 SET write attempt/success/error 与 ACK count/age/pending，记录真实
+write interval、max、平均 Hz、P50/P95/P99/P99.9，以及 RX discarded/checksum/parser error 和
+发送当刻 ACK gate。Web schema v5直接显示这些字段。审计 v7 以写成功时间而不是同步 ACK
+完成时间验收：写入率至少 49 Hz、P99.9 gap 不超过 40 ms、max gap 不超过 60 ms、ACK stall
+不超过 250 ms，且 885 us、写错误、parser/checksum error 和算法门禁违规均为 0。
+
+新增伪串口测试覆盖分片/粘包、噪声和坏 checksum、延迟 ACK 不阻塞 SET、SET 优先、单未决
+遥测、ACK stale 降级、OVERRIDE 后 RC 暂停和错过周期不突发。完整本地测试为 244/244 通过。
+实现期间 Orange Pi 按用户要求断电，未复制文件、未修改 Betaflight baud、未发送 RC；下一次
+实机工作先在 `/dev/ttyS1@115200` 做 log-only 和无桨 schema v7 复验，再比较 230400。只有两种
+波特率均不满足门限时，才设计 FC UART4 到 Orange Pi `/dev/ttyS7` 的双适配器 fallback。
+
+## 2026-08-27 接管平滑与倾角包络（离线实现）
+
+本阶段借鉴 `circle_ai_strike` 的
+`core/include/circle/strike_png/entry_handoff.hpp` 和
+`core/src/strike/modules/tilt_envelope.cpp`，没有修改 LOS/TTC、完整 ByteTrack、MSP ownership、
+ID 50/mask 15 或 3/3/0 deg/s、1000--1100 us 无桨包线。命令链路明确为：
+
+```text
+guidance -> GuidanceSetpointHold -> entry handoff -> tilt envelope
+         -> Betaflight Rate inverse -> PWM slew -> MSP_SET_RAW_RC
+```
+
+接管上升沿捕获新鲜 `MSP_RAW_IMU` roll/pitch 角速度，超过 0.25 s 则以零为起点；0.8 s 内使用
+`h=u^2(3-2u)` 从起点混合到导引目标。该层不改 yaw/thrust，worker 原有油门交接保持唯一。
+门禁关闭或 setpoint 无效会复位，下次接管重新捕获，不沿用上次状态。
+
+倾角包络先对“继续外倾”的命令施加线性 soft factor，再以
+`w=smoothstep((|att|-max)/margin)` 混合到限幅的 `-kp*attitude` 回平 rate。正负 roll/pitch 对称，
+向内命令不受软限幅；达到 `max+margin` 后必须输出反向回平命令。无桨配置启用
+`35 deg/10 deg/5 deg/kp 3/max 3 deg/s`，姿态缺失时 fail closed。参考 C++ 的可选 LPF/jerk
+没有迁移，避免与下游现有 PWM slew 重复整形。
+
+CSV 升级为 schema v8，保留 `sp_*` 表示最终整形后 setpoint，并增加整形前 R/P、接管起点/
+来源/进度、姿态、soft factor、level weight、hardcap 和拒绝原因。Web schema v6 在只读页面显示
+同一组数据。离线审计兼容 schema v2--v8，并在 v8 检查有限数、`[0,1]` 因子、算法行整形有效
+以及硬区输出方向。无桨批准生成器要求两项保护开启，并限制 handoff、gyro age、倾角几何和
+最大回平 rate。
+
+本阶段仅在工作站离线实现并运行测试；Orange Pi 保持断电，没有串口写入或硬件结论。无桨
+配置哈希已经改变，旧 approval 必然失效。下一次板端工作必须重新采集 CLI 快照、生成批准，
+再完成 schema v8 的 log-only、prefill、ARM、动态目标、RC7 接管、软/硬倾角和人工退出流程。
+通过前继续保持拆桨，且不更新 S8/S9 为实机完成。当前完整本地回归为 252/252 通过。
+
+## 2026-08-27 Orange Pi 信号供电只读复验
+
+局域网同时发现 `192.168.124.42` 和 `192.168.124.48` 两台 SSH 主机。仅 `.42` 的 ED25519
+指纹与历史 `10.168.1.103/.42` 部署记录一致；连接后又以 `orangepi5max`、`aarch64` 和
+`/home/orangepi/png_betaflight_python` 三项确认目标。`.48` 只做端口和公钥扫描，未登录、未复制
+文件、未访问串口。
+
+在只有信号电、没有功率电的条件下，将当前公共代码、测试、示例配置和文档同步到 `.42`，不
+覆盖硬件专用 `*.local.json`。同步后关键运行文件 SHA256 与工作站一致，板端 Betaflight 聚焦
+测试为 94/94 通过。随后先备份
+`logs/deployment_backups/20260828_110604/betaflight.rk3588.noprop.local.json`，再只合并异步
+MSP、5 Hz RAW_IMU、ACK stale、entry handoff、tilt envelope 和 RC7 mode gate；串口、相机、
+模型、Web、rate gain 和无桨 RC 包线保持不变。配置 SHA256 从
+`bd0949414405cb0c44f530b925d50fee33a00299b5d167099e751fefeed3907f` 变为
+`e93536557aef4874e16edde43719ff9e708bc5518e6a422aa488264b8139e4c7`，旧 approval 按设计报告
+`parameters_sha256_mismatch`。
+
+90 s 运行固定使用 `--control-mode log_only`，未传 `--allow-control`。日志
+`logs/betaflight_log_20260828_110650.csv` 为 schema v8，共 1791 行、89.955 s；审计
+`passed=true`、violations 为 0。SET_RAW_RC attempt/success/error 均为 0，MSP request、worker、
+RX discard/checksum/parser 和 Web error 均为 0，遥测/姿态无 stale 行，相机 failed frame 为 0。
+RKNN 总耗时 P50/最大为 6.122/13.191 ms，最高板温 45.307 C。主循环中的 459 个
+`perception_no_new_result` 是 20 Hz 主循环等待 15 Hz 感知结果，不是相机失败；本轮没有目标
+轨迹，因此 entry handoff 和 tilt hardcap 均未触发，不能作为 S9 动态接管验收。完整证据归档为
+`logs/archives/signal_only_schema8_20260828_110650.tar.gz`，SHA256 为
+`20acf61b946527f871e04b9f3dffb73931d10210b7e1b1f5debd8d512d8ddeca`。
+
+## 2026-08-28 动力电 LOG_ONLY 与相机标定门禁
+
+仅连接确认过的 `192.168.124.42/orangepi5max`；未访问局域网中的 `.48`。四桨保持拆除，RC5
+为DISARM、RC7为人工侧，运行90 s `LOG_ONLY + RKNN/ByteTrack`，未传 `--allow-control`。
+`logs/power_logonly_intrinsics_check_20260828_132320.csv` 共1788行、89.957 s，审计通过且0违规。
+电池24.8--24.9 V、电流0.04--0.19 A、最高温度55.461 C；MSP worker、RX parser/checksum、
+相机和Web错误均为0，SET_RAW_RC attempt/success/error均为0。证据归档为
+`logs/archives/power_logonly_intrinsics_check_20260828_132714.tar.gz`，SHA256为
+`6dbf10667469baa71f307790e010bdde807eb1e5610d28b977cc1654460efa0c`。
+
+1601个新感知结果中338帧有YOLO候选、329帧为confirmed ByteTrack；两段连续轨迹分别为123和
+206帧，只有3次有/无目标边沿，不是逐帧ID抖动。其余1251帧为`no_detection_candidates`。
+329个目标帧全部`fusion_status=processed`；`detection_attitude_offset_ms`中位约-70 ms、最差
+-212 ms，表示最新姿态样本晚于历史图像并可用于插值，不等同于曝光同步误差。实际曝光时刻
+仍使用`capture.read()`返回后的单调时间近似，尚无V4L2硬件曝光时间戳。
+
+代码复核发现当前实机配置只有`pitch_up_deg=90`。在OpenCV相机`x右/y下/z光轴`和Betaflight
+FRD`x前/y右/z下`定义下，旧矩阵把中心光轴映射到机体`+X`，相对上方`-Z`偏差90 deg。本次
+新增严格外参门禁：矩阵必须有限、正交且det=+1；启动meta记录三根相机轴、上视误差、来源、
+验证状态和时间戳来源；任何RC输出在打开串口前要求显式`R_BC`、FRD/OpenCV声明、人工验证和
+不超过阈值的上视误差。无桨批准工具执行同一校验并把诊断写入批准文件。示例配置保持
+`verified=false`，不得在未完成实物画面方向测试时生成新批准或发送RC。
+
+公共文件部署包SHA256为
+`725fc5469036a7d77c80de6ba4f561cb710a28632e2223db3b0482318ac1edaa`；覆盖前备份位于
+`logs/deployment_backups/20260828_133958/camera_extrinsic_public_files_before.tar.gz`，SHA256为
+`cef88afa3bfda04ca6789c7790ebfe2eb8c73ce5141685a43fe77691e6da714c`。板端几何、日志和批准
+工具共27/27项测试通过，硬件local配置哈希仍为`e9353655...139e4c7`。随后30 s LOG_ONLY产生
+`camera_guard_logonly_20260828_134141.csv`，共599行、审计0违规、相机/MSP parser错误和所有
+SET_RAW_RC attempt/write均为0；meta实测报告`legacy_pitch_up_deg/90 deg/control_ready=false`。
+同一配置带`--allow-control`时以退出码1在打开`/dev/ttyS1`前拒绝，串口保持释放。证据包为
+`logs/archives/camera_extrinsic_guard_20260828_134345.tar.gz`，SHA256为
+`24b3b20e64e6206d1b5b45b78900ed94748759ad78d231ef0fdd6bd2698e8933`。
+
+## 2026-08-28 上视相机轴向与 Betaflight 姿态符号实测
+
+仅使用`.42/orangepi5max`，保持拆桨、DISARM、RC7人工侧和`LOG_ONLY`。目标沿机头移动时图像
+`+v`，沿机右移动时图像`+u`，得到OpenCV到FRD候选矩阵
+`R_BC=[[0,1,0],[1,0,0],[0,0,-1]]`；其光轴映射到机体`-Z`，正交误差为0且det=+1。三份轴向
+日志归档为`logs/archives/extrinsic_axis_labeled_20260828_140724.tar.gz`，SHA256为
+`4efc2634b4501ea2d0db79dbd4ebd61aa76d079cba134557da84035b733dd462`。矩阵先以
+`extrinsic_validation.verified=false`写入板端配置，旧approval继续失效。
+
+墙面固定测试使用偏左但稳定的静态目标。基线`extrinsic_wall_center_check_20260828_150535.csv`
+末6秒bbox中心为`(153.41,199.81)`，像素标准差`(0.43,1.04)`，姿态约roll/pitch=`1.3/1.5 deg`。
+抬机头后`extrinsic_wall_pitch_up_20260828_151058.csv`中MSP pitch为`-12.9 deg`、bbox v为
+`328.44`；直接使用MSP pitch使惯性LOS相差`29.4 deg`，仅将pitch取反后降至`2.36 deg`。
+右侧下降约10 deg的`extrinsic_wall_right_roll_20260828_151506.csv`中MSP roll为`+11.6 deg`；
+保留roll符号时惯性LOS残差`4.77 deg`，取反会恶化到`20.64 deg`。三轮审计均通过，所有
+SET_RAW_RC attempt/write计数均为0。
+
+因此`AttitudeTelemetry`保留原始MSP显示值，同时定义FRD角为
+`(roll,-pitch,yaw)`；`R_IB`和倾角包络使用FRD角。修正部署后必须重新做静态基线、抬机头和
+右滚LOG_ONLY，确认惯性LOS不再出现约两倍角误差后，才能把外参标记为verified。RAW_IMU pitch
+rate的符号尚未通过动态转动日志确认，entry handoff继续是待验证项，不能从静态姿态试验推断。
+
+修正后板端定向测试40/40通过，完整工作站回归255/255通过。新基线
+`extrinsic_fixed_baseline_20260828_152608.csv`为roll/pitch/yaw=`1.2/1.6/5.0 deg`；与新右滚日志
+`extrinsic_fixed_right_roll_20260828_152236.csv`比较，roll变化`10.4 deg`且yaw相同，滤波后
+惯性LOS仅相差`0.79 deg`。新抬头日志`extrinsic_fixed_pitch_up_20260828_152928.csv`中MSP pitch
+变化`-10.7 deg`、bbox v变化`117.6 px`；滤波后惯性LOS相差`4.53 deg`，该次摆放同时产生
+`10 deg` yaw变化，固定为基线yaw重新计算时残差为`1.74 deg`，旧pitch符号则为`25.03 deg`。
+这些结果关闭了相机轴向和MSP静态姿态pitch符号缺口，但不关闭yaw磁航向精度或RAW_IMU动态
+rate符号缺口。
+
+板端local配置随后仅把`extrinsic_validation.verified`改为true，配置SHA256为
+`ac6fbec6e95dd2d931b8eb2ca30ad4ad77dd2cb89125992c4cb65a00d7b0e31c`；修改前备份位于
+`logs/deployment_backups/20260828_153726/`。`extrinsic_verified_logonly_20260828_153744.csv`
+启动报告`source=R_BC`、`verified=1`、光轴误差0和`control_ready=1`，审计0违规且全部RC写计数
+为0。新快照为`logs/betaflight_snapshots/betaflight_snapshot_20260828_153855/manifest.json`；新
+无桨批准文件SHA256为`3286c626f5a73f844468c568771aa642daf51509444dbfb4606b3b058918bed3`。
+完整证据包为`logs/archives/extrinsic_attitude_validation_20260828_154112.tar.gz`，SHA256为
+`fd489279211862b4e58887d585a54be2cd8cb1299a6e372329430dd23d033d22`。该批准只适用于拆桨台架，
+不构成系留或有桨飞行许可。
+
+## 2026-08-28 RAW_IMU 动态语义与 circle 对照
+
+拆桨、DISARM、RC7人工侧下使用临时只读配置将ATTITUDE/RAW_IMU请求提高到各20 Hz，执行三组
+抬头/回正和右滚/回正动作。`imu_axis_dynamic_20hz_20260828_155837.csv`共3660行、74.99 s，
+roll/pitch跨度为21.3/26.2 deg，审计0违规且全部RC写计数为0。按独立sample age恢复采样时刻后，
+FRD roll角差分与gyro X相关系数为+0.973，FRD nose-up pitch角差分与gyro Y相关系数为-0.972，
+确认raw轴符号为`(+X,-Y)`。逐个动作积分得到roll raw/角度比15.72--16.68、pitch比
+15.92--16.27 raw unit/deg。
+
+该结果与官方Betaflight 4.4/4.5 `MSP_RAW_IMU`序列化调用`gyroRateDps(i)`的语义不一致，不能在
+不知道MICO定制固件实现和Blackbox比例的情况下硬编码`1/16.4`。进一步检查已飞行的
+`/home/orangepi/src/circle_pilot`发现其MSP客户端只请求STATUS/ATTITUDE/RC，不读取RAW_IMU；
+运行时明确把vehicle body rate留空，PNG entry handoff实际从零rate开始。circle也直接保存MSP
+pitch显示值，因此只借鉴其“零rate接管”策略，不复制其姿态符号。
+
+Python据此升级日志schema v9：载荷改记`gyro_msp_raw_x/y/z`，无可信转换时旧
+`gyro_roll/pitch/yaw_deg_s`留空；Web图表明确显示MSP raw。`entry_handoff.rate_source`默认且无桨
+批准强制为`zero`，runner拒绝`gyro`，即使输入新鲜的大幅raw值也从零平滑进入。未来只有取得
+当前固件源码/协议说明并用同一时段Blackbox gyro完成比例、符号和时延交叉验证后，才能新增
+显式校准对象并开放measured-rate handoff。
+
+## 2026-08-28 circle 零速率交接部署与 schema v9 复验
+
+工作站完整回归256/256通过后，将23个公共代码、测试、示例配置和文档文件同步到已确认的
+`.42/orangepi5max`，不覆盖板端硬件local配置。部署包为
+`png_betaflight_circle_reference_20260828.tar.gz`，SHA256为
+`a8a5668fca2b85deeb42afa58b898a2284a08050e72334bfdfcabb0d571008ac`；覆盖前配置和部署包备份
+位于`logs/deployment_backups/20260828_162939/`。板端聚焦回归104/104通过。
+
+随后仅在`guidance_command.entry_handoff`中显式加入`rate_source=zero`，保留0.8 s时长、原串口、
+相机、检测器、外参、rate映射和无桨PWM包线。local配置SHA256变为
+`02944e32a03669cfbbab936d531ee889c30f9e823b2a3d8987f8697c94f19ce7`，旧批准文件按设计因参数
+哈希不匹配而失效。30 s只读日志
+`schema_v9_circle_zero_20260828_163311_20260828_163311.csv`共598行，597行具有
+`gyro_msp_raw_*`，未经验证的`gyro_*_deg_s`全部留空；状态始终为`LOG_ONLY`、publish始终为
+`disabled`，SET_RAW_RC request/write/success/ACK均为0，离线审计通过且0违规。
+
+新飞控快照为
+`logs/betaflight_snapshots/betaflight_snapshot_20260828_163720/manifest.json`，SHA256为
+`7949b2a6bfcb1f8e3bfc5ae6667e4afdeb7379fd86cd5bf892caffc36f0f2696`。据此生成的新无桨批准文件
+SHA256为`a8f6351b2029a5dff2950052e67d602c985283e25bf6e4aa6def1b90b7c62aae`，其scope仍为
+`noprop_bench`。批准后再运行10 s `LOG_ONLY`，启动明确报告`approved=1`；
+`schema_v9_approved_logonly_20260828_164027_20260828_164027.csv`共199行，审计0违规且RC写入仍
+全部为0。程序退出后无残留进程，`/dev/ttyS1`已释放。
+
+本阶段完整证据位于
+`logs/deployment_archives/20260828_circle_reference_zero_handoff/`，其`SHA256SUMS`文件SHA256为
+`00ea7ee4573a222fbb8ee2a37415fe973bfe132100aaa8766a5d5bfc6832826f`。本阶段只证明circle零rate
+策略、schema v9语义、批准绑定和只读链路正确；未发送RC，也不构成有桨或飞行批准。下一阶段
+仍需在拆桨条件下分别完成人工侧启动/prefill、ARM怠速、稳定目标、RC7接管、目标动态移动、
+RC7退出和DISARM，并以schema v9日志验收实际rate/PWM方向、交接连续性和看门狗降级。

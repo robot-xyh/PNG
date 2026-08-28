@@ -11,6 +11,8 @@
 ## 当前能力边界
 
 - 已实现 Betaflight MSP v1 帧收发、常用遥测读取和 `MSP_SET_RAW_RC` 输出。
+- 已实现单 UART 异步 MSP pipeline：SET_RAW_RC 不等待同步 ACK，响应由持久缓冲解析，SET 写入
+  始终先于每周期最多一个遥测请求；同步接口仅保留给启动 identity/BOXID 探测和离线工具。
 - 已实现 8 通道 RC 映射、限幅、斜率限制、watchdog、AUX gate 和安全状态机。
 - 已实现 `examples/run_betaflight_log_only.py`，可记录 MSP、视觉、导引、候选 setpoint、
   输出 RC 和安全状态。
@@ -26,9 +28,9 @@
   DFL 后处理和时序目标门控；原 `yolo_bytetrack` 仍加载 Ultralytics `.pt` 并调用
   `model.track()`，`--yolo-device` 不能把 PyTorch 模型自动切换到 NPU。
 - 已新增 `rknn_bytetrack`：C ABI v2 返回全部 NMS 候选，Python 运行固定版本完整 ByteTrack
-  和单目标锁定，不加载 PyTorch。该路径使用独立 latest-frame worker；其他 detector source
-  仍位于同步主循环。无桨实测已证明 30 Hz 感知加 MJPEG 会造成 MSP publish tick 最长
-  164.302 ms；15 Hz 且关闭 MJPEG 的无目标基线最大为 49.769 ms，但带目标降载复验未完成。
+  和单目标锁定，不加载 PyTorch。该路径使用独立 latest-frame worker；历史同步 MSP 实测在
+  15 Hz 隔离感知下仍出现 65.964/68.568 ms 单次发送间隙。异步 MSP 修正已离线实现并通过
+  单元测试，但尚未重新部署到断电的 Orange Pi，不能视为实机关闭该缺口。
 
 ### 从 `src` 复用的修改模型识别链路
 
@@ -72,7 +74,11 @@ PureVisionGuidancePipeline
   -> GuidanceEval(g_eval)
   -> guidance_command.rate_gain_matrix
   -> GuidanceSetpoint(roll_rate, pitch_rate, yaw_rate, thrust)
+  -> GuidanceSetpointHold
+  -> entry_handoff
+  -> tilt_envelope
   -> RcCommandMapper
+  -> PWM slew limit
   -> MSP_SET_RAW_RC
 ```
 
@@ -144,7 +150,7 @@ attitude_synced   = attitude_age_s <= safety.attitude_timeout_s
 voltage_ok        = vbat_v >= safety.min_vbat_v，或阈值为 0
 watchdog_ok       = 最近有效 GuidanceEval 未超过 safety.watchdog_timeout_s
 aux_enabled       = rc_in_ch[aux_enable.channel_index] 在配置区间内
-target_valid      = guidance.valid
+target_valid      = hold/entry/tilt 后最终 setpoint.valid
 ```
 
 只有 `ACTIVE` 允许 PNG setpoint 覆盖 R/P/Y/T。获准的无桨进程即使尚未 ACTIVE，也会以
@@ -152,9 +158,43 @@ target_valid      = guidance.valid
 `rx_min_usec=885` 的必要条件。程序在 RC7 已打开且没有有效人工锁存值时输出
 `manual_rc_unavailable`/`physical_rc_invalid` 并拒绝发送，不能用软件修复错误的操作顺序。
 
+### 3.1 roll/pitch 接管平滑与倾角包络
+
+当前 Python 路径已迁移 `circle_ai_strike` 的两项高优先级保护，执行顺序固定为：
+
+```text
+guidance -> GuidanceSetpointHold -> entry_handoff -> tilt_envelope
+         -> Betaflight Rate inverse -> PWM slew -> MSP_SET_RAW_RC
+```
+
+`entry_handoff` 仅作用于 roll/pitch。当前 Betaflight 实机路径固定
+`rate_source=zero`：门禁由关闭变为打开时从零角速度起步，这与已飞行的 `circle` C++ 路径
+“不提供 measured body rates”的行为一致。`gyro_max_age_s` 只保留给未来经 Blackbox 交叉验证的
+rate source；当前 runner 会拒绝 `rate_source=gyro`。令
+`u=clamp((t-t0)/duration_s,0,1)`、`h=u^2(3-2u)`，输出为
+`rate=(1-h)*rate_start+h*rate_target`。门禁关闭、setpoint 无效或保护拒绝时立即复位；yaw 不参与
+该混合，thrust 继续由 worker 既有的 0.4 s 油门交接处理，避免形成两套油门状态机。
+
+`tilt_envelope` 对每个轴独立处理。只在 `attitude*command>0`，即命令继续增大当前倾角时，才在
+`max_angle-softcap_band` 到 `max_angle` 之间线性把命令压到零；向回平方向的命令不受软限幅。
+超过 `max_angle` 后，用
+`w=smoothstep((abs(attitude)-max_angle)/hardcap_margin)` 混合到
+`level_rate=clamp(-kp*attitude,+/-max_level_rate)`。达到 `max_angle+margin` 时输出必须与姿态反向。
+启用包络但姿态缺失或非有限数时 setpoint 以 `tilt_attitude_unavailable` 失效。这里不再增加
+LPF/jerk；最终抖动约束仍由现有 PWM slew 完成。
+
+无桨 profile 当前固定启用 `duration=0.8 s`、`rate_source=zero`、roll/pitch 上限 `35 deg`、
+soft band `10 deg`、hard margin `5 deg`、`kp=3`、最大回平 rate `3 deg/s`。通用及未来有桨示例
+仅保存候选参数且默认关闭，不能把无桨参数直接视为飞行标定值。
+
 ### 4. MSP 遥测和姿态同步
 
 `BetaflightMSPAdapter` 使用 MSP v1：
+
+- `MSP_ATTITUDE` 的原始 `pitch_deg` 遵循 Betaflight 显示符号，抬机头为负；FRD/NED 的
+  body-to-inertial 旋转和倾角包络统一使用 `pitch_nose_up_deg=-pitch_deg`。roll 与 yaw 保持
+  MSP 原符号。CSV 的 `pitch_deg` 仍保留原始 MSP 值，`tilt_pitch_attitude_deg` 记录转换后的
+  FRD 值，禁止在 PNG 输出增益处再次补偿该符号。
 
 - 读取 `MSP_API_VERSION`、`MSP_FC_VARIANT`、`MSP_FC_VERSION` 写入 meta。
 - 每轮读取 `MSP_STATUS`、`MSP_ATTITUDE`、`MSP_ANALOG`、`MSP_RC`。
@@ -193,6 +233,9 @@ main loop
 read_detection()
   -> PureVisionGuidancePipeline.process()
 guidance_eval_to_setpoint()
+  -> GuidanceSetpointHold
+  -> entry_handoff
+  -> tilt_envelope
   -> SafetyStateMachine.update()
   -> RcCommandMapper.map_setpoint()
   -> maybe MSP_SET_RAW_RC
@@ -208,7 +251,7 @@ CSV 字段按用途分组如下。
 |age 与错误|`telemetry_age_s`, `attitude_age_s`, `watchdog_age_s`, `telemetry_error`, `send_error`|
 |MSP status|`cycle_time_us`, `i2c_error_count`, `sensor_flags`, `mode_flags`, `profile`|
 |电源与姿态|`vbat_v`, `mah_drawn`, `rssi`, `amperage_a`, `roll_deg`, `pitch_deg`, `yaw_deg`|
-|RAW IMU|`acc_raw_*`, `gyro_roll/pitch/yaw_deg_s`, `mag_raw_*`, `msp_raw_imu_age_s`|
+|RAW IMU|`acc_raw_*`, `gyro_msp_raw_*`, `mag_raw_*`, `msp_raw_imu_age_s`；未验证单位时 `gyro_*_deg_s` 留空|
 |输入 RC|`rc_in_count`, `rc_in_all`（完整MSP通道）, `rc_in_ch1..rc_in_ch8`|
 |检测|`detector_source`, `detector_reject_reason`, `detector_*_count`, `frame_id`, `detection_exposure_ts`, `detection_score`, `track_id`|
 |RKNN 性能|`rknn_selected_index`, `rknn_preprocess_ms`, `rknn_inference_ms`, `rknn_postprocess_ms`, `rknn_total_ms`|
@@ -218,6 +261,7 @@ CSV 字段按用途分组如下。
 |LOS|`los_valid`, `los_reject_reason`, `los_quality`, `los_innovation_norm`, `lambda_I_*`, `lambda_dot_I_*`, `omega_los_*`|
 |TTC|`ttc_valid`, `ttc_reject_reason`, `ttc_quality`, `ttc_s`, `ttc_area_filtered`, `ttc_area_dot_filtered`|
 |导引|`guidance_valid`, `guidance_reject_reason`, `guidance_quality`, `g_eval_x/y/z`|
+|接管与倾角整形|`pre_shape_sp_*`, `shaping_valid/reason`, `entry_handoff_*`, `tilt_*attitude_deg`, `tilt_*softcap_factor`, `tilt_*level_weight`, `tilt_hardcap_active`|
 |setpoint|`sp_valid`, `sp_source`, `sp_reject_reason`, `sp_roll_rate_deg_s`, `sp_pitch_rate_deg_s`, `sp_yaw_rate_deg_s`, `sp_thrust`|
 |映射链|`map_requested_*`, `map_limited_*`, `map_*_stick`, `rc_target_ch*`, `throttle_handover_*`|
 |输出 RC|`rc_active`, `rc_reason`, `rc_raw_ch*`, `rc_ch*`, `rc_sent_all`, `rc_sent_ch*`, `rc_clipped_ch*`, `rc_slew_limited_ch*`|
@@ -311,6 +355,15 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 - 标定 `fx/fy/cx/cy`、畸变系数和完整 `R_BC`。OpenCV 相机路径会在检测前使用配置的
   畸变系数去畸变；固定上视安装仍应通过多姿态静态目标验证 body/camera 轴方向，而不是
   只填写 `pitch_up_deg=90`。
+- 实机链路采用 OpenCV 相机坐标 `C=(x右,y下,z光轴向前)` 和 Betaflight FRD 机体坐标
+  `B=(x前,y右,z下)`；上视中心光轴必须满足 `R_BC*[0,0,1]=[0,0,-1]`。`R_BC` 的三列分别
+  是相机 x/y/z 轴在机体系中的方向。程序会检查矩阵有限、正交且行列式为 `+1`，反射/镜像
+  图像不能用旋转矩阵补偿，必须先关闭相机镜像。
+- `LOG_ONLY` 允许保留 `pitch_up_deg` 以暴露旧数据，但启动日志和 `_meta.json` 会记录
+  `legacy_pitch_up_deg`、光轴误差和 `control_ready=false`。任何带 `--allow-control` 的运行以及
+  无桨批准工具都要求显式 `camera.R_BC`、`extrinsic_validation.verified=true`、FRD/OpenCV
+  坐标声明，并要求上视光轴误差不超过配置阈值。当前 `pitch_up_deg=90` 会把中心光轴映射到
+  机体 `+X`，相对机体上方误差为 `90 deg`，不能用于 RC 输出。
 - 锁定短曝光和增益上限，量化运动模糊、滚动快门和振动影响；记录相机掉帧、重复帧和
   自动曝光造成的检测置信度变化。
 
@@ -324,6 +377,9 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 
 - 从 V4L2/相机驱动取得单调时钟域的帧时间戳；无法取得曝光时刻时，至少记录 dequeue
   时刻，并单独标明 `timestamp_source`，不能命名为真实曝光时间。
+- 当前 `detection_attitude_offset_ms` 定义为“检测帧时间减去最新姿态样本时间”。负值表示
+  历史姿态缓冲已经覆盖该帧，不是同步误差；是否完成正确融合应同时检查 `fusion_status`、
+  `fusion_wait_ms` 和 dropped count。`capture_return_monotonic` 与真实曝光时刻之间仍有未知偏差。
 - 记录 `capture_ts`、`inference_start/end_ts`、`command_ts` 和 `send_done_ts`，计算帧龄和
   端到端命令延迟；姿态样本和图像必须落在同一个 `CLOCK_MONOTONIC` 时钟域。
 - 将相机采集、推理、MSP telemetry、RC 发送和日志拆为有界队列/独立任务。图像队列采用
@@ -356,7 +412,8 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 schema v2 已补充以下诊断：
 
 - MSP：每命令请求/成功/错误、RTT、最后成功 age、发布 tick、发送间隔和连续失败。
-- 飞控反馈：RAW_IMU 的 gyro deg/s 与 ACC/MAG raw，以及各消息独立时间戳。
+- 飞控反馈：RAW_IMU 的原始三轴整数与 ACC/MAG raw，以及各消息独立时间戳。当前定制固件的
+  gyro整数不能直接命名为deg/s，需与ATTITUDE差分和Blackbox交叉标定。
 - 控制链：请求/限幅 rate、反算 stick、斜率限制前 PWM、油门交接 source/target/alpha。
 - 平台：独立 1 Hz 缓存的 CPU 频率、SOC/NPU/最高温度、内存、RSS、负载和磁盘。
 - 对时：ARM、RC7/OVERRIDE、prefill、ACTIVE、目标、watchdog 和错误边沿 JSONL。
@@ -514,7 +571,7 @@ Orange Pi 当前局域网配置为：
 PC 访问 `http://192.168.124.42:8080/`。接口固定为 `GET /api/v1/telemetry`、
 `GET /api/v1/history`、`GET /api/v1/stream`、`GET /api/v1/video/mjpeg` 和
 `GET /healthz`；所有写方法返回 405，非允许网段返回 403。SSE 以 5 Hz 发布结构化遥测，
-页面显示安全状态、MSP/RC、姿态/角速度、检测/ByteTrack、LOS/TTC、PNG 命令和平台状态。
+页面显示安全状态、MSP/RC、姿态、MSP gyro raw、检测/ByteTrack、LOS/TTC、PNG命令和平台状态。
 MSP_RC 原始输入是 `A/E/R/T`，当前 SET_RAW_RC wire map 是 `A/E/T/R`；API 保留原始
 `input_us`，并另发按 wire map 重排的 `physical_us`。页面使用后者，避免把 885 us 油门误
 标成 yaw。
@@ -748,8 +805,25 @@ python3 tools/capture_betaflight_snapshot.py \
   --cli-dump-all /path/to/betaflight_dump_all.txt
 ```
 
-批准工具会核验 ID 50、mask 15、RC7/AUX3、AETR、Rate profile 0=`100/0/70`、配置哈希和
-无桨限值。`<manifest>` 必须替换为上一命令实际打印的文件：
+批准工具会核验 ID 50、mask 15、RC7/AUX3、AETR、Rate profile 0=`100/0/70`、配置哈希、
+无桨限值和相机外参。示例配置故意保留 `extrinsic_validation.verified=false`，必须先根据实物
+安装写入显式 `R_BC` 并完成以下方向检查，不能直接把标志改成 true：
+
+1. 关闭任何相机水平/垂直镜像，给机头、机右和画面上方做可见标记。
+2. 水平放置机体，确认画面中心光线指向机体上方；目标沿机头和机右方向移动时记录 bbox
+   中心的 u/v 增减方向，据此确定 `R_BC` 第一、二列。
+3. 保持目标静止，分别小幅抬机头和右滚机体；检查日志中的姿态符号、`lambda_I` 与目标运动
+   方向一致。反向时修改矩阵，不能修改 PNG 增益符号掩盖外参错误。
+4. 将矩阵写入配置后先运行 `LOG_ONLY`，确认 `_meta.json` 中 determinant 约为 1、
+   orthonormal error 接近 0、optical-axis error 小于阈值，再标记 verified。
+
+2026-08-28 实机轴向测试确认本机OpenCV图像`+v`对应机体`+X`、图像`+u`对应机体`+Y`，因此
+板端矩阵为`[[0,1,0],[1,0,0],[0,0,-1]]`。同时确认MSP抬机头为负pitch，代码转换为FRD
+`(roll,-pitch,yaw)`。修正后相同yaw的10.4 deg右滚使惯性LOS仅变化0.79 deg；抬头对照在固定
+yaw重算时残差1.74 deg。板端已完成verified LOG_ONLY和新无桨批准，但RAW_IMU动态pitch rate
+符号、yaw倾斜补偿精度和硬件曝光时间戳仍未关闭，因此该结果不构成有桨许可。
+
+完成后，`<manifest>` 必须替换为快照命令实际打印的文件：
 
 ```bash
 python3 tools/create_betaflight_noprop_approval.py \
@@ -778,8 +852,8 @@ python3 examples/run_betaflight_log_only.py \
 
 线程限制、15 Hz 感知和进程隔离不改变批准 JSON 或控制包线，并会写入 meta。隔离模式要求
 关闭 MJPEG；根页面的 JSON/SSE 状态仍可读，但视频流不可用，目标位置需在接管前通过 log-only
-预览确认。感知进程隔离后无目标压力测试已通过 60 ms 间隔审计；两轮带目标 algorithm 测试
-仍分别出现一次 65.964 ms 和 68.568 ms 间隔，因此仍是放桨阻断项。
+预览确认。配置现在要求 `msp_runtime.transport_mode=async_pipeline`，启动时会以非阻塞方式运行
+单 UART；历史同步测试的 65.964/68.568 ms 缺口仍须用新版本重新实测关闭。
 
 严格按以下顺序操作：
 
@@ -807,8 +881,50 @@ RC7 MSP OVERRIDE 和移动目标流程均已执行。60284 次 SET_RAW_RC 全部
 
 该轮不构成放桨许可。审计唯一违规是一次 68.568 ms 成功发送间隔，门限为 60 ms；前一轮带
 目标测试也出现一次 65.964 ms。问题发生于单 UART 的同步 MSP 轮询/发送调度，不是 RC 错误或
-控制包线越界。下一步应优先验证更高 MSP baud、减少非关键轮询、或拆分控制与遥测串口，并在
-相同 ARM+RC7+动态目标流程下取得至少连续多轮 `passed=true`，再讨论系留测试。
+控制包线越界。该结论是异步修正前的历史基线，不得用来评价新 pipeline。
+
+### 3.2 单 UART 异步修正与待执行复验
+
+2026-08-27 已离线完成异步 MSP 实现，Orange Pi 在实现期间保持断电，尚无新硬件日志。每个
+20 ms worker 周期严格执行：写最新 SET_RAW_RC、排入最多一个到期遥测请求、在最多 3 ms 内
+排空响应；错过的发布周期直接跳过，不补发积压命令。解析器保存跨周期字节缓冲，可处理分片、
+粘包和噪声重同步。每种遥测命令最多保留一个未决请求，SET ACK 则按 FIFO 关联到实际写入帧。
+
+RC7 接管前必须收到至少 10 个已确认的人工透传 ACK。RC7 生效后使用切换前已校验的人工 RC
+锁存值并暂停 RC 查询，避免 Betaflight OVERRIDE 下的 885 us 回读污染人工输入；STATUS 报告
+OVERRIDE 关闭后恢复 RC 查询。最后一个 SET ACK 超过 250 ms 时，安全状态为
+`msp_set_raw_rc_ack_stale`，worker 只继续人工透传，不允许 `publish=algorithm`。
+当前无桨配置中 RC7 同时承担接管与 AUX 许可，因此
+`safety.aux_enable.satisfied_by_override_mode=true`；若以后改用独立 AUX，必须设为 false 并恢复
+该通道的持续物理 RC 证据。
+
+重新上电后按以下顺序验证，全部保持拆桨：
+
+1. 先运行 `log_only`，不带 `--allow-control`，确认 Web 中 transport 为 `async_pipeline`，
+   SET write/ACK 都为 0，所有遥测命令持续更新且 parser/checksum error 为 0。
+2. 使用本节无桨命令在 `/dev/ttyS1@115200` 运行，保持 RC5 DISARM、RC7 人工，确认
+   `prefill=1` 后再执行既有 ARM、动态目标、RC7 接管和人工退出流程。
+3. 对当前 schema v9 CSV 执行审计。除写错误、885 us、门禁违规、解析/校验错误均为 0 外，
+   平均 SET 写入率不低于 49 Hz，P99.9 间隔不超过 40 ms，最大间隔不超过 60 ms，ACK stall
+   不超过 250 ms；整形因子必须在 `[0,1]`，硬倾角区输出必须反向回平。至少连续三轮相同流程
+   通过后才进入下一比较。
+4. 仅在 115200 结果可复现后，由人工同时把 Betaflight MSP UART 和 JSON `serial.baud` 改为
+   230400，重复完全相同的流程；任一 identity/BOXID、解析或 ACK 指标退化即恢复 115200。
+5. 若 115200/230400 均不满足门限，再评估 FC 空闲 UART4 到 Orange Pi `/dev/ttyS7` 的双串口
+   方案。当前代码尚未实现双适配器，不能只接线或开启端口后直接运行。
+
+### 3.3 接管平滑离线实现后的必做复验
+
+本节功能在 Orange Pi 断电期间完成，尚未产生任何 schema v8 板端日志。配置内容改变后，旧
+`noprop_bench` approval 因 JSON SHA256 不匹配会自动失效；不得编辑 approval JSON 绕过。重新
+上电后必须先采集包含 `diff all`/`dump all` 的新快照，再运行
+`tools/create_betaflight_noprop_approval.py` 生成新批准文件。
+
+无桨复验除 3.2 的串口门限外，还必须覆盖：RC7 每次切入时
+`entry_handoff_source=zero`、`entry_handoff_progress` 从0连续到1、整形后R/P无阶跃；手动倾斜机体进入软区时
+只衰减继续外倾命令；进入硬区时 `tilt_hardcap_active=1` 且输出反向，仍不超过 3 deg/s。页面
+只用于观察，最终以 CSV、meta、events、审计 JSON 和 Blackbox 一致性为准。完成这组复验前
+继续保持拆桨，不得据此进入系留或有桨测试。
 
 ### 4. 系留或低速悬停
 
@@ -841,27 +957,30 @@ CSV 已包含：
 - ByteTrack：真实轨迹 ID、状态、age/hits/lost、关联阶段/IoU、切换/碎片计数和耗时；感知
   worker 的实际 FPS、新结果标志、结果帧龄、覆盖旧结果数和异常。
 - 导引：LOS、LOS rate、LOS omega、TTC、`g_eval`。
-- 控制：setpoint、raw RC、最终 RC、限幅标志、斜率限制标志。
+- 控制：整形前/后 setpoint、接管起点与进度、倾角 soft/hard 权重、raw RC、最终 RC、限幅标志、
+  斜率限制标志。
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
 - MSP 运行：armed、OVERRIDE available/active、物理 RC 帧龄、快照授权、串口请求/错误/
   字节数、RAW RC 尝试/成功计数和 worker poll/stage/skip/error。
 - MSP 接管证据：output/algorithm authorization、worker观察到的override、预填是否完成及成功
   帧数、透传/算法/过期计数、staged command age、publish mode 和 `rc_sent_ch*` 实际发送值。
-- 发送当刻门禁：schema v4/v5 的 `msp_last_publish_output_enabled`、
+- 发送当刻门禁：schema v7+ 的 `msp_last_publish_output_enabled`、
   `msp_last_publish_algorithm_authorized`、`msp_last_publish_override_active`、
   `msp_last_publish_prefill_ready`、`msp_last_publish_physical_rc_fresh` 和
-  `msp_last_publish_command_fresh` 与同一成功发送帧绑定，不能用当前 staged gate 代替。
-- MSP 时序：STATUS/RAW_IMU/RC/ATTITUDE/ANALOG/SET_RAW_RC 各自的请求、成功、错误、RTT 和
-  最后成功 age；50 Hz 发布 tick、成功发送间隔、最大间隔、deadline miss 和连续发送错误。
-- 映射与反馈：请求/限幅后 rate、Betaflight 反算 stick、斜率限制前 PWM、油门交接参数、
-  RAW_IMU gyro deg/s、图像相对最新姿态样本的时间偏差，以及各类遥测的独立 sample age。
+  `msp_last_publish_command_fresh`、`msp_last_publish_set_raw_rc_ack_fresh` 与同一实际写入帧绑定，
+  不能用当前 staged gate 或同步 ACK 完成时间代替。
+- MSP 时序：schema v7+ 分开记录 SET 写尝试/成功/错误和 ACK 数量/age/FIFO 深度，记录实际写
+  interval、最大间隔、窗口平均频率及 P50/P95/P99/P99.9；另记录遥测未决数、RX 丢弃字节、
+  checksum/parser error、RC 轮询暂停状态和各命令 RTT。
+- 映射与反馈：请求/限幅后rate、Betaflight反算stick、斜率限制前PWM、油门交接参数、
+  RAW_IMU原始整数、图像相对最新姿态样本的时间偏差，以及各类遥测的独立sample age。没有可信
+  换算时`gyro_*_deg_s`必须为空，不能用字段名替代单位证据。
 - 平台与公共事件：RK3588 温度/频率/内存/磁盘/RSS，以及可与 Blackbox ARM/RC7 边沿对齐的
   JSONL。RAW IMU 本阶段只记录，不反馈到 PNG；相机时间戳仍不是硬件曝光时间。
 - Web 遥测：服务状态、SSE/MJPEG 客户端数、快照发布数、预览投递/编码/丢弃数、HTTP请求/
-  子网拒绝数、错误数和最后错误。Web schema v3 直接显示最佳候选分数、raw/class/high/low/
-  tracker-output 数量、hits、关联阶段、match IoU 和 selector reason。日志 schema v3/v4/v5
-  的审计在启用 Web 时要求至少发布一个快照且 `web_error_count=0`；日志 schema v2/v3 仍可读取，
-  但存在算法输出时不能证明发送当刻 gate。
+  子网拒绝数、错误数和最后错误。Web schema v5 直接显示 SET ACK gate、transport、写入频率、
+  最大/P99.9 gap、ACK age/pending 和 parser/CRC 计数；旧日志仍可读取，但只有 schema v7 能按
+  实际异步写入时间完成当前串口验收。
 
 `src` 参考的单串口 MSP worker 已在 Python 中实现，但 RK3588 示例默认关闭。任何未来 RC
 输出都必须使用 worker；同步日志路径不再允许直接发送，也不会在退出时发送中性 RC。控制
@@ -914,9 +1033,14 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `msp_runtime.prefill_enabled` / `prefill_min_frames` / `prefill_valid_min_us` /
   `prefill_valid_max_us`
 - `msp_runtime.staged_command_timeout_s` / `shutdown_passthrough_frames`
+- `msp_runtime.transport_mode`（无桨批准配置必须为 `async_pipeline`）
+- `msp_runtime.response_drain_budget_ms`（当前 3 ms）/
+  `msp_runtime.response_stale_s`（不得高于 0.25 s）
 - `msp_runtime.status_poll_hz` / `attitude_poll_hz` / `raw_imu_poll_hz` /
-  `rc_poll_hz` / `analog_poll_hz`（当前无桨默认总计47 Hz）
+  `rc_poll_hz` / `analog_poll_hz`（当前无桨为 5/10/5/10/1 Hz）
 - `msp_runtime.control_publish_hz`（当前无桨默认50 Hz）
+- `safety.aux_enable.channel_index` / `min_us` / `max_us` /
+  `satisfied_by_override_mode`（当前 RC7 共用模式必须为 true）
 - `logging.platform_health_hz`（默认1 Hz；设为0仅用于显式关闭平台采样）
 - `rc_mapping.rate_mapping_type`、`betaflight_rc_rate`、`betaflight_super_rate`、
   `betaflight_expo`、`betaflight_rate_profile_index`
@@ -933,6 +1057,10 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `rc_mapping.throttle_max_us`
 - `rc_mapping.neutral_throttle_us`
 - `rc_mapping.max_delta_us_per_s`
+- `guidance_command.entry_handoff.enabled` / `duration_s` / `rate_source`（当前必须为`zero`）
+- `guidance_command.tilt_envelope.enabled` / `max_roll_angle_deg` /
+  `max_pitch_angle_deg` / `softcap_band_deg` / `hardcap_margin_deg` /
+  `hardcap_level_kp` / `hardcap_max_level_rate_deg_s`
 - `safety.aux_enable.channel_index`
 - `safety.aux_enable.min_us` / `safety.aux_enable.max_us`
 - `safety.telemetry_timeout_s`
@@ -947,6 +1075,8 @@ rate limit 和 `rate_gain_matrix` 标定。
 
 - `guidance_command.rate_gain_matrix`
 - `guidance_command.hover_thrust`
+- 接管起点采用的 gyro 轴向、时间戳年龄和 smoothstep 时长
+- roll/pitch 软倾角、硬倾角和最大回平 rate；无桨批准上限不能直接作为有桨值
 - roll/pitch/yaw 正负方向确认结果
 - 最大允许命令幅度
 - 丢目标时 throttle 策略
@@ -986,7 +1116,7 @@ PyTorch/ByteTrack 基线：
 ### 相机与感知
 
 - 机载计算平台、摄像头设备号、分辨率、FPS、曝光策略。
-- 相机内参、畸变、固定上视外参 `R_BC` 或 `pitch_up_deg`。
+- 相机内参、畸变和显式固定上视外参 `R_BC`；`pitch_up_deg` 只允许只读诊断，不能批准控制。
 - 端到端延迟、时间戳来源、安装刚性和振动隔离。
 - 修改模型 RKNN artifact/hash、RGB/letterbox 约定、四输出 head schema、confidence/NMS、
   时序门控参数、有效检测距离和漏检率。
