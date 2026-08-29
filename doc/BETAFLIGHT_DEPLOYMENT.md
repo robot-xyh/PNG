@@ -29,8 +29,12 @@
   `model.track()`，`--yolo-device` 不能把 PyTorch 模型自动切换到 NPU。
 - 已新增 `rknn_bytetrack`：C ABI v2 返回全部 NMS 候选，Python 运行固定版本完整 ByteTrack
   和单目标锁定，不加载 PyTorch。该路径使用独立 latest-frame worker；历史同步 MSP 实测在
-  15 Hz 隔离感知下仍出现 65.964/68.568 ms 单次发送间隙。异步 MSP 修正已离线实现并通过
-  单元测试，但尚未重新部署到断电的 Orange Pi，不能视为实机关闭该缺口。
+  15 Hz 隔离感知下曾出现 65.964/68.568 ms 单次发送间隙。异步 MSP、RKNN 进程隔离和 CPU
+  分区已部署；180 s DISARM 满载基线最大间隔为 32.389 ms，但最近一次 ARM/RC7 主动接管仍出现
+  81.534 ms 单次间隔，因此实时性缺口尚未关闭。
+- 当前固件支持 `MSP_MOTOR (104)` 四电机输出读取。无桨 profile 新增锁存式电机联锁：ARM 后
+  任一输出高于 1200 us、四电机极差高于 150 us、数据缺失或超过 0.75 s 时禁止算法输出并退回
+  锁存人工 RC；任一联锁故障保持到 DISARM。该保护只限制拆桨台架，不能替代飞控 failsafe。
 
 ### 从 `src` 复用的修改模型识别链路
 
@@ -151,6 +155,7 @@ prefill_ready      = RC7 人工侧已成功发送至少 10 帧有效物理 RC
 physical_rc_fresh = MSP_RC 未超过 msp_runtime.physical_rc_timeout_s
 telemetry_fresh   = telemetry_age_s <= safety.telemetry_timeout_s
 attitude_synced   = attitude_age_s <= safety.attitude_timeout_s
+motor_output_ok   = 四路 MSP_MOTOR 新鲜、有效且不超过无桨最大值/极差
 voltage_ok        = vbat_v >= safety.min_vbat_v，或阈值为 0
 watchdog_ok       = 最近有效 GuidanceEval 未超过 safety.watchdog_timeout_s
 aux_enabled       = rc_in_ch[aux_enable.channel_index] 在配置区间内
@@ -222,6 +227,8 @@ soft band `10 deg`、hard margin `5 deg`、`kp=3`、最大回平 rate `3 deg/s`�
   目标、watchdog、RC freshness 或 MSP 错误发生边沿时写入并立即 flush。
 - `PlatformHealthSampler` 在独立 1 Hz 线程读取 RK3588 温度、频率、内存、磁盘和进程 RSS；
   MSP 串口线程不读取 sysfs。
+- `PythonGcPauseMonitor` 使用 `gc.callbacks` 记录回收次数、代次、最近/最大/累计暂停，用于判断
+  Python GC 是否与 SET_RAW_RC 长间隔同一时刻发生。
 - `BetaflightMspIoWorker` 记录预填、透传、算法、命令过期和最后实际发送通道；正常退出发送
   锁存人工 RC，而不是主动发送 ARM/AUX 或中性油门。
 
@@ -251,10 +258,11 @@ CSV 字段按用途分组如下。
 |类别|字段|
 |---|---|
 |运行与安全|`timestamp`, `elapsed_s`, `safety_state`, `safety_reason`, `control_requested`, `allow_control`|
-|gate 诊断|`telemetry_fresh`, `attitude_synced`, `watchdog_ok`, `voltage_ok`, `aux_enabled`, `msp_prefill_ready`|
+|gate 诊断|`telemetry_fresh`, `attitude_synced`, `motor_interlock_ok/reason/latched`, `watchdog_ok`, `voltage_ok`, `aux_enabled`, `msp_prefill_ready`|
 |age 与错误|`telemetry_age_s`, `attitude_age_s`, `watchdog_age_s`, `telemetry_error`, `send_error`|
 |MSP status|`cycle_time_us`, `i2c_error_count`, `sensor_flags`, `mode_flags`, `profile`|
 |电源与姿态|`vbat_v`, `mah_drawn`, `rssi`, `amperage_a`, `roll_deg`, `pitch_deg`, `yaw_deg`|
+|电机|`motor_output_ch1..ch8`, `motor_output_age_s`, `motor_interlock_output_max_us`, `motor_interlock_output_spread_us`|
 |RAW IMU|`acc_raw_*`, `gyro_msp_raw_*`, `mag_raw_*`, `msp_raw_imu_age_s`；未验证单位时 `gyro_*_deg_s` 留空|
 |输入 RC|`rc_in_count`, `rc_in_all`（完整MSP通道）, `rc_in_ch1..rc_in_ch8`|
 |检测|`detector_source`, `detector_reject_reason`, `detector_*_count`, `frame_id`, `detection_exposure_ts`, `detection_score`, `track_id`|
@@ -271,11 +279,11 @@ CSV 字段按用途分组如下。
 |输出 RC|`rc_active`, `rc_reason`, `rc_raw_ch*`, `rc_ch*`, `rc_sent_all`, `rc_sent_ch*`, `rc_clipped_ch*`, `rc_slew_limited_ch*`|
 |MSP 命令|每个 command 的 `attempt/success/error_count`, `last/max_rtt_ms`, `last_success_age_s`, `last_error`|
 |MSP 发布|`msp_publish_mode`, `msp_prefill_success_count`, `msp_passthrough_send_count`, `msp_algorithm_send_count`, `msp_stale_command_count`, `msp_send_success_*`, `msp_publish_deadline_miss_count`|
-|RK3588|`host_*temp_c`, `host_*freq_mhz`, `host_mem_available_mb`, `host_disk_free_gb`, `host_process_rss_mb`|
+|RK3588/运行时|`host_*temp_c`, `host_*freq_mhz`, `host_mem_available_mb`, `host_disk_free_gb`, `host_process_rss_mb`, `python_gc_*pause_ms`, `loop_period_s`|
 
 无桨运行后执行以下命令。审计从 meta 中读取实际 3/3/0 deg/s、1000--1100 us 和 50 Hz
-参数，发现 885 us、越界、门禁不满足时算法发送、连续发送错误或成功帧间隔超过三个周期时
-返回非零退出码：
+参数，发现 885 us、RC/电机越界、电机极差超限、联锁失败时算法发送、连续发送错误或成功帧间隔
+超过三个周期时返回非零退出码：
 
 ```bash
 python3 tools/analyze_betaflight_noprop_log.py --csv logs/<betaflight_log.csv>
@@ -939,9 +947,9 @@ write 时间读取、增量有序分位数和固定时基调度，并保留 16 m
 
 ### 3.3 接管平滑离线实现后的必做复验
 
-本节功能在 Orange Pi 断电期间完成，尚未产生任何 schema v8 板端日志。配置内容改变后，旧
-`noprop_bench` approval 因 JSON SHA256 不匹配会自动失效；不得编辑 approval JSON 绕过。重新
-上电后必须先采集包含 `diff all`/`dump all` 的新快照，再运行
+本节功能最初在 Orange Pi 断电期间完成，随后已完成 schema v8--v12 板端复验；最新结果见3.4。
+每次配置内容改变后，旧 `noprop_bench` approval 都会因 JSON SHA256 不匹配自动失效；不得编辑
+approval JSON 绕过。重新上电后必须先采集包含 `diff all`/`dump all` 的新快照，再运行
 `tools/create_betaflight_noprop_approval.py` 生成新批准文件。
 
 无桨复验除 3.2 的串口门限外，还必须覆盖：RC7 每次切入时
@@ -949,6 +957,30 @@ write 时间读取、增量有序分位数和固定时基调度，并保留 16 m
 只衰减继续外倾命令；进入硬区时 `tilt_hardcap_active=1` 且输出反向，仍不超过 3 deg/s。页面
 只用于观察，最终以 CSV、meta、events、审计 JSON 和 Blackbox 一致性为准。完成这组复验前
 继续保持拆桨，不得据此进入系留或有桨测试。
+
+### 3.4 2026-08-29 主动接管结果与当前阻断项
+
+在拆桨、固定机体和功率电供电下，稳定单目标 LOG_ONLY 运行40 s，目标有效率98%，195个新跟踪
+结果保持同一 track，未发送 `MSP_SET_RAW_RC`。随后主动接管日志
+`fixed_vm_isolated_fixed_target_takeover_20260829_20260829_175710.csv`在约
+109.68--175.58 s进入算法发布；roll/pitch候选仅约
+`-0.018..+0.016/-0.010..+0.009 deg/s`，说明视觉命令接近零。
+
+但该阶段电机输出出现明显分化：M1约1281--1363、M2约1346--1456、M3约1056、M4约1325--1431。
+这与接近零的上位机rate命令不相称。固定无桨机体上的Betaflight PID/I-term或mixer积累是候选
+原因，但没有同时间轴Blackbox的setpoint/P/I/D、gyro和motor数据，当前不能下结论。该日志另有
+一次81.534 ms SET_RAW_RC写间隔，发生在122.519 s附近；当时MJPEG和预览编码均为0、RKNN约
+6.27 ms，因此仅关闭网页预览不足以解释或消除该间隔。
+
+当前代码已把日志schema升级到13，增加Python GC暂停时间和锁存式无桨电机联锁。`noprop_bench`
+控制启动必须启用四电机轮询和联锁；ARM后输出超过1200 us或极差超过150 us即停止算法授权，
+数据缺失/过期也按相同方式阻断；worker继续发送接管前锁存的人工RC，故障保持到DISARM。批准
+工具绑定这些参数，修改配置后必须重新生成批准文件。该改动尚未同步到断电的Orange Pi，也没有
+实机复验。
+
+下一次上电只允许：同步代码和本机配置、重新采集快照/批准、先运行LOG_ONLY、验证网页的Motor
+Interlock与GC字段。取得Blackbox并对齐RC7/ARM边沿前，不重复长时固定机体主动接管，也不进入
+有桨、系留或自由飞行。
 
 ### 4. 系留或低速悬停
 
@@ -986,6 +1018,8 @@ CSV 已包含：
 - 安全：state/reason、telemetry/attitude/watchdog age、AUX、电压和控制许可 gate。
 - MSP 运行：armed、OVERRIDE available/active、物理 RC 帧龄、快照授权、串口请求/错误/
   字节数、RAW RC 尝试/成功计数和 worker poll/stage/skip/error。
+- 电机联锁：`MSP_MOTOR`输出/年龄/命令统计、四电机最大值与极差、联锁原因和锁存状态；schema
+  v13审计禁止在联锁未通过时出现`publish=algorithm`。
 - MSP 接管证据：output/algorithm authorization、worker观察到的override、预填是否完成及成功
   帧数、透传/算法/过期计数、staged command age、publish mode 和 `rc_sent_ch*` 实际发送值。
 - 发送当刻门禁：schema v7+ 的 `msp_last_publish_output_enabled`、
@@ -999,12 +1033,13 @@ CSV 已包含：
 - 映射与反馈：请求/限幅后rate、Betaflight反算stick、斜率限制前PWM、油门交接参数、
   RAW_IMU原始整数、图像相对最新姿态样本的时间偏差，以及各类遥测的独立sample age。没有可信
   换算时`gyro_*_deg_s`必须为空，不能用字段名替代单位证据。
-- 平台与公共事件：RK3588 温度/频率/内存/磁盘/RSS，以及可与 Blackbox ARM/RC7 边沿对齐的
-  JSONL。RAW IMU 本阶段只记录，不反馈到 PNG；相机时间戳仍不是硬件曝光时间。
+- 平台与公共事件：RK3588 温度/频率/内存/磁盘/RSS、Python GC最近/最大/累计暂停，以及可与
+  Blackbox ARM/RC7 边沿对齐的JSONL。RAW IMU本阶段只记录，不反馈到PNG；相机时间戳仍不是
+  硬件曝光时间。
 - Web 遥测：服务状态、SSE/MJPEG 客户端数、快照发布数、预览投递/编码/丢弃数、HTTP请求/
-  子网拒绝数、错误数和最后错误。Web schema v5 直接显示 SET ACK gate、transport、写入频率、
-  最大/P99.9 gap、ACK age/pending 和 parser/CRC 计数；旧日志仍可读取，但只有 schema v7 能按
-  实际异步写入时间完成当前串口验收。
+  子网拒绝数、错误数和最后错误。Web schema v10直接显示SET ACK gate、transport、写入频率、
+  最大/P99.9 gap、ACK age/pending、parser/CRC、电机联锁和GC暂停；旧日志仍可读取，但只有日志
+  schema v13能证明本轮电机联锁门禁。
 
 `src` 参考的单串口 MSP worker 已在 Python 中实现，但 RK3588 示例默认关闭。任何未来 RC
 输出都必须使用 worker；同步日志路径不再允许直接发送，也不会在退出时发送中性 RC。控制
@@ -1067,7 +1102,7 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `msp_runtime.response_drain_budget_ms`（当前 3 ms）/
   `msp_runtime.response_stale_s`（不得高于 0.25 s）
 - `msp_runtime.status_poll_hz` / `attitude_poll_hz` / `raw_imu_poll_hz` /
-  `rc_poll_hz` / `analog_poll_hz`（当前无桨为 5/10/5/10/1 Hz）
+  `motor_poll_hz` / `rc_poll_hz` / `analog_poll_hz`（当前无桨为 5/10/5/2/10/2 Hz）
 - `msp_runtime.control_publish_hz`（当前无桨默认50 Hz）
 - `safety.aux_enable.channel_index` / `min_us` / `max_us` /
   `satisfied_by_override_mode`（当前 RC7 共用模式必须为 true）
@@ -1102,6 +1137,9 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `safety.attitude_timeout_s`
 - `safety.watchdog_timeout_s`
 - `safety.min_vbat_v`
+- `safety.motor_output_interlock.enabled` / `channel_count` / `max_output_us` /
+  `max_spread_us` / `telemetry_timeout_s` / `latch_until_disarm`（无桨批准固定为启用、4路、
+  1200 us、150 us、最多0.75 s、锁存到DISARM）
 
 ### RC 输出前额外必填
 
@@ -1192,6 +1230,10 @@ PyTorch/ByteTrack 基线：
    确认符号与既有外参验证一致。
 5. 仅在以上数据通过后，保持拆桨并使用独立VM批准启动`msp_raw_rc --allow-control`；先ARM怠速，
    再由操作者切RC7。确认ACTIVE/algorithm、命令不跳变、退出RC7立即回人工透传，最后DISARM。
+   `motor_interlock_ok`必须持续为1；若变为0或`latched=1`，立即退出RC7并DISARM，不得在同一次
+   ARM内清故障后重试。
+6. 固定机体接管只用于短脉冲和方向确认。出现电机最大值高于1200 us、极差高于150 us或MSP写
+   间隔超过60 ms时，本轮判失败；先取得并对齐Blackbox，再决定PID/I-term、mixer或调度修正。
 
 ## 不应直接沿用的参数
 

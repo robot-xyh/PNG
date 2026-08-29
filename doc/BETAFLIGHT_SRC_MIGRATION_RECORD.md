@@ -1026,3 +1026,35 @@ python3 examples/run_betaflight_log_only.py \
 `passed=1`且0违规。当前实机命令必须保留上述三个隔离选项；Web JSON/SSE继续可用，但MJPEG图像
 预览必须关闭。下一门为拆桨固定条件下短时ARM且RC7保持人工侧，确认四电机怠速与调度审计均通过；
 之后才允许放置稳定单目标并短时切换RC7验证`ACTIVE/algorithm`和电机混控方向。
+
+## 2026-08-29 固定目标主动接管复盘与电机输出联锁
+
+拆桨固定机体的稳定单目标LOG_ONLY先运行40 s，目标有效率98%，195/195个新跟踪结果保持同一
+track，SET_RAW_RC为0且审计通过。主动接管日志
+`fixed_vm_isolated_fixed_target_takeover_20260829_20260829_175710.csv`约在109.68--175.58 s处于
+`ACTIVE/algorithm`。该区间上位机roll命令约`-0.018..+0.016 deg/s`、pitch命令约
+`-0.010..+0.009 deg/s`，未出现足以解释大幅混控的视觉rate候选。
+
+电机遥测却显示M1约1281--1363、M2约1346--1456、M3约1056、M4约1325--1431，最大极差约
+400 us。固定无桨机体上的Betaflight PID/I-term/mixer积累是候选解释，但当前没有同一时间轴的
+Blackbox gyro、setpoint、P/I/D和motor记录，因此不能把该推测写成根因。旧审计除MSP时序外无
+其他违规；SET_RAW_RC累计最大写间隔为81.534 ms，首次越过60 ms约在elapsed 122.519 s。该点
+MJPEG客户端和预览编码均为0，RKNN总耗时约6.27 ms，说明关闭预览不是充分修复。原始CSV/meta/
+events仍在板端，设备已按操作者要求断电，尚未复制到工作站归档。
+
+离线代码新增以下保护和证据：
+
+- 日志schema升级到13，记录Python GC回收次数、代次以及最近/最大/累计暂停；审计报告SET最大与
+  P99.9间隔首次越限的elapsed时间。
+- `MotorOutputInterlock`检查四路`MSP_MOTOR`的新鲜度、完整性、最大输出和极差。无桨默认上限为
+  1200 us/150 us，任一ARM态联锁故障锁存到DISARM；门禁关闭后MSP worker继续发送接管前锁存人工RC，
+  不直接断流。
+- `noprop_bench`请求控制时强制启用锁存联锁和电机轮询；批准工具同时绑定4路、1200 us、150 us、
+  0.75 s和`latch_until_disarm=true`，配置哈希改变后旧批准文件自动失效。
+- CSV审计新增`armed_motor_output_high`、`armed_motor_spread_high`和
+  `algorithm_without_motor_interlock`；Web schema 10显示联锁原因/锁存/最大值/极差和GC暂停。
+
+本地`python3 -m unittest discover -s tests -p 'test_*.py' -v`为290/290通过，
+`git diff --check`通过。该批改动尚未同步到断电的Orange Pi，未做schema 13实机验证。下次上电
+必须先同步代码与local配置、重新生成快照和批准文件，从LOG_ONLY验证电机/GC字段开始；取得并对齐
+Blackbox前，不重复长时固定机体RC7接管，不进入有桨测试。
