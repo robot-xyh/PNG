@@ -492,6 +492,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             attitude=AttitudeTelemetry(roll_deg=1.0, pitch_deg=-2.0, yaw_deg=30.0),
             analog=AnalogTelemetry(vbat_v=12.3, mah_drawn=100, rssi=900, amperage_a=3.21),
             rc_channels=(1000, 1100, 1200, 1300, 1800, 1500, 1500, 1500),
+            motor_outputs=(1000, 1010, 1020, 1030, 0, 0, 0, 0),
             raw_imu=RawImuTelemetry((1, 2, 3), (4.0, 5.0, 6.0), (7, 8, 9)),
         )
         setpoint = GuidanceSetpoint(
@@ -622,6 +623,8 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["rc_sent_all"], ",".join(str(value) for value in range(1000, 1016)))
         self.assertEqual(row["rc_sent_ch8"], 1007)
         self.assertEqual(row["gyro_msp_raw_x"], 4.0)
+        self.assertEqual(row["motor_output_all"], "1000,1010,1020,1030,0,0,0,0")
+        self.assertEqual(row["motor_output_ch4"], 1030)
         self.assertEqual(row["gyro_roll_deg_s"], "")
         self.assertEqual(row["map_limited_roll_rate_deg_s"], 3.0)
         self.assertEqual(row["rc_target_ch3"], 1000)
@@ -712,7 +715,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 11)
+            self.assertEqual(data["log_schema_version"], 12)
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):
         legacy = {"camera": {"pitch_up_deg": 90.0}}

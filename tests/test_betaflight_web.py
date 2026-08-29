@@ -173,6 +173,16 @@ class BetaflightWebTest(unittest.TestCase):
             "gyro_msp_raw_y": "-20",
             "gyro_msp_raw_z": "30",
             "vbat_v": "4.20",
+            "motor_output_count": "8",
+            "motor_output_ch1": "1000",
+            "motor_output_ch2": "1010",
+            "motor_output_ch3": "1020",
+            "motor_output_ch4": "1030",
+            "msp_motor_age_s": "0.12",
+            "msp_override_release_hold_active": "1",
+            "msp_last_publish_override_release_hold_active": "1",
+            "msp_last_publish_command_active": "1",
+            "msp_last_publish_command_reason": "active",
             "track_id": "7",
             "detection_score": "0.75",
             "detector_best_score": "0.22",
@@ -212,6 +222,10 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertTrue(payload["vision"]["new_result"])
         self.assertEqual(payload["flight_controller"]["attitude_deg"], [2.5, -1.0, 90.0])
         self.assertEqual(payload["flight_controller"]["gyro_msp_raw"], [10.0, -20.0, 30.0])
+        self.assertEqual(payload["flight_controller"]["motor_outputs"][:4], [1000, 1010, 1020, 1030])
+        self.assertEqual(payload["msp"]["motor_age_s"], 0.12)
+        self.assertTrue(payload["msp"]["parser"]["override_release_hold_active"])
+        self.assertTrue(payload["msp"]["last_publish_gates"]["command_active"])
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(payload["vision"]["detector_best_score"], 0.22)
         self.assertEqual(

@@ -219,6 +219,9 @@
           <div class="metric"><label>Pitch</label><output id="pitch">--</output></div>
           <div class="metric"><label>Yaw</label><output id="yaw">--</output></div>
           <div class="metric"><label>VBAT</label><output id="vbat">--</output></div>
+          <div class="metric"><label>Motors 1-4</label><output id="motorsPrimary">--</output></div>
+          <div class="metric"><label>Motors 5-8</label><output id="motorsSecondary">--</output></div>
+          <div class="metric"><label>Motor age</label><output id="motorAge">--</output></div>
           <div class="metric"><label>Track</label><output id="trackId">--</output></div>
           <div class="metric"><label>Score</label><output id="score">--</output></div>
           <div class="metric"><label>Guidance law</label><output id="guidanceLaw">--</output></div>
@@ -467,6 +470,11 @@
       setMetric("pitch", number(attitude[1], 1, " deg"));
       setMetric("yaw", number(attitude[2], 1, " deg"));
       setMetric("vbat", number(path(data, ["flight_controller", "vbat_v"]), 2, " V"));
+      const motors = path(data, ["flight_controller", "motor_outputs"], []);
+      const motorText = values => values.map(value => Number.isFinite(value) ? Math.round(value) : "--").join(" / ");
+      setMetric("motorsPrimary", motorText(motors.slice(0, 4)) || "--");
+      setMetric("motorsSecondary", motorText(motors.slice(4, 8)) || "--");
+      setMetric("motorAge", number(path(data, ["msp", "motor_age_s"]), 3, " s"));
       const trackId = text(path(data, ["vision", "track_id"]));
       setMetric("trackId", trackerHeld ? `${trackId} held` : trackId);
       setMetric("score", number(path(data, ["vision", "score"]), 2));

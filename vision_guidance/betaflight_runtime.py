@@ -11,6 +11,7 @@ from typing import Any, Sequence
 from .betaflight_msp import (
     MSP_ANALOG,
     MSP_ATTITUDE,
+    MSP_MOTOR,
     MSP_RAW_IMU,
     MSP_RC,
     MSP_SET_RAW_RC,
@@ -21,6 +22,7 @@ from .betaflight_msp import (
     MspAdapterStats,
     parse_analog,
     parse_attitude,
+    parse_motor_outputs,
     parse_raw_imu,
     parse_rc_channels,
     parse_status,
@@ -52,10 +54,12 @@ class MspRuntimeConfig:
     status_poll_hz: float = 5.0
     attitude_poll_hz: float = 5.0
     raw_imu_poll_hz: float = 0.0
+    motor_poll_hz: float = 0.0
     rc_poll_hz: float = 5.0
     analog_poll_hz: float = 5.0
     control_publish_hz: float = 50.0
     physical_rc_timeout_s: float = 0.25
+    override_grace_hold_s: float = 0.35
     override_channels_mask: int = 15
     override_mode_cli_id: int = 50
     aux_arm_channel_zero_based: int = 4
@@ -81,10 +85,12 @@ class MspRuntimeConfig:
             status_poll_hz=float(values.get("status_poll_hz", legacy_poll_hz)),
             attitude_poll_hz=float(values.get("attitude_poll_hz", legacy_poll_hz)),
             raw_imu_poll_hz=float(values.get("raw_imu_poll_hz", 0.0)),
+            motor_poll_hz=float(values.get("motor_poll_hz", 0.0)),
             rc_poll_hz=float(values.get("rc_poll_hz", legacy_poll_hz)),
             analog_poll_hz=float(values.get("analog_poll_hz", legacy_poll_hz)),
             control_publish_hz=float(values.get("control_publish_hz", 50.0)),
             physical_rc_timeout_s=float(values.get("physical_rc_timeout_s", 0.25)),
+            override_grace_hold_s=float(values.get("override_grace_hold_s", 0.35)),
             override_channels_mask=int(values.get("override_channels_mask", 15)),
             override_mode_cli_id=int(values.get("override_mode_cli_id", 50)),
             aux_arm_channel_zero_based=int(values.get("aux_arm_channel_zero_based", 4)),
@@ -110,6 +116,7 @@ class MspRuntimeConfig:
                 config.status_poll_hz,
                 config.attitude_poll_hz,
                 config.raw_imu_poll_hz,
+                config.motor_poll_hz,
                 config.rc_poll_hz,
                 config.analog_poll_hz,
             )
@@ -117,7 +124,11 @@ class MspRuntimeConfig:
             raise ValueError("MSP per-command poll rates must be non-negative")
         if config.status_poll_hz <= 0.0 or config.rc_poll_hz <= 0.0:
             raise ValueError("MSP STATUS and RC polling must remain enabled")
-        if config.physical_rc_timeout_s <= 0.0 or config.throttle_handover_s < 0.0:
+        if (
+            config.physical_rc_timeout_s <= 0.0
+            or not 0.0 <= config.override_grace_hold_s <= 2.0
+            or config.throttle_handover_s < 0.0
+        ):
             raise ValueError("MSP worker timeout/handover values are invalid")
         if config.prefill_min_frames <= 0 or config.staged_command_timeout_s <= 0.0:
             raise ValueError("MSP worker prefill/command timeout values are invalid")
@@ -145,6 +156,7 @@ class MspWorkerSnapshot:
     attitude_age_s: float | None
     analog_age_s: float | None
     raw_imu_age_s: float | None
+    motor_age_s: float | None
     physical_rc_age_s: float | None
     physical_rc_fresh: bool
     poll_count: int
@@ -156,6 +168,7 @@ class MspWorkerSnapshot:
     output_enabled: bool
     algorithm_authorized: bool
     override_active: bool
+    override_release_hold_active: bool
     prefill_ready: bool
     prefill_success_count: int
     passthrough_send_count: int
@@ -167,9 +180,12 @@ class MspWorkerSnapshot:
     last_publish_output_enabled: bool
     last_publish_algorithm_authorized: bool
     last_publish_override_active: bool
+    last_publish_override_release_hold_active: bool
     last_publish_prefill_ready: bool
     last_publish_physical_rc_fresh: bool
     last_publish_command_fresh: bool
+    last_publish_command_active: bool
+    last_publish_command_reason: str
     last_publish_set_raw_rc_ack_fresh: bool
     publish_tick_interval_s: float | None
     publish_tick_max_interval_s: float | None
@@ -434,6 +450,7 @@ class BetaflightMspIoWorker:
         self._output_enabled = False
         self._algorithm_authorized = False
         self._override_active = False
+        self._override_released_s: float | None = None
         self._poll_count = 0
         self._poll_error_count = 0
         self._staged_count = 0
@@ -452,9 +469,12 @@ class BetaflightMspIoWorker:
         self._last_publish_output_enabled = False
         self._last_publish_algorithm_authorized = False
         self._last_publish_override_active = False
+        self._last_publish_override_release_hold_active = False
         self._last_publish_prefill_ready = False
         self._last_publish_physical_rc_fresh = False
         self._last_publish_command_fresh = False
+        self._last_publish_command_active = False
+        self._last_publish_command_reason = ""
         self._last_publish_set_raw_rc_ack_fresh = False
         self._last_publish_tick_s: float | None = None
         self._publish_tick_interval_s: float | None = None
@@ -470,6 +490,7 @@ class BetaflightMspIoWorker:
             "status": config.status_poll_hz,
             "attitude": config.attitude_poll_hz,
             "raw_imu": config.raw_imu_poll_hz,
+            "motor": config.motor_poll_hz,
             "rc": config.rc_poll_hz,
             "analog": config.analog_poll_hz,
         }
@@ -518,10 +539,11 @@ class BetaflightMspIoWorker:
                 algorithm_authorized = bool(authorized)
         with self._lock:
             self._staged = command
-            self._staged_received_s = time.monotonic()
+            now = time.monotonic()
+            self._staged_received_s = now
             self._output_enabled = bool(output_enabled)
             self._algorithm_authorized = bool(algorithm_authorized)
-            self._override_active = bool(override_active)
+            self._set_override_active_locked(bool(override_active), now)
             self._staged_count += 1
 
     def snapshot(self, timestamp: float | None = None) -> MspWorkerSnapshot:
@@ -532,6 +554,7 @@ class BetaflightMspIoWorker:
             attitude_timestamp = None if telemetry is None else telemetry.attitude_timestamp_s
             analog_timestamp = None if telemetry is None else telemetry.analog_timestamp_s
             raw_imu_timestamp = None if telemetry is None else telemetry.raw_imu_timestamp_s
+            motor_timestamp = None if telemetry is None else telemetry.motor_timestamp_s
             if telemetry is not None:
                 if status_timestamp is None and telemetry.status is not None:
                     status_timestamp = telemetry.timestamp
@@ -541,10 +564,13 @@ class BetaflightMspIoWorker:
                     analog_timestamp = telemetry.timestamp
                 if raw_imu_timestamp is None and telemetry.raw_imu is not None:
                     raw_imu_timestamp = telemetry.timestamp
+                if motor_timestamp is None and telemetry.motor_outputs:
+                    motor_timestamp = telemetry.timestamp
             status_age = None if status_timestamp is None else max(0.0, now - status_timestamp)
             attitude_age = None if attitude_timestamp is None else max(0.0, now - attitude_timestamp)
             analog_age = None if analog_timestamp is None else max(0.0, now - analog_timestamp)
             raw_imu_age = None if raw_imu_timestamp is None else max(0.0, now - raw_imu_timestamp)
+            motor_age = None if motor_timestamp is None else max(0.0, now - motor_timestamp)
             telemetry_age = status_age
             rc_age = None if self._physical_rc_received_s is None else max(0.0, now - self._physical_rc_received_s)
             command_age = None if self._staged_received_s is None else max(0.0, now - self._staged_received_s)
@@ -560,6 +586,7 @@ class BetaflightMspIoWorker:
             ack_fresh = self.config.transport_mode != "async_pipeline" or (
                 ack_age is not None and ack_age <= self.config.response_stale_s
             )
+            release_hold_active = self._override_release_hold_active_locked(now)
             rc_poll_suspended = bool(self._override_active and self._manual_rc)
             return MspWorkerSnapshot(
                 telemetry=telemetry,
@@ -569,9 +596,10 @@ class BetaflightMspIoWorker:
                 attitude_age_s=attitude_age,
                 analog_age_s=analog_age,
                 raw_imu_age_s=raw_imu_age,
+                motor_age_s=motor_age,
                 physical_rc_age_s=rc_age,
                 physical_rc_fresh=bool(
-                    self._override_active and self._manual_rc
+                    (self._override_active or release_hold_active) and self._manual_rc
                     or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
                 ),
                 poll_count=self._poll_count,
@@ -583,6 +611,7 @@ class BetaflightMspIoWorker:
                 output_enabled=self._output_enabled,
                 algorithm_authorized=self._algorithm_authorized,
                 override_active=self._override_active,
+                override_release_hold_active=release_hold_active,
                 prefill_ready=self._prefill_ready(),
                 prefill_success_count=self._prefill_success_count,
                 passthrough_send_count=self._passthrough_send_count,
@@ -594,9 +623,14 @@ class BetaflightMspIoWorker:
                 last_publish_output_enabled=self._last_publish_output_enabled,
                 last_publish_algorithm_authorized=self._last_publish_algorithm_authorized,
                 last_publish_override_active=self._last_publish_override_active,
+                last_publish_override_release_hold_active=(
+                    self._last_publish_override_release_hold_active
+                ),
                 last_publish_prefill_ready=self._last_publish_prefill_ready,
                 last_publish_physical_rc_fresh=self._last_publish_physical_rc_fresh,
                 last_publish_command_fresh=self._last_publish_command_fresh,
+                last_publish_command_active=self._last_publish_command_active,
+                last_publish_command_reason=self._last_publish_command_reason,
                 last_publish_set_raw_rc_ack_fresh=self._last_publish_set_raw_rc_ack_fresh,
                 publish_tick_interval_s=self._publish_tick_interval_s,
                 publish_tick_max_interval_s=self._publish_tick_max_interval_s,
@@ -679,6 +713,7 @@ class BetaflightMspIoWorker:
             "status": MSP_STATUS,
             "attitude": MSP_ATTITUDE,
             "raw_imu": MSP_RAW_IMU,
+            "motor": MSP_MOTOR,
             "rc": MSP_RC,
             "analog": MSP_ANALOG,
         }
@@ -705,6 +740,7 @@ class BetaflightMspIoWorker:
             MSP_STATUS: "status",
             MSP_ATTITUDE: "attitude",
             MSP_RAW_IMU: "raw_imu",
+            MSP_MOTOR: "motor",
             MSP_RC: "rc",
             MSP_ANALOG: "analog",
         }
@@ -712,6 +748,7 @@ class BetaflightMspIoWorker:
             MSP_STATUS: parse_status,
             MSP_ATTITUDE: parse_attitude,
             MSP_RAW_IMU: parse_raw_imu,
+            MSP_MOTOR: parse_motor_outputs,
             MSP_RC: parse_rc_channels,
             MSP_ANALOG: parse_analog,
         }
@@ -765,6 +802,8 @@ class BetaflightMspIoWorker:
                 value = self.adapter.read_attitude()
             elif name == "raw_imu":
                 value = self.adapter.read_raw_imu()
+            elif name == "motor":
+                value = self.adapter.read_motor_outputs()
             elif name == "rc":
                 value = tuple(self.adapter.read_rc())
             elif name == "analog":
@@ -790,7 +829,10 @@ class BetaflightMspIoWorker:
                     status_timestamp_s=received_s,
                 )
                 if self._override_mode_index is not None:
-                    self._override_active = bool(value.mode_flags & (1 << self._override_mode_index))
+                    self._set_override_active_locked(
+                        bool(value.mode_flags & (1 << self._override_mode_index)),
+                        received_s,
+                    )
             elif name == "attitude":
                 telemetry = replace(
                     telemetry,
@@ -805,6 +847,13 @@ class BetaflightMspIoWorker:
                     raw_imu=value,
                     raw_imu_timestamp_s=received_s,
                 )
+            elif name == "motor":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    motor_outputs=tuple(value),
+                    motor_timestamp_s=received_s,
+                )
             elif name == "rc":
                 telemetry = replace(
                     telemetry,
@@ -816,6 +865,7 @@ class BetaflightMspIoWorker:
                 if not self._override_active and self._physical_rc_valid(physical):
                     self._manual_rc = physical
                     self._physical_rc_received_s = received_s
+                    self._override_released_s = None
                 elif not self._manual_rc:
                     self._physical_rc_received_s = received_s
             elif name == "analog":
@@ -842,6 +892,22 @@ class BetaflightMspIoWorker:
                 f"{source}:{message}" for source, message in sorted(self._poll_errors.items())
             )
             self._poll_error_count += 1
+
+    def _set_override_active_locked(self, active: bool, timestamp_s: float) -> None:
+        active = bool(active)
+        if self._override_active and not active:
+            self._override_released_s = float(timestamp_s)
+        elif active:
+            self._override_released_s = None
+        self._override_active = active
+
+    def _override_release_hold_active_locked(self, timestamp_s: float) -> bool:
+        return bool(
+            not self._override_active
+            and self._manual_rc
+            and self._override_released_s is not None
+            and float(timestamp_s) - self._override_released_s <= self.config.override_grace_hold_s
+        )
 
     def _poll(self, now: float) -> None:
         del now
@@ -880,7 +946,7 @@ class BetaflightMspIoWorker:
                 observed_override = self._override_active
                 if self._override_mode_index is not None and telemetry.status is not None:
                     observed_override = bool(telemetry.status.mode_flags & (1 << self._override_mode_index))
-                    self._override_active = observed_override
+                    self._set_override_active_locked(observed_override, received_s)
                 self._telemetry = telemetry
                 self._telemetry_error = ""
                 self._poll_errors.clear()
@@ -893,6 +959,7 @@ class BetaflightMspIoWorker:
                     )
                     if not observed_override and self._physical_rc_valid(physical):
                         self._manual_rc = physical
+                        self._override_released_s = None
                 self._poll_count += 1
         except Exception as exc:
             with self._lock:
@@ -916,8 +983,9 @@ class BetaflightMspIoWorker:
             telemetry = self._telemetry
             manual_rc = self._manual_rc
             rc_age = None if self._physical_rc_received_s is None else now - self._physical_rc_received_s
+            release_hold_active = self._override_release_hold_active_locked(now)
             fresh = bool(
-                override_active and manual_rc
+                (override_active or release_hold_active) and manual_rc
                 or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
             )
             prefill_ready = self._prefill_ready()
@@ -949,7 +1017,7 @@ class BetaflightMspIoWorker:
         try:
             physical = (
                 tuple(manual_rc)
-                if override_active and manual_rc
+                if (override_active or release_hold_active) and manual_rc
                 else reorder_msp_rc_to_set_raw_rc(
                     telemetry.rc_channels,
                     self.config.set_raw_rc_channel_map,
@@ -983,6 +1051,7 @@ class BetaflightMspIoWorker:
             algorithm_authorized
             and override_active
             and command is not None
+            and command.active
             and command_fresh
             and (prefill_ready or not self.config.prefill_enabled)
             and ack_fresh
@@ -1051,9 +1120,12 @@ class BetaflightMspIoWorker:
                 self._last_publish_output_enabled = output_enabled
                 self._last_publish_algorithm_authorized = algorithm_authorized
                 self._last_publish_override_active = override_active
+                self._last_publish_override_release_hold_active = release_hold_active
                 self._last_publish_prefill_ready = prefill_ready or not self.config.prefill_enabled
                 self._last_publish_physical_rc_fresh = fresh
                 self._last_publish_command_fresh = command_fresh
+                self._last_publish_command_active = bool(command is not None and command.active)
+                self._last_publish_command_reason = "" if command is None else str(command.reason)
                 self._last_publish_set_raw_rc_ack_fresh = ack_fresh
                 if use_algorithm:
                     self._algorithm_send_count += 1

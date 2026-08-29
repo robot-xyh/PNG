@@ -952,3 +952,37 @@ vendored ByteTrack原先将第二阶段低分IoU距离门限硬编码为0.5，�
 模块，不是Betaflight或ByteTrack测试失败。板端聚焦测试输出保存在
 `logs/rk3588_tracker_focused_tests_20260829.txt`，不得把不完整部署包的AirSim导入错误解释为实机
 运行时回归。
+
+## 2026-08-29 无桨接管纵向响应与 MSP 诊断补强
+
+在`.42/orangepi5max`上使用低分支固定Vm配置完成拆桨、固定机体、功率电供电试验。对应飞控快照为
+`logs/betaflight_snapshots/betaflight_snapshot_20260829_161533/manifest.json`，批准文件为
+`logs/betaflight_noprop_vm_body_frame_tracker_low_conf_approval.json`；配置SHA256为
+`ff1c554a2a36f181068cf0fd5ba000e5a19479cb93042e6977d1a05cb3bb8e27`，批准文件SHA256为
+`b6cff90fd7329514a76ace4e62c3141a3dd287cbf4c575410644758ed5d64b34`。日志
+`fixed_vm_pitch_sign_longitudinal_20260829_163322_20260829_163323.csv`确认RC7接管进入
+`ACTIVE/algorithm`，入场油门交接连续，发送油门不超过1078 us。目标向机头移动时
+`g_B.x>0`且pitch通道E最高1501 us；反向回移时pitch变负且E最低1499 us。该结果验证从真实相机、
+YOLO/ByteTrack、机体系导引量到pitch RC命令的符号链，但原日志没有电机输出，尚不能证明实际
+Betaflight motor mix的物理pitch符号。操作者最终先退出RC7接管，再RC5 DISARM；runner已停止且
+`/dev/ttyS1`释放。
+
+原v11审计报告中的3行`command_shaping_nonfinite`和3行
+`algorithm_with_invalid_command_shaping`来自主循环记录当前shaping、同时记录发送线程上一拍状态的
+时间基准错配，并非发现非有限PWM已发送。日志模式升级到v12，新增发送线程实际最近一次命令的
+`active/reason`及发布门字段；审计仅在v12用这些字段判定已发布算法命令，旧日志继续按旧规则并
+标记无法恢复的时间基准。发送线程还增加`RcCommand.active`硬门控，防止仅凭上游授权发送无效命令。
+
+退出接管时曾观察到最大SET_RAW_RC间隔100.045 ms。根因是OVERRIDE期间暂停MSP_RC轮询，RC7退出
+后等待第一帧恢复的物理RC。运行时现移植src的`override_grace_hold_s=0.35`：只在OVERRIDE下降沿后
+短时继续发送退出前锁存的人工通道，算法控制立即停止；收到有效物理RC即提前清除保持。该机制不
+延长算法接管，也不替代接收机failsafe。
+
+为验证实际混控，新增低频`MSP_MOTOR (104)`读取，示例配置为`motor_poll_hz=2`，CSV记录最多8路
+电机输出、时间戳和命令统计，Web页面直接显示Motor 1--8及数据年龄；审计在启用轮询但无成功帧或
+存在错误时失败。该命令在当前定制Betaflight固件上的支持情况仍需LOG_ONLY确认；不支持时应改用
+Blackbox，不得猜测电机序号或混控符号。上述运行时配置会改变配置哈希，板端同步后必须重新采集
+快照并生成新的无桨批准文件，旧批准文件不得复用。
+
+本轮离线修改完成后，本地`python3 -m unittest discover -s tests -v`为282/282通过，
+`git diff --check`通过。尚未把新代码同步到板端，也未执行新的LOG_ONLY或RC7接管测试。

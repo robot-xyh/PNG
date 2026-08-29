@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
+    MSP_MOTOR,
     MSP_RC,
     MSP_SET_RAW_RC,
     AnalogTelemetry,
@@ -62,6 +63,10 @@ class _Adapter:
     def read_raw_imu(self):
         self.operations.append("raw_imu")
         return RawImuTelemetry((1, 2, 3), (4.0, 5.0, 6.0), (7, 8, 9))
+
+    def read_motor_outputs(self):
+        self.operations.append("motor")
+        return (1000, 1010, 1020, 1030, 0, 0, 0, 0)
 
     def read_rc(self):
         self.operations.append("rc")
@@ -126,16 +131,18 @@ class BetaflightRuntimeTest(unittest.TestCase):
         adapter = _Adapter()
         worker = BetaflightMspIoWorker(adapter, MspRuntimeConfig())
 
-        for name in ("status", "attitude", "raw_imu", "rc", "analog"):
+        for name in ("status", "attitude", "raw_imu", "motor", "rc", "analog"):
             worker._poll_one(name)
         snapshot = worker.snapshot()
 
         self.assertEqual(snapshot.telemetry.raw_imu.gyro_msp_raw, (4.0, 5.0, 6.0))
         self.assertEqual(snapshot.telemetry.attitude.roll_deg, 1.0)
         self.assertEqual(snapshot.telemetry.analog.vbat_v, 16.0)
-        self.assertEqual(snapshot.poll_count, 5)
+        self.assertEqual(snapshot.telemetry.motor_outputs[:4], (1000, 1010, 1020, 1030))
+        self.assertEqual(snapshot.poll_count, 6)
         self.assertIsNotNone(snapshot.status_age_s)
         self.assertIsNotNone(snapshot.raw_imu_age_s)
+        self.assertIsNotNone(snapshot.motor_age_s)
 
     def test_worker_publish_tick_precedes_telemetry_poll(self):
         adapter = _Adapter()
@@ -321,6 +328,85 @@ class BetaflightRuntimeTest(unittest.TestCase):
 
         self.assertEqual(worker.snapshot(1.02).publish_mode, "passthrough")
         self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
+
+    def test_worker_refuses_inactive_command_at_publish_boundary(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, prefill_min_frames=1),
+        )
+        worker._poll(1.0)
+        command = RcCommand(
+            1.0,
+            (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000),
+            False,
+            reason="guidance_missing",
+        )
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+
+        worker._publish(1.01)
+
+        snapshot = worker.snapshot(1.01)
+        self.assertNotEqual(snapshot.publish_mode, "algorithm")
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
+        self.assertFalse(snapshot.last_publish_command_active)
+        self.assertEqual(snapshot.last_publish_command_reason, "guidance_missing")
+
+    def test_override_release_grace_continues_latched_manual_frames(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                prefill_enabled=True,
+                prefill_min_frames=1,
+                throttle_handover_s=0.0,
+                override_grace_hold_s=0.35,
+            ),
+        )
+        worker._poll(1.0)
+        now = time.monotonic()
+        command = RcCommand(
+            now,
+            (1600, 1400, 1200, 1550, 1000, 2000, 2000, 2000),
+            True,
+        )
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+        worker._publish(now)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=False)
+
+        worker._publish(now + 0.02)
+
+        snapshot = worker.snapshot(now + 0.02)
+        self.assertTrue(snapshot.override_release_hold_active)
+        self.assertTrue(snapshot.last_publish_override_release_hold_active)
+        self.assertEqual(snapshot.publish_mode, "passthrough")
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
+
+        sent_count = len(adapter.sent)
+        worker._publish(now + 0.40)
+        self.assertEqual(len(adapter.sent), sent_count)
+        self.assertEqual(worker.snapshot(now + 0.40).publish_mode, "physical_rc_stale")
+
+    def test_async_motor_response_is_merged_into_telemetry(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(transport_mode="async_pipeline", motor_poll_hz=2.0),
+        )
+        adapter.begin_async_pipeline()
+        request_id = adapter.queue_async_request(MSP_MOTOR)
+        transport.inject(
+            encode_msp_frame(MSP_MOTOR, b"\xe8\x03\xf2\x03\xfc\x03\x06\x04", direction=">")
+        )
+
+        worker._handle_async_responses(adapter.drain_async_responses(10.0))
+
+        snapshot = worker.snapshot()
+        self.assertIsNotNone(request_id)
+        self.assertEqual(snapshot.telemetry.motor_outputs, (1000, 1010, 1020, 1030))
+        self.assertIsNotNone(snapshot.motor_age_s)
+        adapter.end_async_pipeline()
 
     def test_worker_prefills_physical_rc_before_algorithm_authorization(self):
         adapter = _Adapter()

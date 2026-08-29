@@ -19,6 +19,7 @@ MSP_FC_VARIANT = 2
 MSP_FC_VERSION = 3
 MSP_STATUS = 101
 MSP_RAW_IMU = 102
+MSP_MOTOR = 104
 MSP_RC = 105
 MSP_ATTITUDE = 108
 MSP_ANALOG = 110
@@ -106,11 +107,13 @@ class BetaflightTelemetry:
     attitude: AttitudeTelemetry | None = None
     analog: AnalogTelemetry | None = None
     rc_channels: tuple[int, ...] = ()
+    motor_outputs: tuple[int, ...] = ()
     raw_imu: RawImuTelemetry | None = None
     status_timestamp_s: float | None = None
     attitude_timestamp_s: float | None = None
     analog_timestamp_s: float | None = None
     rc_timestamp_s: float | None = None
+    motor_timestamp_s: float | None = None
     raw_imu_timestamp_s: float | None = None
 
 
@@ -298,6 +301,13 @@ def parse_rc_channels(payload: bytes | bytearray) -> tuple[int, ...]:
     data = bytes(payload)
     if len(data) < 2 or len(data) % 2 != 0:
         raise MSPError("MSP_RC payload length must be an even number of bytes")
+    return tuple(int(value) for value in struct.unpack("<" + "H" * (len(data) // 2), data))
+
+
+def parse_motor_outputs(payload: bytes | bytearray) -> tuple[int, ...]:
+    data = bytes(payload)
+    if len(data) < 2 or len(data) % 2 != 0:
+        raise MSPError("MSP_MOTOR payload length must be an even number of bytes")
     return tuple(int(value) for value in struct.unpack("<" + "H" * (len(data) // 2), data))
 
 
@@ -555,6 +565,9 @@ class BetaflightMSPAdapter:
     def read_raw_imu(self) -> RawImuTelemetry:
         return parse_raw_imu(self.request(MSP_RAW_IMU).payload)
 
+    def read_motor_outputs(self) -> tuple[int, ...]:
+        return parse_motor_outputs(self.request(MSP_MOTOR).payload)
+
     def read_attitude(self) -> AttitudeTelemetry:
         return parse_attitude(self.request(MSP_ATTITUDE).payload)
 
@@ -577,12 +590,14 @@ class BetaflightMSPAdapter:
         include_attitude: bool = True,
         include_analog: bool = True,
         include_rc: bool = True,
+        include_motor: bool = False,
         include_raw_imu: bool = False,
     ) -> BetaflightTelemetry:
         status = self.read_status() if include_status else None
         attitude = self.read_attitude() if include_attitude else None
         analog = self.read_analog() if include_analog else None
         rc = self.read_rc() if include_rc else ()
+        motor_outputs = self.read_motor_outputs() if include_motor else ()
         raw_imu = self.read_raw_imu() if include_raw_imu else None
         timestamp = time.monotonic()
         return BetaflightTelemetry(
@@ -591,11 +606,13 @@ class BetaflightMSPAdapter:
             attitude=attitude,
             analog=analog,
             rc_channels=tuple(rc),
+            motor_outputs=tuple(motor_outputs),
             raw_imu=raw_imu,
             status_timestamp_s=timestamp if status is not None else None,
             attitude_timestamp_s=timestamp if attitude is not None else None,
             analog_timestamp_s=timestamp if analog is not None else None,
             rc_timestamp_s=timestamp if rc else None,
+            motor_timestamp_s=timestamp if motor_outputs else None,
             raw_imu_timestamp_s=timestamp if raw_imu is not None else None,
         )
 

@@ -191,6 +191,32 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertIn("invalid_guidance_command_frames", codes)
             self.assertIn("guidance_body_vector_missing", codes)
 
+    def test_schema_v12_uses_last_published_command_timebase(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                shaping_valid="0",
+                sp_roll_rate_deg_s="",
+                sp_pitch_rate_deg_s="",
+                msp_last_publish_command_active="1",
+                msp_last_publish_command_reason="active",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=12)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertNotIn("command_shaping_nonfinite", codes)
+            self.assertNotIn("algorithm_with_invalid_command_shaping", codes)
+
+            row["msp_last_publish_command_active"] = "0"
+            csv_path = self._write_log(Path(directory), row, schema_version=12)
+            result = tool.analyze_log(csv_path)
+            self.assertIn(
+                "algorithm_with_invalid_command_shaping",
+                {item["code"] for item in result["violations"]},
+            )
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
@@ -223,6 +249,8 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "msp_last_publish_prefill_ready": "1",
             "msp_last_publish_physical_rc_fresh": "1",
             "msp_last_publish_command_fresh": "1",
+            "msp_last_publish_command_active": "1",
+            "msp_last_publish_command_reason": "active",
             "msp_last_publish_set_raw_rc_ack_fresh": "1",
             "map_limited_roll_rate_deg_s": "3.0",
             "map_limited_pitch_rate_deg_s": "-3.0",

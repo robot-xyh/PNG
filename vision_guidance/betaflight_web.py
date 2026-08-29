@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 8
+WEB_SCHEMA_VERSION = 9
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -133,7 +133,7 @@ def telemetry_payload_from_log_row(
     physical_channels = _reorder_rc_input(input_channels, channel_map=channel_map)
 
     commands: dict[str, Any] = {}
-    for name in ("status", "raw_imu", "rc", "attitude", "analog", "set_raw_rc"):
+    for name in ("status", "raw_imu", "motor", "rc", "attitude", "analog", "set_raw_rc"):
         prefix = f"msp_cmd_{name}"
         commands[name] = {
             "attempt_count": _integer(row.get(f"{prefix}_attempt_count")),
@@ -181,6 +181,8 @@ def telemetry_payload_from_log_row(
                 row,
                 ("gyro_msp_raw_x", "gyro_msp_raw_y", "gyro_msp_raw_z"),
             ),
+            "motor_outputs": _channels(row, "motor_output_ch", 8),
+            "motor_output_count": _integer(row.get("motor_output_count")),
             "vbat_v": _number(row.get("vbat_v")),
             "amperage_a": _number(row.get("amperage_a")),
             "mah_drawn": _integer(row.get("mah_drawn")),
@@ -194,6 +196,7 @@ def telemetry_payload_from_log_row(
         "msp": {
             "telemetry_age_s": _number(row.get("telemetry_age_s")),
             "attitude_age_s": _number(row.get("attitude_age_s")),
+            "motor_age_s": _number(row.get("msp_motor_age_s")),
             "physical_rc_age_s": _number(row.get("physical_rc_age_s")),
             "request_count": _integer(row.get("msp_request_count")),
             "request_error_count": _integer(row.get("msp_request_error_count")),
@@ -226,6 +229,9 @@ def telemetry_payload_from_log_row(
                 "checksum_error_count": _integer(row.get("msp_rx_checksum_error_count")),
                 "parser_error_count": _integer(row.get("msp_rx_parser_error_count")),
                 "rc_poll_suspended": _boolean(row.get("msp_rc_poll_suspended")),
+                "override_release_hold_active": _boolean(
+                    row.get("msp_override_release_hold_active")
+                ),
             },
             "publish_deadline_miss_count": _integer(row.get("msp_publish_deadline_miss_count")),
             "last_publish_gates": {
@@ -234,11 +240,16 @@ def telemetry_payload_from_log_row(
                     row.get("msp_last_publish_algorithm_authorized")
                 ),
                 "override_active": _boolean(row.get("msp_last_publish_override_active")),
+                "override_release_hold_active": _boolean(
+                    row.get("msp_last_publish_override_release_hold_active")
+                ),
                 "prefill_ready": _boolean(row.get("msp_last_publish_prefill_ready")),
                 "physical_rc_fresh": _boolean(
                     row.get("msp_last_publish_physical_rc_fresh")
                 ),
                 "command_fresh": _boolean(row.get("msp_last_publish_command_fresh")),
+                "command_active": _boolean(row.get("msp_last_publish_command_active")),
+                "command_reason": _text(row.get("msp_last_publish_command_reason")),
                 "set_raw_rc_ack_fresh": _boolean(
                     row.get("msp_last_publish_set_raw_rc_ack_fresh")
                 ),

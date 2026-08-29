@@ -8,6 +8,7 @@ from vision_guidance.betaflight_msp import (
     MSP_API_VERSION,
     MSP_ATTITUDE,
     MSP_BOXNAMES,
+    MSP_MOTOR,
     MSP_RAW_IMU,
     MSP_RC,
     MSP_SET_RAW_RC,
@@ -22,6 +23,7 @@ from vision_guidance.betaflight_msp import (
     parse_attitude,
     parse_box_ids,
     parse_box_names,
+    parse_motor_outputs,
     parse_rc_channels,
     parse_raw_imu,
     parse_status,
@@ -130,6 +132,11 @@ class BetaflightMSPTest(unittest.TestCase):
         rc = parse_rc_channels(struct.pack("<HHHH", 1000, 1500, 1600, 2000))
         self.assertEqual(rc, (1000, 1500, 1600, 2000))
 
+        motors = parse_motor_outputs(struct.pack("<HHHH", 1000, 1100, 1200, 1300))
+        self.assertEqual(motors, (1000, 1100, 1200, 1300))
+        with self.assertRaisesRegex(MSPError, "even number"):
+            parse_motor_outputs(b"\x00")
+
         self.assertEqual(parse_box_ids(bytes([0, 1, 50, 27])), (0, 1, 50, 27))
         self.assertEqual(parse_box_names(b"ARM;ANGLE;MSP OVERRIDE;"), ("ARM", "ANGLE", "MSP OVERRIDE"))
 
@@ -213,6 +220,20 @@ class BetaflightMSPTest(unittest.TestCase):
         self.assertAlmostEqual(telemetry.attitude.roll_deg, 1.0)
         self.assertAlmostEqual(telemetry.analog.vbat_v, 12.0)
         self.assertEqual(len(telemetry.rc_channels), 8)
+
+    def test_adapter_reads_motor_outputs(self):
+        response = encode_msp_frame(
+            MSP_MOTOR,
+            struct.pack("<" + "H" * 8, 1000, 1010, 1020, 1030, 0, 0, 0, 0),
+            direction=">",
+        )
+        transport = FakeTransport([response])
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+
+        outputs = adapter.read_motor_outputs()
+
+        self.assertEqual(outputs[:4], (1000, 1010, 1020, 1030))
+        self.assertEqual(decode_msp_frame(transport.writes[0]).command, MSP_MOTOR)
 
     def test_send_raw_rc_packs_channels(self):
         response = encode_msp_frame(MSP_SET_RAW_RC, b"", direction=">")

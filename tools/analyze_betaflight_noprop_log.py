@@ -64,7 +64,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -135,14 +135,26 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                     "tilt_pitch_level_weight",
                 )
             )
-            shaping_nonfinite = any(value is None for value in shaping_numbers)
+            shaping_valid = _integer(row.get("shaping_valid")) == 1
+            shaping_nonfinite = any(value is None for value in shaping_numbers) and (
+                schema_version is None or schema_version < 12 or shaping_valid
+            )
             factors = shaping_numbers[4:]
-            if any(value is not None and not 0.0 <= value <= 1.0 for value in factors):
+            if (schema_version is None or schema_version < 12 or shaping_valid) and any(
+                value is not None and not 0.0 <= value <= 1.0 for value in factors
+            ):
                 shaping_factor_rows.append(row)
             if row.get("msp_publish_mode") == "algorithm":
-                if _integer(row.get("shaping_valid")) != 1:
-                    invalid_algorithm_shaping_rows.append(row)
-                if bool(tilt_config.get("enabled", False)):
+                if schema_version is not None and schema_version >= 12:
+                    worker_command_valid = (
+                        _integer(row.get("msp_last_publish_command_active")) == 1
+                    )
+                    if not worker_command_valid:
+                        invalid_algorithm_shaping_rows.append(row)
+                else:
+                    if not shaping_valid:
+                        invalid_algorithm_shaping_rows.append(row)
+                if shaping_valid and bool(tilt_config.get("enabled", False)):
                     axis_values = (
                         (
                             _number(row.get("tilt_roll_attitude_deg")),
@@ -197,6 +209,18 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "command_shaping_nonfinite", shaping_nonfinite_rows)
     _append_violation(violations, "command_shaping_factor_out_of_range", shaping_factor_rows)
     _append_violation(violations, "algorithm_with_invalid_command_shaping", invalid_algorithm_shaping_rows)
+    legacy_shaping_mismatch_rows = [
+        row
+        for row in rows
+        if schema_version is not None
+        and 8 <= schema_version < 12
+        and row.get("msp_publish_mode") == "algorithm"
+        and _integer(row.get("shaping_valid")) != 1
+    ]
+    if legacy_shaping_mismatch_rows:
+        warnings.append(
+            f"algorithm_shaping_timebase_unavailable:{len(legacy_shaping_mismatch_rows)}"
+        )
     _append_violation(violations, "tilt_hardcap_not_leveling", hardcap_not_leveling_rows)
     _append_violation(violations, "tilt_hardcap_flag_missing", hardcap_flag_rows)
     _append_violation(violations, "invalid_guidance_command_frames", invalid_guidance_frame_rows)
@@ -282,6 +306,17 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             violations.append(
                 {"code": "msp_response_parser_errors", "count": parser_error_count, "first_elapsed_s": None}
             )
+    motor_poll_hz = float(runtime.get("motor_poll_hz", 0.0))
+    motor_errors = _integer(final.get("msp_cmd_motor_error_count")) or 0
+    motor_success = _integer(final.get("msp_cmd_motor_success_count")) or 0
+    if motor_poll_hz > 0.0 and motor_success <= 0:
+        violations.append(
+            {"code": "motor_telemetry_missing", "count": 1, "first_elapsed_s": None}
+        )
+    if motor_errors > 0:
+        violations.append(
+            {"code": "motor_telemetry_errors", "count": motor_errors, "first_elapsed_s": None}
+        )
     web_errors = _integer(final.get("web_error_count")) or 0
     web_publish_count = _integer(final.get("web_publish_count")) or 0
     if web_enabled and web_publish_count <= 0:
@@ -338,6 +373,13 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "max_gyro_msp_raw_abs": _maximum_abs(
             rows,
             ("gyro_msp_raw_x", "gyro_msp_raw_y", "gyro_msp_raw_z"),
+        ),
+        "motor_telemetry_rows": sum(
+            _integer(row.get("motor_output_count")) not in (None, 0) for row in rows
+        ),
+        "max_motor_output": _maximum_abs(
+            rows,
+            tuple(f"motor_output_ch{index}" for index in range(1, 9)),
         ),
         "log_schema_version": schema_version,
         "web_enabled": web_enabled,

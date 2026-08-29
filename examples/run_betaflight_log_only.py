@@ -28,6 +28,7 @@ from vision_guidance.attitude_buffer import AttitudeHistoryBuffer  # noqa: E402
 from vision_guidance.betaflight_msp import (  # noqa: E402
     MSP_ANALOG,
     MSP_ATTITUDE,
+    MSP_MOTOR,
     MSP_RAW_IMU,
     MSP_RC,
     MSP_SET_RAW_RC,
@@ -84,12 +85,13 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 11
+LOG_SCHEMA_VERSION = 12
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
+    ("motor", MSP_MOTOR),
     ("rc", MSP_RC),
     ("attitude", MSP_ATTITUDE),
     ("analog", MSP_ANALOG),
@@ -1902,16 +1904,21 @@ def _msp_log_stats(
         "msp_last_publish_output_enabled": "",
         "msp_last_publish_algorithm_authorized": "",
         "msp_last_publish_override_active": "",
+        "msp_last_publish_override_release_hold_active": "",
         "msp_last_publish_prefill_ready": "",
         "msp_last_publish_physical_rc_fresh": "",
         "msp_last_publish_command_fresh": "",
+        "msp_last_publish_command_active": "",
+        "msp_last_publish_command_reason": "",
         "msp_last_publish_set_raw_rc_ack_fresh": "",
+        "msp_override_release_hold_active": "",
         "msp_rc_poll_suspended": "",
         "msp_last_sent_channels": (),
         "msp_status_age_s": "",
         "msp_attitude_age_s": "",
         "msp_analog_age_s": "",
         "msp_raw_imu_age_s": "",
+        "msp_motor_age_s": "",
         "msp_publish_tick_interval_s": "",
         "msp_publish_tick_max_interval_s": "",
         "msp_publish_deadline_miss_count": "",
@@ -1965,21 +1972,28 @@ def _msp_log_stats(
                 worker_snapshot.last_publish_algorithm_authorized
             ),
             msp_last_publish_override_active=int(worker_snapshot.last_publish_override_active),
+            msp_last_publish_override_release_hold_active=int(
+                worker_snapshot.last_publish_override_release_hold_active
+            ),
             msp_last_publish_prefill_ready=int(worker_snapshot.last_publish_prefill_ready),
             msp_last_publish_physical_rc_fresh=int(
                 worker_snapshot.last_publish_physical_rc_fresh
             ),
             msp_last_publish_command_fresh=int(worker_snapshot.last_publish_command_fresh),
+            msp_last_publish_command_active=int(worker_snapshot.last_publish_command_active),
+            msp_last_publish_command_reason=worker_snapshot.last_publish_command_reason,
             msp_last_publish_set_raw_rc_ack_fresh=int(
                 worker_snapshot.last_publish_set_raw_rc_ack_fresh
             ),
             msp_set_raw_rc_ack_fresh=int(worker_snapshot.set_raw_rc_ack_fresh),
+            msp_override_release_hold_active=int(worker_snapshot.override_release_hold_active),
             msp_rc_poll_suspended=int(worker_snapshot.rc_poll_suspended),
             msp_last_sent_channels=worker_snapshot.last_sent_channels,
             msp_status_age_s=worker_snapshot.status_age_s,
             msp_attitude_age_s=worker_snapshot.attitude_age_s,
             msp_analog_age_s=worker_snapshot.analog_age_s,
             msp_raw_imu_age_s=worker_snapshot.raw_imu_age_s,
+            msp_motor_age_s=worker_snapshot.motor_age_s,
             msp_publish_tick_interval_s=worker_snapshot.publish_tick_interval_s,
             msp_publish_tick_max_interval_s=worker_snapshot.publish_tick_max_interval_s,
             msp_publish_deadline_miss_count=worker_snapshot.publish_deadline_miss_count,
@@ -2276,15 +2290,20 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_last_publish_output_enabled",
         "msp_last_publish_algorithm_authorized",
         "msp_last_publish_override_active",
+        "msp_last_publish_override_release_hold_active",
         "msp_last_publish_prefill_ready",
         "msp_last_publish_physical_rc_fresh",
         "msp_last_publish_command_fresh",
+        "msp_last_publish_command_active",
+        "msp_last_publish_command_reason",
         "msp_last_publish_set_raw_rc_ack_fresh",
+        "msp_override_release_hold_active",
         "msp_rc_poll_suspended",
         "msp_status_age_s",
         "msp_attitude_age_s",
         "msp_analog_age_s",
         "msp_raw_imu_age_s",
+        "msp_motor_age_s",
         "msp_publish_tick_interval_s",
         "msp_publish_tick_max_interval_s",
         "msp_publish_deadline_miss_count",
@@ -2332,6 +2351,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "mag_raw_x",
         "mag_raw_y",
         "mag_raw_z",
+        "motor_output_count",
+        "motor_output_all",
         "rc_in_count",
         "rc_in_all",
         "detector_source",
@@ -2516,6 +2537,7 @@ def _log_fields(channel_count: int) -> list[str]:
                 f"msp_cmd_{label}_last_error",
             )
         )
+    fields.extend(f"motor_output_ch{i}" for i in range(1, 9))
     fields.extend(f"rc_in_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_raw_ch{i}" for i in range(1, channel_count + 1))
     fields.extend(f"rc_target_ch{i}" for i in range(1, channel_count + 1))
@@ -2563,6 +2585,7 @@ def _log_row(
     analog = None if telemetry is None else telemetry.analog
     attitude = None if telemetry is None else telemetry.attitude
     raw_imu = None if telemetry is None else telemetry.raw_imu
+    motor_outputs = () if telemetry is None else telemetry.motor_outputs
     clip_flags = (
         {"left": "", "top": "", "right": "", "bottom": ""}
         if detection is None
@@ -2663,6 +2686,9 @@ def _log_row(
         "msp_last_publish_override_active": detector_stats.get(
             "msp_last_publish_override_active", ""
         ),
+        "msp_last_publish_override_release_hold_active": detector_stats.get(
+            "msp_last_publish_override_release_hold_active", ""
+        ),
         "msp_last_publish_prefill_ready": detector_stats.get(
             "msp_last_publish_prefill_ready", ""
         ),
@@ -2672,14 +2698,24 @@ def _log_row(
         "msp_last_publish_command_fresh": detector_stats.get(
             "msp_last_publish_command_fresh", ""
         ),
+        "msp_last_publish_command_active": detector_stats.get(
+            "msp_last_publish_command_active", ""
+        ),
+        "msp_last_publish_command_reason": detector_stats.get(
+            "msp_last_publish_command_reason", ""
+        ),
         "msp_last_publish_set_raw_rc_ack_fresh": detector_stats.get(
             "msp_last_publish_set_raw_rc_ack_fresh", ""
+        ),
+        "msp_override_release_hold_active": detector_stats.get(
+            "msp_override_release_hold_active", ""
         ),
         "msp_rc_poll_suspended": detector_stats.get("msp_rc_poll_suspended", ""),
         "msp_status_age_s": _stats_float(detector_stats, "msp_status_age_s", precision=6),
         "msp_attitude_age_s": _stats_float(detector_stats, "msp_attitude_age_s", precision=6),
         "msp_analog_age_s": _stats_float(detector_stats, "msp_analog_age_s", precision=6),
         "msp_raw_imu_age_s": _stats_float(detector_stats, "msp_raw_imu_age_s", precision=6),
+        "msp_motor_age_s": _stats_float(detector_stats, "msp_motor_age_s", precision=6),
         "msp_publish_tick_interval_s": _stats_float(
             detector_stats, "msp_publish_tick_interval_s", precision=6
         ),
@@ -2737,6 +2773,8 @@ def _log_row(
         "mag_raw_x": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 0),
         "mag_raw_y": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 1),
         "mag_raw_z": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 2),
+        "motor_output_count": len(motor_outputs),
+        "motor_output_all": _channels_field(motor_outputs),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),
         "detector_source": detector_stats.get("detector_source", ""),
@@ -2940,6 +2978,9 @@ def _log_row(
             detector_stats, f"{prefix}_last_success_age_s", precision=6
         )
         row[f"{prefix}_last_error"] = detector_stats.get(f"{prefix}_last_error", "")
+    row.update(
+        {f"motor_output_ch{i}": _sequence_field(motor_outputs, i - 1) for i in range(1, 9)}
+    )
     rc_input = () if telemetry is None else telemetry.rc_channels
     row.update({f"rc_in_ch{i}": _sequence_field(rc_input, i - 1) for i in range(1, channel_count + 1)})
     row.update({f"rc_raw_ch{i}": _sequence_field(rc_command.raw_channels, i - 1) for i in range(1, channel_count + 1)})
