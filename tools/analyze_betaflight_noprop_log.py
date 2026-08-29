@@ -223,7 +223,15 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                 else:
                     if not shaping_valid:
                         invalid_algorithm_shaping_rows.append(row)
-                if shaping_valid and bool(tilt_config.get("enabled", False)):
+                # The asynchronous MSP worker can still report the preceding
+                # algorithm command for one row after the main-loop gate closes.
+                # In that transition row no current attitude is consumed by the
+                # shaper, so validate the published command through the worker
+                # timebase above instead of requiring empty current-frame inputs.
+                current_shaping_applied = (
+                    shaping_valid and row.get("shaping_reason") != "gate_closed"
+                )
+                if current_shaping_applied and bool(tilt_config.get("enabled", False)):
                     axis_values = (
                         (
                             _number(row.get("tilt_roll_attitude_deg")),

@@ -1118,3 +1118,32 @@ Betaflight PID回路发生I项积累；不是PNG rate命令导致。
 方向验证仅使用短脉冲。完整分析见`doc/BETAFLIGHT_BLACKBOX_LOG00042_ANALYSIS.md`及
 `doc/evidence/LOG00042_alignment.json`。这些改动尚未同步或在Orange Pi上复验，当前仍禁止ARM和
 RC7接管。
+
+## 2026-08-29 schema 14 三秒接管截止实机验证
+
+提交`febf399`及schema 14配置已部署至`.42/orangepi5max`。控制前只读快照
+`logs/betaflight_snapshots/betaflight_snapshot_20260829_210525/manifest.json`确认飞控未ARM、
+MSP OVERRIDE未激活，物理RC5为2000 us、RC7为1000 us；四电机输出均为1000。随后使用固定单目标、
+拆桨固定机体和功率电执行隔离运行，保持`--disable-web-preview`、独立RKNN进程及CPU亲和性配置。
+
+日志`schema14_takeover_timeout_active_retry_20260829_20260829_210708.csv`完整记录以下转换：
+
+- elapsed 22.691 s ARM，人工侧怠速约1056--1057 us，四电机极差1 us；
+- elapsed 55.952 s RC7进入MSP OVERRIDE，56.002 s开始发布算法命令；
+- elapsed 58.958 s触发`FAILSAFE/takeover_duration_interlock`，最大累计时间3.006313 s；
+- 下一采样帧即回到`passthrough`，60.962 s退出RC7，62.013 s DISARM。
+
+60个算法发布采样中，四电机为1056--1089 us，最大同帧极差10 us；整个ARM区间最大输出1091 us、
+最大极差12 us，均低于无桨联锁的1200/150 us门限。共完成4485次SET_RAW_RC写入和4484个ACK，
+末端平均49.886 Hz，最大写间隔34.045 ms、P99.9为33.948 ms，写入、解析和校验错误均为0。
+
+原审计在截止首帧报告一条`command_shaping_nonfinite`。该帧MSP异步线程仍记录上一条已发布算法命令，
+主循环已经`gate_closed`并按设计不再消费姿态，因此当前`tilt_*_attitude_deg`为空；实际发布RC和电机值
+均为有限值。审计器现仅在当前shaping确实应用姿态包络时检查该字段，并新增schema 14异步切换回归
+测试。工作站及板端审计测试17/17通过，重审实机日志为`passed=1`、0违规。
+
+本轮证据归档为
+`logs/deployment_archives/schema14_takeover_timeout_active_retry_20260829_210708.tar.gz`，SHA256为
+`430c8a5626623c8fc8f3c81ac718fd4299cbbb765d24027ffae77a7d2e211b2f`。测试进程已停止，最终状态为
+RC7人工侧、RC5 DISARM、电机1000。该结论只证明无桨固定台架的短时接管和自动截止有效，不构成
+装桨、自由飞行或自主拦截授权。

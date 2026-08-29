@@ -319,6 +319,29 @@ class BetaflightLogAuditTest(unittest.TestCase):
                 {item["code"] for item in result["violations"]},
             )
 
+    def test_schema_v14_allows_gate_closed_async_publish_transition(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                safety_state="FAILSAFE",
+                shaping_reason="gate_closed",
+                tilt_roll_attitude_deg="",
+                tilt_pitch_attitude_deg="",
+                map_limited_roll_rate_deg_s="",
+                map_limited_pitch_rate_deg_s="",
+                map_limited_yaw_rate_deg_s="",
+                takeover_duration_interlock_ok="0",
+                takeover_duration_interlock_latched="1",
+                takeover_duration_s="3.01",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=14)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertNotIn("command_shaping_nonfinite", codes)
+            self.assertNotIn("algorithm_with_invalid_command_shaping", codes)
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
