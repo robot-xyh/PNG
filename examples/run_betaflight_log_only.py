@@ -1431,18 +1431,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     int(armed),
                     int(override_active),
                     int(prefill_ready),
-                    int(target_valid),
                     "" if worker_snapshot is None else worker_snapshot.publish_mode,
-                    () if worker_snapshot is None else worker_snapshot.last_sent_channels[:4],
                 )
                 if runtime_status != last_runtime_status:
-                    sent = runtime_status[-1]
+                    sent = () if worker_snapshot is None else worker_snapshot.last_sent_channels[:4]
                     sent_text = "-" if not sent else "/".join(str(value) for value in sent)
                     print(
                         f"BF state={runtime_status[0]} reason={runtime_status[1]} "
                         f"armed={runtime_status[2]} override={runtime_status[3]} "
-                        f"prefill={runtime_status[4]} target={runtime_status[5]} "
-                        f"publish={runtime_status[6] or '-'} sent_aetr={sent_text}",
+                        f"prefill={runtime_status[4]} target={int(target_valid)} "
+                        f"publish={runtime_status[5] or '-'} sent_aetr={sent_text}",
                         flush=True,
                     )
                     last_runtime_status = runtime_status

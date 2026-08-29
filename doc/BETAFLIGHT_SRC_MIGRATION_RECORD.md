@@ -986,3 +986,43 @@ Blackbox，不得猜测电机序号或混控符号。上述运行时配置会改
 
 本轮离线修改完成后，本地`python3 -m unittest discover -s tests -v`为282/282通过，
 `git diff --check`通过。尚未把新代码同步到板端，也未执行新的LOG_ONLY或RC7接管测试。
+
+## 2026-08-29 电机遥测验证与单 UART 调度隔离
+
+提交`bba4f69`已同步到`.42/orangepi5max`，板端Betaflight聚焦测试99/99通过。当前固件支持
+`MSP_MOTOR (104)`：DISARM时四路输出均为1000，ARM怠速时约为1056--1059。新飞控快照为
+`logs/betaflight_snapshots/betaflight_snapshot_20260829_171813/manifest.json`，控制配置
+`betaflight.rk3588.noprop.vm.body_frame_tracker_low_conf_motor.local.json`的SHA256为
+`b563eff50e9afeb13b0cbee1f79129f68bf3e92eb14d80ec9a8e819c701d76e7`；对应批准文件SHA256为
+`d8d35dc14ccfa2fe6af725f4c461bed320dcbdc217e79ca473173a7b88c9078b`。批准范围仍仅为拆桨台架，
+不能用于有桨飞行。
+
+长测发现运行状态打印会被989/990 us物理RC抖动和逐帧目标有效性变化触发。控制台状态键现只含
+安全状态、原因、ARM、OVERRIDE、预填充和发布模式；目标与实际发送通道仍随真正的状态变化打印，
+但1 us抖动不再持续占用stdout锁。该修正板端Betaflight测试108/108通过。
+
+未隔离的完整RKNN运行在浏览器连接MJPEG时产生74.249 ms的SET_RAW_RC写入间隔。首次累计值越过
+60 ms的相邻CSV行显示`web_preview_encode_count`从0开始增长，同时SET_RAW_RC最大RTT升至
+74.393 ms；手持目标抖动不可能直接阻塞独立50 Hz MSP发送线程。关闭预览但保持同进程后，180 s
+DISARM压力测试的最大间隔降至42.547 ms、P99.9为40.007 ms，错误计数为0，但仍因比40 ms门限高
+7 us而严格判失败，未据此进入ARM。
+
+最终使用以下运行隔离参数复测，RC5保持DISARM、RC7保持人工侧：
+
+```bash
+python3 examples/run_betaflight_log_only.py \
+  --config config/betaflight.rk3588.noprop.vm.body_frame_tracker_low_conf_motor.local.json \
+  --duration-s 180 --rate-hz 20 \
+  --control-mode msp_raw_rc --allow-control \
+  --detector-source rknn_bytetrack \
+  --disable-web-preview --isolate-rknn-process \
+  --main-cpu-affinity 6,7 --rknn-cpu-affinity 4,5 \
+  --log-prefix fixed_vm_preview_disabled_isolated_disarm_stress_20260829
+```
+
+日志`fixed_vm_preview_disabled_isolated_disarm_stress_20260829_20260829_174501.csv`持续179.961 s，
+8962次SET_RAW_RC写入，平均49.798 Hz，最大间隔32.389 ms、P99.9为30.388 ms；写入、请求、校验、
+解析和Web错误均为0，最大RKNN耗时22.82 ms，最高温度62.846 C，电机输出始终1000。无桨审计
+`passed=1`且0违规。当前实机命令必须保留上述三个隔离选项；Web JSON/SSE继续可用，但MJPEG图像
+预览必须关闭。下一门为拆桨固定条件下短时ARM且RC7保持人工侧，确认四电机怠速与调度审计均通过；
+之后才允许放置稳定单目标并短时切换RC7验证`ACTIVE/algorithm`和电机混控方向。
