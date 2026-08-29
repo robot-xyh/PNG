@@ -1,0 +1,130 @@
+{
+  "algorithm_takeover": {
+    "blackbox_i_term_first_nonzero_host_s": 110.265572,
+    "blackbox_throttle_became_active_host_s": 110.16385,
+    "host_throttle_crossed_min_check_s": 110.18403,
+    "i_term_slope_per_s_before_interruption": [
+      -2.145458,
+      -2.94869,
+      1.733265
+    ],
+    "max_abs_d_term": [
+      8.0,
+      4.0,
+      0.0
+    ],
+    "max_abs_f_term": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "max_abs_i_term": [
+      127.0,
+      174.0,
+      103.0
+    ],
+    "max_abs_p_term": [
+      6.0,
+      4.0,
+      16.0
+    ],
+    "max_motor_spread_us": 581.604783,
+    "min_check_us": 1050.0,
+    "motor_peak_us": [
+      1498.848025,
+      1637.634403,
+      1091.475062,
+      1583.218161
+    ],
+    "motor_spread_correlation": {
+      "max_abs_d_term": 0.571071311,
+      "max_abs_i_term": 0.99973347,
+      "max_abs_p_term": 0.342895469
+    },
+    "setpoint_max": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "setpoint_min": [
+      0.0,
+      0.0,
+      0.0
+    ]
+  },
+  "alignment": {
+    "host_minus_blackbox_s": 36.059486,
+    "motor_fit_correlation": 0.999895785,
+    "motor_fit_rmse_us": 2.086203871,
+    "motor_offset_us": 977.151031328,
+    "motor_scale_us_per_raw": 0.499231573
+  },
+  "conclusion": {
+    "png_rate_command_causal": false,
+    "reason": "Blackbox setpoints remain zero while I terms accumulate and motor spread follows the maximum absolute I term. The fixed propeller-free airframe cannot respond after algorithm throttle activates the Betaflight PID loop.",
+    "root_cause": "fixed_no_prop_pid_i_term_windup_above_min_check"
+  },
+  "inputs": {
+    "blackbox_bfl": {
+      "path": "/home/linux/Documents/PNG-betaflight-upward-camera/logs/blackbox_import/LOG00042.BFL",
+      "sha256": "4e9938851e5cad82f4be67591d4d0da2f3ddfc1baa56d9cadb39a0e52dd7285f",
+      "size_bytes": 3677753
+    },
+    "blackbox_csv": {
+      "path": "/tmp/blackbox_raw/LOG00042.01.csv",
+      "sha256": "01d4104d005ca5b7e1fc33611c40ee8283c179f1d8fcb5e6ea2893a76bc9d5a5",
+      "size_bytes": 30653693
+    },
+    "decoder_commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "host_csv": {
+      "path": "/tmp/host_takeover/logs/fixed_vm_isolated_fixed_target_takeover_20260829_20260829_175710.csv",
+      "sha256": "7cc42c0183b78f7c1e23a123516edc071124f615a6e8d49712f06772c0c68453",
+      "size_bytes": 10280385
+    },
+    "rotation_units": "raw"
+  },
+  "pre_override": {
+    "max_abs_i_term": 0.0,
+    "max_motor_spread_us": 4.992316,
+    "motor_max_us": [
+      1060.522704,
+      1061.021936,
+      1059.524241,
+      1060.522704
+    ],
+    "motor_min_us": [
+      1056.02962,
+      1056.02962,
+      1056.02962,
+      1056.02962
+    ]
+  },
+  "schema_version": 1,
+  "selection": {
+    "blackbox_duration_s": 141.488814,
+    "duration_match_error_s": 0.087844,
+    "first_algorithm_exit_transition_s": 169.016547,
+    "host_algorithm_intervals_s": [
+      [
+        109.681546,
+        168.858544
+      ],
+      [
+        169.06661,
+        175.583385
+      ]
+    ],
+    "host_armed_intervals_s": [
+      [
+        36.135366,
+        177.536336
+      ]
+    ],
+    "host_override_intervals_s": [
+      [
+        109.631482,
+        175.583385
+      ]
+    ]
+  }
+}

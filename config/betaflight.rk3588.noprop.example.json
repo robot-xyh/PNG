@@ -208,6 +208,11 @@
       "telemetry_timeout_s": 0.75,
       "latch_until_disarm": true
     },
+    "takeover_duration_interlock": {
+      "enabled": true,
+      "max_duration_s": 3.0,
+      "latch_until_disarm": true
+    },
     "require_aux_enable": true,
     "aux_enable": {
       "channel_index": 7,

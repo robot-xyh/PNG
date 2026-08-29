@@ -26,6 +26,7 @@ MAX_NOPROP_THROTTLE_US = 1100
 MAX_NOPROP_MOTOR_OUTPUT_US = 1200
 MAX_NOPROP_MOTOR_SPREAD_US = 150
 MAX_NOPROP_MOTOR_TELEMETRY_AGE_S = 0.75
+MAX_NOPROP_TAKEOVER_DURATION_S = 3.0
 MIN_ENTRY_HANDOFF_DURATION_S = 0.8
 MAX_ENTRY_GYRO_AGE_S = 0.25
 MAX_NOPROP_TILT_ANGLE_DEG = 35.0
@@ -84,6 +85,7 @@ def main() -> None:
             "max_motor_output_us": MAX_NOPROP_MOTOR_OUTPUT_US,
             "max_motor_spread_us": MAX_NOPROP_MOTOR_SPREAD_US,
             "max_motor_telemetry_age_s": MAX_NOPROP_MOTOR_TELEMETRY_AGE_S,
+            "max_takeover_duration_s": MAX_NOPROP_TAKEOVER_DURATION_S,
             "prefill_required": True,
             "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
             "msp_override_cli_mode_id": override_mode_cli_id,
@@ -235,6 +237,17 @@ def _validate_noprop_config(
         raise RuntimeError("no-prop motor telemetry timeout must be in (0, 0.75] s")
     if float(runtime.get("motor_poll_hz", 0.0)) < 2.0:
         raise RuntimeError("no-prop motor interlock requires motor_poll_hz >= 2")
+    takeover_interlock = dict(safety.get("takeover_duration_interlock", {}))
+    if takeover_interlock.get("enabled") is not True:
+        raise RuntimeError("no-prop takeover_duration_interlock must be enabled")
+    if takeover_interlock.get("latch_until_disarm") is not True:
+        raise RuntimeError("no-prop takeover_duration_interlock must latch until DISARM")
+    takeover_duration_s = _finite_float(takeover_interlock, "max_duration_s")
+    if not 0.0 < takeover_duration_s <= MAX_NOPROP_TAKEOVER_DURATION_S:
+        raise RuntimeError(
+            "no-prop takeover max_duration_s must be in "
+            f"(0, {MAX_NOPROP_TAKEOVER_DURATION_S}] s"
+        )
     if parsed_cli is not None:
         _validate_rate_profile(rc, parsed_cli)
 

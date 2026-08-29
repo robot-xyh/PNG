@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 10
+WEB_SCHEMA_VERSION = 11
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -170,6 +170,13 @@ def telemetry_payload_from_log_row(
                 "latched": _boolean(row.get("motor_interlock_latched")),
                 "output_max_us": _number(row.get("motor_interlock_output_max_us")),
                 "output_spread_us": _number(row.get("motor_interlock_output_spread_us")),
+            },
+            "takeover_duration_interlock": {
+                "ok": _boolean(row.get("takeover_duration_interlock_ok")),
+                "reason": _text(row.get("takeover_duration_interlock_reason")),
+                "latched": _boolean(row.get("takeover_duration_interlock_latched")),
+                "active_duration_s": _number(row.get("takeover_duration_s")),
+                "max_duration_s": _number(row.get("takeover_duration_limit_s")),
             },
             "physical_rc_fresh": _boolean(row.get("physical_rc_fresh")),
             "watchdog_ok": _boolean(row.get("watchdog_ok")),

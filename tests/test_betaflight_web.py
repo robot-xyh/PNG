@@ -191,6 +191,11 @@ class BetaflightWebTest(unittest.TestCase):
             "motor_interlock_latched": "1",
             "motor_interlock_output_max_us": "1456",
             "motor_interlock_output_spread_us": "400",
+            "takeover_duration_interlock_ok": "1",
+            "takeover_duration_interlock_reason": "timing",
+            "takeover_duration_interlock_latched": "0",
+            "takeover_duration_s": "1.25",
+            "takeover_duration_limit_s": "3.0",
             "track_id": "7",
             "detection_score": "0.75",
             "detector_best_score": "0.22",
@@ -247,6 +252,16 @@ class BetaflightWebTest(unittest.TestCase):
                 "latched": True,
                 "output_max_us": 1456.0,
                 "output_spread_us": 400.0,
+            },
+        )
+        self.assertEqual(
+            payload["safety"]["takeover_duration_interlock"],
+            {
+                "ok": True,
+                "reason": "timing",
+                "latched": False,
+                "active_duration_s": 1.25,
+                "max_duration_s": 3.0,
             },
         )
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])

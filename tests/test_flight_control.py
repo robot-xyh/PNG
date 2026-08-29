@@ -16,6 +16,8 @@ from vision_guidance.flight_control import (
     RcMappingConfig,
     SafetyInputs,
     SafetyState,
+    TakeoverDurationInterlock,
+    TakeoverDurationInterlockConfig,
     TiltEnvelopeConfig,
     aux_range_enabled,
     guidance_eval_to_setpoint,
@@ -339,6 +341,55 @@ class FlightControlTest(unittest.TestCase):
         self.assertFalse(recovered.ok)
         self.assertTrue(recovered.latched)
         self.assertEqual(recovered.reason, "motor_telemetry_stale")
+
+    def test_takeover_duration_interlock_limits_continuous_noprop_takeover(self):
+        interlock = TakeoverDurationInterlock(
+            TakeoverDurationInterlockConfig(
+                enabled=True,
+                max_duration_s=3.0,
+                latch_until_disarm=True,
+            )
+        )
+
+        started = interlock.update(timestamp=10.0, armed=True, takeover_active=True)
+        self.assertTrue(started.ok)
+        self.assertEqual(started.reason, "timing")
+        self.assertEqual(started.active_duration_s, 0.0)
+        self.assertTrue(
+            interlock.update(timestamp=12.99, armed=True, takeover_active=True).ok
+        )
+
+        expired = interlock.update(timestamp=13.0, armed=True, takeover_active=True)
+        self.assertFalse(expired.ok)
+        self.assertTrue(expired.latched)
+        self.assertEqual(expired.reason, "takeover_duration_exceeded")
+        self.assertAlmostEqual(expired.active_duration_s, 3.0)
+
+        still_latched = interlock.update(
+            timestamp=13.1,
+            armed=True,
+            takeover_active=False,
+        )
+        self.assertFalse(still_latched.ok)
+        self.assertTrue(still_latched.latched)
+
+        reset = interlock.update(timestamp=13.2, armed=False, takeover_active=False)
+        self.assertTrue(reset.ok)
+        self.assertFalse(reset.latched)
+
+    def test_takeover_duration_interlock_resets_when_released_before_limit(self):
+        interlock = TakeoverDurationInterlock(
+            TakeoverDurationInterlockConfig(enabled=True, max_duration_s=3.0)
+        )
+
+        interlock.update(timestamp=1.0, armed=True, takeover_active=True)
+        released = interlock.update(timestamp=2.0, armed=True, takeover_active=False)
+        restarted = interlock.update(timestamp=5.0, armed=True, takeover_active=True)
+
+        self.assertTrue(released.ok)
+        self.assertEqual(released.reason, "inactive")
+        self.assertTrue(restarted.ok)
+        self.assertEqual(restarted.active_duration_s, 0.0)
 
     def test_watchdog_freshness(self):
         watchdog = CommandWatchdog(timeout_s=0.5)

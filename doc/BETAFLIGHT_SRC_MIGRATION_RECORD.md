@@ -1093,3 +1093,28 @@ P99.9为33.849 ms，写入/请求/校验/解析错误均为0，四电机始终10
 
 当前runner已停止且`/dev/ttyS1`释放。下一阻断项是导出17:55--18:00附近Blackbox并把gyro、
 setpoint、P/I/D和motor与旧主动接管CSV对齐；完成前不执行新的ARM/RC7接管。
+
+## 2026-08-29 LOG00042 Blackbox 根因确认与持续时间联锁
+
+用户导出的42个BFL文件位于`logs/blackbox_import/`，SD时间戳均错误地显示为2015年。通过时长与
+四电机波形联合匹配，确认`LOG00042.BFL`对应17:57主动接管：Blackbox时长141.488814 s，主机
+ARM时长141.400970 s。BFL SHA256为
+`4e9938851e5cad82f4be67591d4d0da2f3ddfc1baa56d9cadb39a0e52dd7285f`。使用官方
+`blackbox-tools`提交`f832acf9cd9dbe5ad8220de1a5f4eb4021523d72`按raw rotation解码；定制固件的
+`gyro_scale=1.0`使deg/s解码无效，因此gyro未用于物理单位结论。
+
+自动对齐结果为`host=blackbox+36.059486 s`，Blackbox电机raw到MSP us的拟合为
+`0.499231573*raw+977.151031`，相关系数0.999895785、RMSE 2.086 us。接管前四电机极差不超过
+4.99 us且I项为零。算法发布期间Blackbox三轴setpoint严格为零，但主机油门越过
+`min_check=1050 us`后，I项以约`[-2.145,-2.949,+1.733] unit/s`累积到
+`[-127,-174,+103]`，电机极差增至581.60 us。电机极差与最大绝对I项相关系数0.999733，显著高于
+P项0.342895和D项0.571071。根因由“候选”更新为：固定无桨机体在1078 us算法油门下无法响应，
+Betaflight PID回路发生I项积累；不是PNG rate命令导致。
+
+离线代码因此增加`takeover_duration_interlock`：`noprop_bench`连续接管最多3.0 s，超时撤销算法
+授权、回到预锁存人工RC并锁存到DISARM。批准工具强制绑定`enabled=true`、
+`latch_until_disarm=true`和不超过3.0 s；日志schema 14及Web schema 11记录联锁状态、累计时间和
+门限，CSV审计拒绝任何绕过联锁的ACTIVE行。长时视觉测试改用LOG_ONLY；高于`min_check`的电机
+方向验证仅使用短脉冲。完整分析见`doc/BETAFLIGHT_BLACKBOX_LOG00042_ANALYSIS.md`及
+`doc/evidence/LOG00042_alignment.json`。这些改动尚未同步或在Orange Pi上复验，当前仍禁止ARM和
+RC7接管。

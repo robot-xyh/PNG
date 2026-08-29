@@ -925,6 +925,104 @@ class MotorOutputInterlock:
 
 
 @dataclass(frozen=True)
+class TakeoverDurationInterlockConfig:
+    enabled: bool = False
+    max_duration_s: float = 3.0
+    latch_until_disarm: bool = True
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "TakeoverDurationInterlockConfig":
+        return cls(
+            enabled=bool(values.get("enabled", False)),
+            max_duration_s=float(values.get("max_duration_s", 3.0)),
+            latch_until_disarm=bool(values.get("latch_until_disarm", True)),
+        )
+
+    def __post_init__(self) -> None:
+        if not np.isfinite(self.max_duration_s) or self.max_duration_s <= 0.0:
+            raise ValueError("takeover duration max_duration_s must be finite and positive")
+
+
+@dataclass(frozen=True)
+class TakeoverDurationInterlockState:
+    ok: bool
+    reason: str
+    latched: bool
+    active_duration_s: float = 0.0
+    max_duration_s: float | None = None
+
+
+class TakeoverDurationInterlock:
+    """Bound continuous supervised takeover time for a fixed no-prop airframe."""
+
+    def __init__(self, config: TakeoverDurationInterlockConfig):
+        self.config = config
+        self._started_s: float | None = None
+        self._latched = False
+        self._latched_duration_s = 0.0
+
+    def update(
+        self,
+        *,
+        timestamp: float,
+        armed: bool,
+        takeover_active: bool,
+    ) -> TakeoverDurationInterlockState:
+        now = float(timestamp)
+        if not np.isfinite(now):
+            raise ValueError("takeover duration timestamp must be finite")
+        if not self.config.enabled:
+            self._started_s = None
+            return TakeoverDurationInterlockState(True, "disabled", False)
+        if not armed:
+            self._started_s = None
+            self._latched = False
+            self._latched_duration_s = 0.0
+            return TakeoverDurationInterlockState(
+                True,
+                "disarmed",
+                False,
+                max_duration_s=self.config.max_duration_s,
+            )
+        if self._latched:
+            return TakeoverDurationInterlockState(
+                False,
+                "takeover_duration_exceeded",
+                True,
+                self._latched_duration_s,
+                self.config.max_duration_s,
+            )
+        if not takeover_active:
+            self._started_s = None
+            return TakeoverDurationInterlockState(
+                True,
+                "inactive",
+                False,
+                max_duration_s=self.config.max_duration_s,
+            )
+        if self._started_s is None or now < self._started_s:
+            self._started_s = now
+        duration_s = max(0.0, now - self._started_s)
+        if duration_s >= self.config.max_duration_s:
+            self._latched = bool(self.config.latch_until_disarm)
+            self._latched_duration_s = duration_s
+            return TakeoverDurationInterlockState(
+                False,
+                "takeover_duration_exceeded",
+                self._latched,
+                duration_s,
+                self.config.max_duration_s,
+            )
+        return TakeoverDurationInterlockState(
+            True,
+            "timing",
+            False,
+            duration_s,
+            self.config.max_duration_s,
+        )
+
+
+@dataclass(frozen=True)
 class SafetyInputs:
     control_requested: bool = False
     allow_control: bool = False
@@ -933,6 +1031,7 @@ class SafetyInputs:
     telemetry_fresh: bool = False
     attitude_synced: bool = False
     motor_output_ok: bool = True
+    takeover_duration_ok: bool = True
     voltage_ok: bool = True
     watchdog_ok: bool = False
     armed: bool = False
@@ -983,6 +1082,8 @@ class BetaflightSafetyStateMachine:
             return self._set(SafetyState.FAILSAFE, False, "attitude_not_synced")
         if not inputs.motor_output_ok:
             return self._set(SafetyState.FAILSAFE, False, "motor_output_interlock")
+        if not inputs.takeover_duration_ok:
+            return self._set(SafetyState.FAILSAFE, False, "takeover_duration_interlock")
         if not inputs.voltage_ok:
             return self._set(SafetyState.FAILSAFE, False, "low_voltage")
         if not inputs.watchdog_ok:

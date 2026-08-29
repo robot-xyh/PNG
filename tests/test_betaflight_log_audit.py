@@ -145,6 +145,28 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertEqual(violation["count"], 1)
             self.assertEqual(violation["first_elapsed_s"], 1.0)
 
+    def test_schema_v14_rejects_active_output_without_takeover_duration_interlock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                safety_state="ACTIVE",
+                takeover_duration_interlock_ok="0",
+                takeover_duration_interlock_reason="takeover_duration_exceeded",
+                takeover_duration_interlock_latched="1",
+                takeover_duration_s="3.01",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=14)
+
+            result = tool.analyze_log(csv_path)
+            violation = next(
+                item
+                for item in result["violations"]
+                if item["code"] == "active_without_takeover_duration_interlock"
+            )
+
+            self.assertEqual(violation["count"], 1)
+            self.assertEqual(violation["first_elapsed_s"], 1.0)
+
     def test_transport_gap_reports_first_cumulative_crossing_time(self):
         with tempfile.TemporaryDirectory() as directory:
             first = self._safe_row()
@@ -314,6 +336,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
         return {
             "elapsed_s": "1.0",
             "msp_publish_mode": "algorithm",
+            "safety_state": "ACTIVE",
             "rc_sent_ch1": "1500",
             "rc_sent_ch2": "1500",
             "rc_sent_ch3": "1078",
@@ -381,6 +404,11 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "g_eval_body_frd_x": "0.1",
             "g_eval_body_frd_y": "0.2",
             "g_eval_body_frd_z": "0.3",
+            "motor_interlock_ok": "1",
+            "motor_interlock_latched": "0",
+            "takeover_duration_interlock_ok": "1",
+            "takeover_duration_interlock_latched": "0",
+            "takeover_duration_s": "1.0",
         }
 
     @staticmethod
@@ -412,6 +440,13 @@ class BetaflightLogAuditTest(unittest.TestCase):
                         "max_roll_angle_deg": 35.0,
                         "max_pitch_angle_deg": 35.0,
                         "hardcap_margin_deg": 5.0,
+                    }
+                },
+                "safety": {
+                    "takeover_duration_interlock": {
+                        "enabled": True,
+                        "max_duration_s": 3.0,
+                        "latch_until_disarm": True,
                     }
                 },
                 "telemetry_web": {"enabled": web_enabled},

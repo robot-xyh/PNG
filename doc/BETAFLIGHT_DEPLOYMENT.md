@@ -258,11 +258,11 @@ CSV 字段按用途分组如下。
 |类别|字段|
 |---|---|
 |运行与安全|`timestamp`, `elapsed_s`, `safety_state`, `safety_reason`, `control_requested`, `allow_control`|
-|gate 诊断|`telemetry_fresh`, `attitude_synced`, `motor_interlock_ok/reason/latched`, `watchdog_ok`, `voltage_ok`, `aux_enabled`, `msp_prefill_ready`|
+|gate 诊断|`telemetry_fresh`, `attitude_synced`, `motor_interlock_ok/reason/latched`, `takeover_duration_interlock_ok/reason/latched`, `watchdog_ok`, `voltage_ok`, `aux_enabled`, `msp_prefill_ready`|
 |age 与错误|`telemetry_age_s`, `attitude_age_s`, `watchdog_age_s`, `telemetry_error`, `send_error`|
 |MSP status|`cycle_time_us`, `i2c_error_count`, `sensor_flags`, `mode_flags`, `profile`|
 |电源与姿态|`vbat_v`, `mah_drawn`, `rssi`, `amperage_a`, `roll_deg`, `pitch_deg`, `yaw_deg`|
-|电机|`motor_output_ch1..ch8`, `motor_output_age_s`, `motor_interlock_output_max_us`, `motor_interlock_output_spread_us`|
+|电机与台架时限|`motor_output_ch1..ch8`, `motor_output_age_s`, `motor_interlock_output_max_us`, `motor_interlock_output_spread_us`, `takeover_duration_s`, `takeover_duration_limit_s`|
 |RAW IMU|`acc_raw_*`, `gyro_msp_raw_*`, `mag_raw_*`, `msp_raw_imu_age_s`；未验证单位时 `gyro_*_deg_s` 留空|
 |输入 RC|`rc_in_count`, `rc_in_all`（完整MSP通道）, `rc_in_ch1..rc_in_ch8`|
 |检测|`detector_source`, `detector_reject_reason`, `detector_*_count`, `frame_id`, `detection_exposure_ts`, `detection_score`, `track_id`|
@@ -989,6 +989,16 @@ schema 13实机LOG_ONLY运行59.965 s，1197行、四电机始终1000、SET_RAW_
 `4042da5e45e1c09613967b23fd6a66a1576526247e9ad19bca09da11bff1f669`。取得Blackbox并对齐
 RC7/ARM边沿前，不重复长时固定机体主动接管，也不进入有桨、系留或自由飞行。
 
+后续已确认目标文件为`LOG00042.BFL`。对齐显示算法窗口内Blackbox R/P/Y setpoint严格为零，
+而1078 us油门越过`min_check=1050 us`后I项持续累积到`[-127,-174,+103]`，电机极差与最大绝对
+I项相关系数0.999733。固定无桨机体不能产生期望角运动，因此本次分化是PID I项积累，不是PNG
+rate候选。详见`doc/BETAFLIGHT_BLACKBOX_LOG00042_ANALYSIS.md`。
+
+`noprop_bench`现在还必须配置`safety.takeover_duration_interlock`：`enabled=true`、
+`max_duration_s<=3.0`、`latch_until_disarm=true`。RC7连续接管达到门限后，状态进入FAILSAFE，算法
+授权关闭，worker发送接管前锁存人工RC；本次ARM周期内不能重新接管，必须先RC7退出并DISARM。
+长时间感知/导引观察必须使用LOG_ONLY；需要观察电机方向时只做不超过3 s的短脉冲。
+
 ### 4. 系留或低速悬停
 
 - 人工遥控优先，伴随计算机只输出小幅辅助命令。
@@ -1238,7 +1248,8 @@ PyTorch/ByteTrack 基线：
 5. 仅在以上数据通过后，保持拆桨并使用独立VM批准启动`msp_raw_rc --allow-control`；先ARM怠速，
    再由操作者切RC7。确认ACTIVE/algorithm、命令不跳变、退出RC7立即回人工透传，最后DISARM。
    `motor_interlock_ok`必须持续为1；若变为0或`latched=1`，立即退出RC7并DISARM，不得在同一次
-   ARM内清故障后重试。
+   ARM内清故障后重试。`takeover_duration_s`必须小于3.0 s；达到门限后程序应自动撤销算法授权并
+   锁存，操作者立即退出RC7并DISARM。
 6. 固定机体接管只用于短脉冲和方向确认。出现电机最大值高于1200 us、极差高于150 us或MSP写
    间隔超过60 ms时，本轮判失败；先取得并对齐Blackbox，再决定PID/I-term、mixer或调度修正。
 

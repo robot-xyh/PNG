@@ -65,6 +65,8 @@ from vision_guidance.flight_control import (  # noqa: E402
     RcCommandMapper,
     RcMappingConfig,
     SafetyInputs,
+    TakeoverDurationInterlock,
+    TakeoverDurationInterlockConfig,
     aux_range_enabled,
     guidance_eval_to_setpoint,
     inertial_vector_to_body_frd,
@@ -88,7 +90,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 13
+LOG_SCHEMA_VERSION = 14
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -1107,6 +1109,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         dict(safety_cfg.get("motor_output_interlock", {}))
     )
     motor_interlock = MotorOutputInterlock(motor_interlock_config)
+    takeover_duration_config = TakeoverDurationInterlockConfig.from_mapping(
+        dict(safety_cfg.get("takeover_duration_interlock", {}))
+    )
+    takeover_duration_interlock = TakeoverDurationInterlock(takeover_duration_config)
     msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
     bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
     if control_output_requested and bench_scope == "noprop_bench":
@@ -1116,6 +1122,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             )
         if msp_runtime_config.motor_poll_hz <= 0.0:
             raise RuntimeError("noprop_bench motor interlock requires msp_runtime.motor_poll_hz")
+        if not takeover_duration_config.enabled or not takeover_duration_config.latch_until_disarm:
+            raise RuntimeError(
+                "noprop_bench control requires a latched safety.takeover_duration_interlock"
+            )
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
@@ -1397,6 +1407,28 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and telemetry.status is not None
                     and box_mode_active(telemetry.status.mode_flags, box_ids, MSP_OVERRIDE_PERMANENT_ID)
                 )
+                takeover_duration_state = takeover_duration_interlock.update(
+                    timestamp=loop_start,
+                    armed=armed,
+                    takeover_active=bool(
+                        control_output_requested
+                        and authorization.approved
+                        and authorization.config_conflict_free
+                        and override_available
+                        and override_active
+                    ),
+                )
+                detector_stats.update(
+                    takeover_duration_interlock_ok=int(takeover_duration_state.ok),
+                    takeover_duration_interlock_reason=takeover_duration_state.reason,
+                    takeover_duration_interlock_latched=int(takeover_duration_state.latched),
+                    takeover_duration_s=takeover_duration_state.active_duration_s,
+                    takeover_duration_limit_s=(
+                        ""
+                        if takeover_duration_state.max_duration_s is None
+                        else takeover_duration_state.max_duration_s
+                    ),
+                )
                 aux_enabled = _aux_enabled(telemetry, safety_cfg, override_active=override_active)
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
@@ -1424,6 +1456,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and telemetry_fresh
                     and attitude_synced
                     and motor_interlock_state.ok
+                    and takeover_duration_state.ok
                     and voltage_ok
                     and aux_enabled
                     and watchdog_ok
@@ -1464,6 +1497,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         telemetry_fresh=telemetry_fresh,
                         attitude_synced=attitude_synced,
                         motor_output_ok=motor_interlock_state.ok,
+                        takeover_duration_ok=takeover_duration_state.ok,
                         voltage_ok=voltage_ok,
                         watchdog_ok=watchdog_ok,
                         armed=armed,
@@ -1531,6 +1565,9 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "attitude_synced": int(attitude_synced),
                         "motor_interlock_ok": int(motor_interlock_state.ok),
                         "motor_interlock_reason": motor_interlock_state.reason,
+                        "takeover_duration_interlock_ok": int(takeover_duration_state.ok),
+                        "takeover_duration_interlock_reason": takeover_duration_state.reason,
+                        "takeover_duration_interlock_latched": int(takeover_duration_state.latched),
                         "physical_rc_fresh": int(physical_rc_fresh),
                         "watchdog_ok": int(watchdog_ok),
                         "msp_telemetry_error": telemetry_error,
@@ -2478,6 +2515,11 @@ def _log_fields(channel_count: int) -> list[str]:
         "motor_interlock_latched",
         "motor_interlock_output_max_us",
         "motor_interlock_output_spread_us",
+        "takeover_duration_interlock_ok",
+        "takeover_duration_interlock_reason",
+        "takeover_duration_interlock_latched",
+        "takeover_duration_s",
+        "takeover_duration_limit_s",
         "rc_in_count",
         "rc_in_all",
         "detector_source",
@@ -2913,6 +2955,21 @@ def _log_row(
         ),
         "motor_interlock_output_spread_us": _stats_float(
             detector_stats, "motor_interlock_output_spread_us", precision=3
+        ),
+        "takeover_duration_interlock_ok": detector_stats.get(
+            "takeover_duration_interlock_ok", ""
+        ),
+        "takeover_duration_interlock_reason": detector_stats.get(
+            "takeover_duration_interlock_reason", ""
+        ),
+        "takeover_duration_interlock_latched": detector_stats.get(
+            "takeover_duration_interlock_latched", ""
+        ),
+        "takeover_duration_s": _stats_float(
+            detector_stats, "takeover_duration_s", precision=6
+        ),
+        "takeover_duration_limit_s": _stats_float(
+            detector_stats, "takeover_duration_limit_s", precision=6
         ),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),

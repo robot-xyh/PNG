@@ -723,7 +723,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 13)
+            self.assertEqual(data["log_schema_version"], 14)
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):

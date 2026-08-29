@@ -29,6 +29,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     guidance_command = dict(config.get("guidance_command", {}))
     safety = dict(config.get("safety", {}))
     motor_interlock = dict(safety.get("motor_output_interlock", {}))
+    takeover_interlock = dict(safety.get("takeover_duration_interlock", {}))
     tilt_config = dict(guidance_command.get("tilt_envelope", {}))
     web_config = dict(config.get("telemetry_web", {}))
     web_enabled = bool(web_config.get("enabled", False))
@@ -84,6 +85,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "armed_motor_output_max_us": motor_output_max_us,
         "armed_motor_spread_max_us": motor_spread_max_us,
         "motor_output_channel_count": motor_channel_count,
+        "takeover_duration_max_s": float(takeover_interlock.get("max_duration_s", 3.0)),
         "rate_limits_deg_s": rate_limits,
         "tilt_envelope": {
             "enabled": bool(tilt_config.get("enabled", False)),
@@ -100,7 +102,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -119,6 +121,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     armed_motor_output_rows: list[dict[str, str]] = []
     armed_motor_spread_rows: list[dict[str, str]] = []
     algorithm_motor_interlock_rows: list[dict[str, str]] = []
+    active_takeover_interlock_rows: list[dict[str, str]] = []
     rate_rows: dict[str, list[dict[str, str]]] = {axis: [] for axis in rate_limits}
     for row in rows:
         sent = [_number(row.get(f"rc_sent_ch{index}")) for index in range(1, 5)]
@@ -150,6 +153,15 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                 or _integer(row.get("motor_interlock_latched")) == 1
             ):
                 algorithm_motor_interlock_rows.append(row)
+        if schema_version is not None and schema_version >= 14 and row.get("safety_state") == "ACTIVE":
+            duration_s = _number(row.get("takeover_duration_s"))
+            if (
+                _integer(row.get("takeover_duration_interlock_ok")) != 1
+                or _integer(row.get("takeover_duration_interlock_latched")) == 1
+                or duration_s is None
+                or duration_s > thresholds["takeover_duration_max_s"] + 1.0e-6
+            ):
+                active_takeover_interlock_rows.append(row)
         motor_outputs = [
             _number(row.get(f"motor_output_ch{index}"))
             for index in range(1, motor_channel_count + 1)
@@ -286,6 +298,11 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         violations,
         "algorithm_without_motor_interlock",
         algorithm_motor_interlock_rows,
+    )
+    _append_violation(
+        violations,
+        "active_without_takeover_duration_interlock",
+        active_takeover_interlock_rows,
     )
     _append_threshold_violation(
         violations,
@@ -497,6 +514,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             ),
             motor_channel_count,
         ),
+        "max_takeover_duration_s": _maximum(rows, "takeover_duration_s"),
         "max_loop_period_s": _maximum(rows, "loop_period_s"),
         "max_python_gc_pause_ms": _maximum(rows, "python_gc_max_pause_ms"),
         "log_schema_version": schema_version,
