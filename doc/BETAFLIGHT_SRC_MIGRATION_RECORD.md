@@ -1035,12 +1035,18 @@ track，SET_RAW_RC为0且审计通过。主动接管日志
 `ACTIVE/algorithm`。该区间上位机roll命令约`-0.018..+0.016 deg/s`、pitch命令约
 `-0.010..+0.009 deg/s`，未出现足以解释大幅混控的视觉rate候选。
 
-电机遥测却显示M1约1281--1363、M2约1346--1456、M3约1056、M4约1325--1431，最大极差约
-400 us。固定无桨机体上的Betaflight PID/I-term/mixer积累是候选解释，但当前没有同一时间轴的
-Blackbox gyro、setpoint、P/I/D和motor记录，因此不能把该推测写成根因。旧审计除MSP时序外无
-其他违规；SET_RAW_RC累计最大写间隔为81.534 ms，首次越过60 ms约在elapsed 122.519 s。该点
-MJPEG客户端和预览编码均为0，RKNN总耗时约6.27 ms，说明关闭预览不是充分修复。原始CSV/meta/
-events仍在板端，设备已按操作者要求断电，尚未复制到工作站归档。
+电机遥测抽取窗口显示M1约1281--1363、M2约1346--1456、M3约1056、M4约1325--1431。schema
+13工具重新审计完整日志后，最大输出为1625 us、最大极差为569 us；884行超过1200 us，首次在
+elapsed 124.781 s，874行极差超过150 us，首次在125.285 s。固定无桨机体上的Betaflight
+PID/I-term/mixer积累是候选解释，但当前没有同一时间轴的Blackbox gyro、setpoint、P/I/D和
+motor记录，因此不能把该推测写成根因。SET_RAW_RC累计最大写间隔为81.534 ms，首次越过60 ms
+约在elapsed 122.519 s。该点MJPEG客户端和预览编码均为0，RKNN总耗时约6.27 ms，说明关闭预览
+不是充分修复。
+
+原始CSV/meta/events、新旧审计已复制到工作站归档
+`fixed_vm_isolated_fixed_target_takeover_20260829_175710.tar.gz`，SHA256为
+`f46d562ed100a38166d9a47f952b8180a7dbb08986b43dfd811cb2ebadd48f43`。新版审计为3项违规：
+`armed_motor_output_high`、`armed_motor_spread_high`和`set_raw_rc_gap`。
 
 离线代码新增以下保护和证据：
 
@@ -1058,3 +1064,32 @@ events仍在板端，设备已按操作者要求断电，尚未复制到工作�
 `git diff --check`通过。该批改动尚未同步到断电的Orange Pi，未做schema 13实机验证。下次上电
 必须先同步代码与local配置、重新生成快照和批准文件，从LOG_ONLY验证电机/GC字段开始；取得并对齐
 Blackbox前，不重复长时固定机体RC7接管，不进入有桨测试。
+
+## 2026-08-29 schema 13 板端部署与 DISARM 基线
+
+设备重新上电后只连接已确认的`192.168.124.42/orangepi5max`（设备树`RK3588 OPi 5 Max`）。同步
+提交`f7e27c4`的运行时文件前，已将板端旧文件备份到`logs/deployment_backups/`；没有覆盖任何
+local配置、模型、原生库或历史日志。代码包两端SHA256均为
+`0d2f39c64cc477d9f4a2c0eec5abeb7a111e9e856408b585d8ef17b02c753729`。板端Betaflight聚焦测试
+105/105、`test_flight_control.py` 24/24通过。
+
+两个固定Vm motor local配置增加相同联锁块。控制配置SHA256为
+`a9178d2924501fa4edf56c250d09d0e06bf0c7517b81317c857784b699b8393c`，LOG_ONLY配置SHA256为
+`71eab09cd79ed24034c087b697185204fdc7e612af372950c7dc74435f89cba5`。新快照
+`logs/betaflight_snapshots/betaflight_snapshot_20260829_195811/manifest.json`采集25/25样本且零错误，
+确认BOX ID 50、CLI mode ID 50、mask 15、NTP/RTC一致。重新生成的批准文件SHA256为
+`6f209269a45593c7ed2b5073ec034a868e3e54830a406abb4c77c67d641f054b`，绑定上述控制配置和四电机
+1200/150 us、0.75 s锁存联锁。
+
+`schema13_interlock_logonly_20260829_20260829_195621.csv`持续59.965 s、1197行，四电机始终1000，
+SET_RAW_RC attempt/write/success均为0；1154个新感知结果中1153个确认跟踪和导引有效，全部为
+`track_id=1`。MSP错误为0，GC最大暂停2.141 ms，审计`passed=1`且0违规。
+
+`schema13_interlock_disarm_prefill_20260829_20260829_195930.csv`持续89.979 s、1797行，在RC5
+DISARM、RC7人工侧完成4491次SET_RAW_RC写入和4490个ACK；平均49.925 Hz、最大间隔34.820 ms、
+P99.9为33.849 ms，写入/请求/校验/解析错误均为0，四电机始终1000，GC最大暂停2.323 ms，审计
+0违规。两轮证据归档为`schema13_interlock_baseline_20260829_195811.tar.gz`，工作站与板端SHA256
+均为`4042da5e45e1c09613967b23fd6a66a1576526247e9ad19bca09da11bff1f669`。
+
+当前runner已停止且`/dev/ttyS1`释放。下一阻断项是导出17:55--18:00附近Blackbox并把gyro、
+setpoint、P/I/D和motor与旧主动接管CSV对齐；完成前不执行新的ARM/RC7接管。
