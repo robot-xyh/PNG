@@ -724,3 +724,231 @@ SHA256为`a8f6351b2029a5dff2950052e67d602c985283e25bf6e4aa6def1b90b7c62aae`，�
 策略、schema v9语义、批准绑定和只读链路正确；未发送RC，也不构成有桨或飞行批准。下一阶段
 仍需在拆桨条件下分别完成人工侧启动/prefill、ARM怠速、稳定目标、RC7接管、目标动态移动、
 RC7退出和DISARM，并以schema v9日志验收实际rate/PWM方向、交接连续性和看门狗降级。
+
+## 2026-08-28 MSP 热路径与 CPU 分区复验
+
+人工侧45 s纯MSP基线最初从49.3 Hz逐步降至31.5 Hz，证明不是固定UART带宽上限。代码检查定位
+到worker每个发布周期构造完整统计快照、反复排序不断增长的间隔样本，并在迟到后按完成时刻
+重置下一周期。现已改为轻量读取最近ACK/write时间、写入时增量维护有序分位数、固定时基跳过
+遗漏周期，同时保留16 ms最小间隔，避免阻塞恢复后追赶式连发。板端聚焦测试59/59、工作站完整
+回归259/259通过。
+
+修复后的`transport_incremental_fix_20260828_190022_20260828_190023.csv`审计0违规：平均
+49.799 Hz、最大28.700 ms、P99.9 28.015 ms、deadline miss为0。完整隔离RKNN但CPU不分区的
+`isolated_hotpath_fix_20260828_190321_20260828_190323.csv`仍只有38.148 Hz、最大159.706 ms，
+并出现3行`physical_rc_stale`，证明进程隔离本身不等于调度隔离。
+
+runner新增`--main-cpu-affinity`和`--rknn-cpu-affinity`，支持列表/范围，拒绝重叠并在无法应用时
+fail-fast。最终不依赖外部`taskset`的
+`isolated_explicit_affinity_20260828_192131_20260828_192132.csv`明确应用main `[6,7]`、detector
+`[4,5]`；完整RKNN+ByteTrack下平均49.955 Hz、最大29.578 ms、P99.9 27.035 ms、RC最大年龄
+145.610 ms，deadline miss及发送/请求/checksum/parser错误均为0，审计0违规。测试全程RC5
+DISARM、RC7人工侧，仅发送锁存人工透传值，未产生algorithm帧。
+
+证据目录为`logs/deployment_archives/20260828_msp_affinity_validation/`，其中`SHA256SUMS`的
+SHA256为`9ba8f9ce04bc993daf196609a45257a43b95c5eef0d792c8076fede9e75d2dbc`；压缩包
+`20260828_msp_affinity_validation.tar.gz`的SHA256为
+`e99af736d761996a6fda8bb74258ba080a6b83ce270a041fdeb940c46d2eb8eb`。退出后无残留runner/RKNN
+进程且`/dev/ttyS1`已释放。下一步仍是拆桨条件下完成ARM怠速、动态目标、RC7 ACTIVE、算法
+PWM方向/连续性、RC7退出、DISARM和断流故障注入；本节不构成有桨或飞行批准。
+
+## 2026-08-28 Betaflight 固定 Vm PNG 接入
+
+Betaflight Python入口此前固定使用TTC增益调度，不能复现实验报告中的`fixed_vm_png`。现增加显式
+`guidance.law`选择，缺省仍为`ttc_png`；固定速度模式严格计算
+`a_cmd = N * Vm * (omega_LOS x lambda_I)`，再按向量模长限制到
+`max_guidance_accel_mps2`。该模式只旁路TTC有效性，不旁路LOS、检测、姿态同步、watchdog、倾角
+包络、RC命令限幅、MSP Override或批准清单。`N`、`Vm`和模长上限必须为有限正数，未知导引律
+或缺项会拒绝启动。
+
+无桨批准工具同步执行同一类显式校验，并额外限制
+`max_guidance_accel_mps2 <= 1.0`。批准JSON记录`law/N/Vm/N*Vm`和TTC是否必需；因此以后修改
+导引律或增益不仅会触发整份配置SHA256失配，也会在重新批准时接受独立的参数完整性检查。
+
+日志schema升级到v10。CSV逐行新增`guidance_law`、`guidance_navigation_constant`、
+`guidance_fixed_vm_m_s`、`guidance_fixed_gain`、`guidance_max_accel_mps2`和
+`guidance_ttc_required`；meta和`run_start`事件保存同一组参数。Web页面显示导引律和`N*Vm`，在
+固定Vm模式把TTC门明确显示为`BYPASS`，不能误读成TTC有效。公式、TTC旁路、LOS拒绝、模长限幅、
+配置拒绝和网页字段均有单元测试，工作站完整回归267/267通过。
+
+板端测试必须复制独立`betaflight.rk3588.noprop.vm.local.json`并使用独立
+`betaflight_noprop_vm_approval.json`；不得原地修改已批准的TTC配置。首轮参数仅用于拆桨验证：
+`N=3.0`、`Vm=1.0 m/s`、`max_guidance_accel_mps2=1.0`，下游仍受roll/pitch 3 deg/s、yaw 0和
+1000--1100 us无桨包线约束。静止目标的预期结果是LOS和guidance有效、TTC可无效、VM命令接近
+零；移动目标才应产生有符号的小幅roll/pitch候选命令。
+
+板端部署确认主机为`.42/orangepi5max`且部署前无残留控制进程。原TTC local配置SHA256保持
+`02944e32a03669cfbbab936d531ee889c30f9e823b2a3d8987f8697c94f19ce7`；独立VM配置SHA256为
+`5c140d1d71fecaf6b18912056309aa756751435adbb7303b7476e1642825189b`，独立批准文件SHA256为
+`026dbab0bf001fc1f82a8408d3d75670d10d236cc57fc8d1ec0192037a2c8056`。板端VM、runner和Web聚焦
+测试33/33通过。
+
+真实相机只读日志`fixed_vm_logonly_20260828_215642.csv`共598行，全部为
+`fixed_vm_png/LOG_ONLY/disabled`，SET_RAW_RC attempt/write/success均为0且MSP错误为0；画面未
+形成confirmed track。为单独验证导引集成，使用固定80x80面积、同一track ID、每50 ms横移2 px
+的100帧CSV回放。`fixed_vm_controlled_replay_20260828_220743.csv`共140行，其中97行guidance
+有效且TTC因`area_not_expanding`无效；逐行重算`3*(omega_LOS x lambda_I)`的最大误差为
+`2.22e-9`，`|g_eval|`最大0.230，roll/pitch候选范围分别为0--0.226和-0.013--0.056 deg/s，
+RC写入仍为0。两份日志及长时间相机预览日志均通过无桨审计、0违规。
+
+抓取的640x512预览仅包含天花板、灯具和室内结构，没有无人机目标；实时遥测中有2个低分候选，
+最高约0.088，低于跟踪阈值，故`no_tracked_output`正确。证据目录为
+`logs/deployment_archives/fixed_vm_20260828_214918/`，归档包SHA256为
+`5e63aca6db0776e39588b894442e313fbcb9f95e80aa523ec9881fe3bc771c3b`。下一步必须在该相机画面内
+放置模型类别的单个无人机目标，先做真实`LOG_ONLY`静止/横移测试；当前结果不批准RC7接管，
+更不构成有桨飞行验证。
+
+## 2026-08-29 固定 Vm 真实目标与合成手持目标回放
+
+RK3588恢复后已同步固定Vm实现并生成与VM配置绑定的新快照和批准文件。真实目标静止阶段使用
+`fixed_vm_real_target_logonly_20260829_104830.csv`记录：同一`track_id=9`可持续确认，20 s抽样中
+目标有效率98%，LOS质量均值0.992；roll/pitch候选角速度绝对值最大分别约0.009/0.005 deg/s。
+系统始终为`LOG_ONLY`，RC5保持DISARM、RC7保持人工侧，SET_RAW_RC attempt/write/success均为0。
+
+手持横移暴露出测试输入不可重复：约280--330 s内目标横跨约101--565 px，但发生多次丢失和重新
+建轨，累计tracker switch为8、fragment为15；候选roll同时出现正负号且保持在无桨包线内。这一结果
+只能证明方向响应存在，不能作为ByteTrack连续性验收，也不能据此进入RC7接管。完整CSV无桨审计
+通过、0违规，SET_RAW_RC和MSP解析错误均为0。证据已加入
+`logs/deployment_archives/fixed_vm_online_20260829_104631/real_target_handheld/`；刷新后的归档包SHA256为
+`59a69be2141688eb392138f4683742f941e2f9c4f696c31c3c9f9850adb6ae5b`。
+
+为消除手持速度、姿态和出框误差，使用内置图像生成工具分别生成透明底视“单手握持四旋翼”前景
+和无目标室内天花板背景，保存于`tools/assets/betaflight_synthetic_handheld/`。新增
+`tools/generate_betaflight_handheld_sequence.py`，以固定随机性为0的解析轨迹合成640x512、20 FPS、
+30 s视频：前3 s静止，中间20 s按10 s周期左右往返并叠加6 px纵向晃动和正负8%尺度变化，后7 s
+静止；同时输出逐帧真值框和参数/素材SHA256。该生成器只产生测试输入，不调用飞控或控制代码。
+
+`tools/run_rknn_bytetrack_video_eval.py`逐帧调用与实机相同的RKNN桥和完整ByteTrack。板端实际加载
+`drone_v8n_v21_kd_relu_lambda008_640_640-rk3588.rknn`，600/600帧均有YOLO候选，598/600帧在最初
+3帧确认门后形成可用测量；全程仅`track_id=1`，switch=0、fragment=0，高阶段关联IoU均值0.990、
+最小0.932，检测中心与合成真值横坐标相关系数0.999986。置信度均值/最小值均为0.835，RKNN推理
+均值11.83 ms、最大15.90 ms。
+
+598帧检测结果随后以CSV送入批准的固定Vm配置，日志
+`fixed_vm_synthetic_handheld_replay_20260829_20260829_111249.csv`共619行，595行guidance有效。
+逐行重算`3*(omega_LOS x lambda_I)`最大误差`2.19e-9`，`|g_eval|`最大0.676，低于1.0上限；移动段
+roll候选范围为-0.651--0.656 deg/s，四个左右半程均随运动方向正确反号，像面横向速度与roll相关
+系数最高0.994。停止后稳定段roll绝对值最大0.00195 deg/s。运行始终为
+`LOG_ONLY/disabled/armed=0`，SET_RAW_RC attempt/write/success、MSP checksum/parser/request/send错误
+均为0，无桨审计通过、0违规。
+
+合成序列证明当前模型能识别该类底视手持无人机，并证明ByteTrack连续性和固定Vm方向/公式在可控
+输入下正确；它不经过真实相机、镜头畸变、曝光、运动模糊和真实目标域，因此不能替代实物测试，
+也不批准RC7接管或有桨飞行。全部素材和结果位于
+`logs/deployment_archives/fixed_vm_online_20260829_104631/synthetic_handheld/`；最终归档包
+`fixed_vm_online_20260829_104631.tar.gz`的SHA256为
+`fb2a434fffe14fd6e8a703751e22e8e3583d855855a66e9963514adcee4e5c71`，其`SHA256SUMS`文件SHA256为
+`e5a9819d65a927a25b0ceb6eeffa6aa78531e435de2403e21e356bfa29b5d860`。退出后无残留runner/RKNN
+进程，`/dev/ttyS1`已释放。
+
+## 2026-08-29 真实相机手持双轴复测与 pitch 映射阻断
+
+使用`.42/orangepi5max`、真实上视相机和实物无人机目标运行固定Vm入口，配置为`N=3`、
+`Vm=1 m/s`、`max_guidance_accel_mps2=1`。全程拆桨、RC5 DISARM、RC7人工侧和`LOG_ONLY`；日志为
+`fixed_vm_real_handheld_camera_20260829_repeat_20260829_144654.csv`。静止区间38.16--107.52 s内
+1304/1304个新感知结果均有效，只有`track_id=5`且无切换，检测置信度均值0.792、匹配IoU均值
+0.960。该区间证明真实目标在稳定输入下可以连续识别和跟踪。
+
+横移区间252.727--304.026 s内YOLO为990/990，ByteTrack输出984/990，导引有效983/990；输出始终
+为`track_id=16`。空窗包括两个单帧、一个3帧约0.10 s及区间边界单帧，未在连续输出中换ID。
+目标中心横向跨度426.5 px，横向像速与roll候选指令的最佳相关系数为+0.938（约0.30 s滞后）；
+roll范围为-0.996--+0.452 deg/s。该结果通过横向LOG_ONLY方向响应，但约0.14 s平均感知结果年龄
+仍需在控制包线中计入。
+
+纵移区间402.125--447.889 s暴露出两个独立阻断项。YOLO为854/854，但ByteTrack仅输出788/854，
+导引有效784/854，输出ID依次出现42、55、58、59，最长跟踪空窗1.357 s；因此当前纵移速度和
+尺度组合超出已验证的关联包线。与此同时，图像纵向像速与`g_eval_x`的最佳相关系数为+0.956
+（约0.25 s滞后），说明`R_BC=[[0,1,0],[1,0,0],[0,0,-1]]`下的LOS和固定Vm导引链路按预期把
+图像`y`运动映射到机体前向分量。当前板端`rate_gain_matrix`却使用roll行`[0,1,0]`、pitch行
+`[0,0,1]`，使pitch取自`g_eval_z`；实测纵向像速与pitch候选相关系数仅-0.141。该矩阵不能用于
+RC7接管。
+
+下一步必须先在独立LOG_ONLY候选配置中把pitch来源改为`g_eval_x`，即仅比较`[+k,0,0]`和
+`[-k,0,0]`，再通过拆桨单轴符号试验确定Betaflight pitch杆方向；未经该试验不能猜测符号或
+更新控制批准文件。ByteTrack还需对纵移区间的尺度变化、IoU门限和短时失配单独调参并复测。
+本轮完整日志无桨审计`passed=1`、0违规，SET_RAW_RC attempt/write/success和MSP请求/worker错误
+全部为0；退出后无残留runner/RKNN进程，`/dev/ttyS1`已释放。证据位于归档内
+`real_camera_handheld_repeat/`，更新后的`fixed_vm_online_20260829_104631.tar.gz` SHA256为
+`d29b27f838e895716f55fedeb8d7c2cc55ad4ff294f517e3c80d0cb121941981`，归档内`SHA256SUMS`文件
+SHA256为`a0fe31aa18ffd0a52fb4ffd13365efff054728abefc4449bd85abc475600677e`。
+
+## 2026-08-29 固定 Vm 导引量坐标系修正
+
+纵移复测确认`FixedVmPngGuidance`输出的`g_eval`属于惯性NED系，而旧实现直接将其送入按机体FRD系
+定义的`rate_gain_matrix`。这会让飞行器姿态参与导引后产生坐标语义错误；旧候选矩阵的pitch行
+`[0,0,1]`还错误地使用了惯性垂向分量，无法代表图像纵向运动对应的机体前向导引量。
+
+运行时现保留每个视觉结果曝光时刻的`R_IB`，并在生成候选角速度前计算
+`g_B = R_IB^T g_I`。配置必须显式声明
+`guidance_command.guidance_eval_frame=inertial_ned`和
+`guidance_command.rate_gain_input_frame=body_frd`；缺失或不匹配时运行入口、批准工具均拒绝继续。
+`guidance_eval_to_setpoint()`在姿态无效时也改为fail-closed，不再使用单位阵静默回退。
+
+无桨候选矩阵改为`[[0,1,0],[1,0,0],[0,0,0]]`：roll继续读取机体左向分量，pitch改为读取机体
+前向分量，yaw保持禁用。pitch正负号当前只是LOG_ONLY候选，必须通过后续拆桨单轴方向试验比较
+`[+k,0,0]`和`[-k,0,0]`后才能批准；本次修改不授权RC7接管。
+
+CSV日志模式升级到v11，新增`guidance_eval_frame`、`rate_gain_input_frame`及
+`g_eval_body_frd_x/y/z`，同时保留惯性系`g_eval_x/y/z`，便于逐行复算姿态旋转和矩阵输入。Web
+遥测模式升级到v8并同时显示两组向量。无桨审计对v11日志校验坐标系声明和机体系字段，阻止旧
+语义日志被误判为合格。相关聚焦测试72/72通过，完整单元测试275/275通过，且
+`git diff --check`通过。
+
+## 2026-08-29 机体系 pitch 来源真实相机复测
+
+在`.42/orangepi5max`上备份旧运行文件后同步坐标系修正，未覆盖原
+`betaflight.rk3588.noprop.vm.local.json`及其批准文件。新建独立
+`betaflight.rk3588.noprop.vm.body_frame_logonly.local.json`，SHA256为
+`f42f6e5ee739673656f4c704b445f626f4da00574451c342e9f7a27c2d526173`；其矩阵为
+`[[0,1,0],[1,0,0],[0,0,0]]`，并声明`inertial_ned -> body_frd`。板端聚焦测试72/72通过。
+
+真实上视相机纵向往返日志为
+`fixed_vm_body_frame_longitudinal_logonly_20260829_152437.csv`。主要动态窗口340--390 s内，
+970个新感知结果均有YOLO候选，ByteTrack输出和导引有效各944个，全部为`track_id=5`；检测分数
+均值0.729、关联IoU均值0.949。目标中心纵向跨度328.91 px，图像纵向速度与机体前向
+`g_eval_body_frd_x`的最佳相关系数为+0.989，与pitch候选的最佳相关系数同为+0.989，响应滞后约
+0.30 s。pitch候选范围为-0.9433--+0.5706 deg/s，且逐样本与`g_eval_body_frd_x`一致，最大数值
+误差约`4.99e-7`。该结果确认旧`[0,0,1]`来源错误已修复，纵向像面运动现在进入机体前向导引分量
+和pitch候选。
+
+动态窗口仍有26个YOLO有候选但跟踪器无输出的样本，最长连续空窗约0.401 s，因此ByteTrack纵移
+连续性仍未通过接管门槛。物理Betaflight pitch杆正负号也尚未验证；相关系数只能验证信号链，
+不能授权RC7接管。全程8223行均为`LOG_ONLY/disabled/armed=0/override=0`，所有
+SET_RAW_RC attempt/write/success计数为0，MSP错误为0，无桨审计`passed=1`且0违规。退出后无残留
+进程，`/dev/ttyS1`已释放。证据归档为
+`logs/deployment_archives/fixed_vm_body_frame_20260829_152437.tar.gz`，SHA256为
+`a8574563a9417f2a874b0f5ae2b31b3d2452f83690f4dd1c7c2f0f27f72f14ce`。
+
+## 2026-08-29 ByteTrack 纵移低分支A/B
+
+上一轮动态窗口的26个跟踪缺失样本中，20个已在ByteTrack低分阶段成功关联，但被
+`final_min_score=0.25`过滤；其余6个在实物接近画面边缘、检测分数约0.081时进入
+`active_track_lost`。为隔离变量，新建LOG_ONLY候选，仅把`track_low_thresh`从0.10降为0.05、
+`final_min_score`从0.25降为0.05，未修改高分建轨阈值、导引、矩阵和控制包线。配置SHA256为
+`ff1c554a2a36f181068cf0fd5ba000e5a19479cb93042e6977d1a05cb3bb8e27`。
+
+真实边缘纵移的50--100 s窗口中，987个新结果均有YOLO候选，ByteTrack和导引均输出987次，全部
+为`track_id=2`，最长空窗0；211帧检测框触及下边缘，最低输出分数0.228。第二次压力窗口60--105 s
+又得到889/889/889的候选、跟踪和导引输出，全部为`track_id=1`。两次均为
+`LOG_ONLY/disabled/armed=0/override=0`，SET_RAW_RC attempt/write/success和MSP错误全部为0，
+无桨审计通过。第一轮方向链路仍保持图像纵向速度对机体前向/pitch候选相关系数+0.976。
+
+为可重复覆盖低分域，合成手持序列生成器新增`--foreground-opacity`，其默认值1.0保持原行为，
+参数写入metadata；0.15透明度序列共120帧，每帧都有RKNN候选，最低可关联输出分数0.055。相同
+视频A/B显示：原0.10/0.25配置输出率65.83%、fragment=2；0.05/0.05配置输出率72.50%、
+fragment=1，且只有同一track ID、无switch。该结果证明降低最终输出和低分候选门槛能保留一部分
+已关联测量，但不能把模型已失去真实目标特征的候选强制视为有效目标。
+
+vendored ByteTrack原先将第二阶段低分IoU距离门限硬编码为0.5，现暴露为显式
+`low_match_thresh`且默认仍为0.5，并增加单元测试。实验候选0.8在同一视频上的输出率和fragment
+仍为72.50%/1，没有任何收益，因此不进入实物候选；扩大关联门限会增加误关联风险，不能仅因追求
+连续率采用。真实低分、合成A/B、配置和源码哈希归档于
+`logs/deployment_archives/fixed_vm_tracker_low_conf_ab_20260829_154658.tar.gz`，SHA256为
+`fa13993d0371b12154ef6d87f2c7ec4af16d6895a967a712cc713e43522f4856`。当前仅允许继续LOG_ONLY；
+物理pitch符号仍需独立拆桨单轴试验，尚未授权RC7接管。
+
+本地完整测试277/277通过。板端tracker与合成生成器聚焦测试10/10通过；板端直接执行全量discover
+时完成191项并出现3个收集错误，原因是该部署目录未复制AirSim的gimbal、strapdown和truth示例
+模块，不是Betaflight或ByteTrack测试失败。板端聚焦测试输出保存在
+`logs/rk3588_tracker_focused_tests_20260829.txt`，不得把不完整部署包的AirSim导入错误解释为实机
+运行时回归。

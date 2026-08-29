@@ -132,6 +132,7 @@ Betaflight 路径由 `vision_guidance.flight_control` 和 `vision_guidance.betaf
 
 ```text
 GuidanceEval
+  -> R_IB^T (inertial NED -> body FRD)
   -> rate_gain_matrix
   -> GuidanceSetpoint(roll_rate, pitch_rate, yaw_rate, thrust)
   -> RcCommandMapper
@@ -155,7 +156,8 @@ RC 映射支持：
 仓库中针对 Betaflight 的优化是“导引候选量到 RC 输入”的适配优化，不是 PX4 body-rate
 控制器的移植。关键代码：
 
-- `guidance_eval_to_setpoint()`：`rate_gain_matrix @ g_eval` 生成 roll/pitch/yaw rate。
+- `guidance_eval_to_setpoint()`：先计算`g_eval_B = R_IB^T @ g_eval_I`，再由
+  `rate_gain_matrix @ g_eval_B`生成roll/pitch/yaw rate；姿态缺失或旋转矩阵非法时fail closed。
 - `RcCommandMapper.map_setpoint()`：rate/thrust 转 RC us，输出 raw、clipped、slew 三组诊断。
 - `BetaflightSafetyStateMachine.update()`：按 telemetry、attitude、voltage、watchdog、AUX、
   target_valid 逐项 gate。
@@ -165,7 +167,8 @@ RC 映射支持：
 公式如下：
 
 ```text
-rates_deg_s = rate_gain_matrix * g_eval + yaw_rate_bias
+g_eval_B    = R_IB^T * g_eval_I
+rates_deg_s = rate_gain_matrix * g_eval_B + yaw_rate_bias
 thrust      = hover_thrust
 rc_rate_us  = mid_us + rates_deg_s / rate_limit_deg_s * (max_us - min_us) / 2
 ```

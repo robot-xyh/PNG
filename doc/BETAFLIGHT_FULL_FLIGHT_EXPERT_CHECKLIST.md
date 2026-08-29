@@ -21,7 +21,7 @@ P0问题，当前production YAML不能作为飞行许可。
 |相机|`/dev/video0`为视频节点，1280x1024 MJPEG输出640x512；`/dev/video1`是metadata|
 |视觉|修改版RKNN模型可运行，推理约5--8 ms；真实目标精度尚未验收|
 |网页|Python JSON/SSE/MJPEG可用；实测MJPEG与热负载会放大MSP线程调度间隙，控制时必须关闭|
-|Python无桨输出|180个algorithm日志行已产生，包线和发送当刻门禁通过；最大发送间隔164.302 ms，未放行|
+|Python无桨输出|人工侧完整RKNN负载已稳定49.955 Hz、最大间隔29.578 ms；RC7 ACTIVE算法接管复验仍未完成|
 
 # 第一部分：src 必须独立解决
 
@@ -113,11 +113,12 @@ MSP_SET_RAW_RC wire AETR。记录实际端点、中心、deadband、抖动、反
 确认单UART预算：SET_RAW_RC优先级、STATUS/ATTITUDE/RC/RAW_IMU/ANALOG轮询频率、最大RTT、
 陈旧阈值和串口独占。Configurator、Python和src不得同时占用 `/dev/ttyS1`。
 
-Python实测中，低负载180 s发送6944帧、最大间隔50.108 ms；带目标并打开MJPEG后，10414次
-发送虽然错误为0，但最大publish/send间隔达到164.302 ms并触发physical RC stale重预填。
-15 Hz感知、关闭MJPEG的233.52 s无目标基线降到49.769 ms。专家必须确认生产方案是独立
-MSP进程/实时调度、降低感知与遥测预算，还是硬件mux；带目标、热稳态、生产遥测负载下最大
-间隔连续满足60 ms前不得装桨。
+历史Python测试中，带目标并打开MJPEG时最大publish/send间隔达到164.302 ms并触发physical
+RC stale。2026-08-28将完整统计移出50 Hz热路径、改为增量分位数和固定时基调度后，纯MSP
+基线为49.799 Hz、最大28.700 ms。完整RKNN+ByteTrack若不分CPU仍只有38.148 Hz、最大
+159.706 ms；将主进程/MSP固定到CPU 6--7、感知子进程固定到CPU 4--5后，45 s基线达到
+49.955 Hz、最大29.578 ms、P99.9 27.035 ms、deadline miss和错误均为0。该结果仅覆盖DISARM、
+RC7人工侧；还必须在RC7 ACTIVE、动态目标、热稳态和故障注入下连续满足相同门限，才能装桨。
 
 ## S5. src状态门禁和状态机
 

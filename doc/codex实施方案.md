@@ -163,6 +163,8 @@ cp config/betaflight.example.json config/betaflight.local.json
 - `rc_mapping.*`
 - `safety.*`
 - `guidance_command.rate_gain_matrix`
+- `guidance_command.guidance_eval_frame=inertial_ned`
+- `guidance_command.rate_gain_input_frame=body_frd`
 
 本机路径、串口号和模型路径不应提交到公共仓库。
 
@@ -172,7 +174,8 @@ cp config/betaflight.example.json config/betaflight.local.json
 
 ### 5.1 已实现优化
 
-- `guidance_command.rate_gain_matrix`：把 `g_eval_x/y/z` 映射到 roll/pitch/yaw rate。
+- `guidance_command.rate_gain_matrix`：把曝光时刻经`R_IB^T`旋转得到的
+  `g_eval_body_frd_x/y/z`映射到roll/pitch/yaw rate；不能直接消费惯性系`g_eval_x/y/z`。
 - `rc_mapping.*`：配置 `AETR1234` 通道顺序、最大角速度、throttle 标定和 RC us 边界。
 - `max_delta_us_per_s`：限制 RC 通道变化率，降低视觉抖动和矩阵误标定带来的阶跃。
 - `safety.*`：遥测超时、姿态超时、watchdog、低电压和 AUX enable gate。

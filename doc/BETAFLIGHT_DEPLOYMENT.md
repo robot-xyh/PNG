@@ -71,7 +71,8 @@ Betaflight。已实现的 Betaflight 优化集中在 `vision_guidance/flight_con
 
 ```text
 PureVisionGuidancePipeline
-  -> GuidanceEval(g_eval)
+  -> GuidanceEval(g_eval_I, inertial NED)
+  -> g_eval_B = R_IB^T * g_eval_I (body FRD at exposure time)
   -> guidance_command.rate_gain_matrix
   -> GuidanceSetpoint(roll_rate, pitch_rate, yaw_rate, thrust)
   -> GuidanceSetpointHold
@@ -84,16 +85,19 @@ PureVisionGuidancePipeline
 
 ### 1. 导引量到 Betaflight rate setpoint
 
-`guidance_eval_to_setpoint()` 使用 3x3 矩阵把视觉导引评估量映射为 Betaflight 可接收的
-roll/pitch/yaw rate 候选量：
+`guidance_eval_to_setpoint()` 先用检测曝光时刻的姿态把惯性系导引量旋转到FRD机体系，再用
+3x3矩阵映射为Betaflight可接收的roll/pitch/yaw rate候选量：
 
 ```text
+g_eval_B = R_IB^T * g_eval_I
 [roll_rate_deg_s, pitch_rate_deg_s, yaw_rate_deg_s]^T
-    = rate_gain_matrix * g_eval + [0, 0, yaw_rate_bias_deg_s]^T
+    = rate_gain_matrix * g_eval_B + [0, 0, yaw_rate_bias_deg_s]^T
 thrust = hover_thrust
 ```
 
-这里的 `g_eval` 来自 LOS/TTC 纯视觉链路，不是 PX4 的 `p/q/r`。示例配置
+其中`R_IB`是曝光时刻FRD机体到NED惯性系的旋转。直接对`g_eval_I`使用固定矩阵会随yaw变化
+产生串轴，schema v11会把这种缺失机体系转换的日志判为违规。这里的`g_eval`来自LOS/TTC
+纯视觉链路，不是PX4的`p/q/r`。示例配置
 `config/betaflight.example.json` 中 `rate_gain_matrix` 默认全零，目的是让未标定系统
 只产生日志和中性 RC，不产生实际姿态命令。上机前必须通过无桨台架确认矩阵符号、轴向
 和增益。
@@ -395,7 +399,11 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 - `RcCommandMapper` 已实现 Betaflight Rates 的 RC Rate/Super Rate/Expo 数值反算，批准
   工具会把 profile 0 的三轴 `100/0/70` 与 JSON 绑定。仍需用 Blackbox 实测“RC us ->
   期望角速度/实测角速度”，因为 deadband、rate limit、飞行模式和机体动态不在反函数内。
-- `guidance_command.rate_gain_matrix` 当前示例为全零。先用日志回放确定轴映射和符号，再做
+- `guidance_command.guidance_eval_frame`必须为`inertial_ned`，
+  `rate_gain_input_frame`必须为`body_frd`。运行时缺项或写成惯性系会拒绝启动，批准工具也会拒绝。
+- `guidance_command.rate_gain_matrix` 当前通用示例为全零。上视相机无桨候选使用body-Y到roll、
+  body-X到pitch，但正负号仍须单轴台架确认；不能把此前的`pitch <- g_eval_z`恢复为控制配置。
+  先用日志回放确定轴映射和符号，再做
   小幅阶跃/扫频，标定增益、斜率限制、姿态响应延迟和饱和边界。
 - 标定整机质量、电池、桨和 hover throttle。当前 setpoint 始终使用固定
   `hover_thrust`，没有高度/垂向速度闭环，不能直接承担自动起飞、降落或高度保持。
@@ -409,7 +417,7 @@ RC 发送、CSV 写入、循环周期、丢帧数、CPU/NPU 温度和是否降�
 
 ### 6. RK3588 运行诊断日志和剩余缺口
 
-schema v2 已补充以下诊断：
+schema v11 已补充以下诊断：
 
 - MSP：每命令请求/成功/错误、RTT、最后成功 age、发布 tick、发送间隔和连续失败。
 - 飞控反馈：RAW_IMU 的原始三轴整数与 ACC/MAG raw，以及各消息独立时间戳。当前定制固件的
@@ -417,6 +425,8 @@ schema v2 已补充以下诊断：
 - 控制链：请求/限幅 rate、反算 stick、斜率限制前 PWM、油门交接 source/target/alpha。
 - 平台：独立 1 Hz 缓存的 CPU 频率、SOC/NPU/最高温度、内存、RSS、负载和磁盘。
 - 对时：ARM、RC7/OVERRIDE、prefill、ACTIVE、目标、watchdog 和错误边沿 JSONL。
+- 坐标系：`guidance_eval_frame=inertial_ned`、`rate_gain_input_frame=body_frd`，并列记录
+  `g_eval_x/y/z`和`g_eval_body_frd_x/y/z`，用于核对姿态旋转和rate矩阵输入。
 
 仍未记录硬件曝光时间、NPU真实利用率、板级欠压/降频标志、CSV写入耗时和Blackbox自动
 解析。sysfs不存在或权限不足的字段留空，不伪造数值。高带宽原始视频暂不写入；后续如需
@@ -845,15 +855,17 @@ python3 examples/run_betaflight_log_only.py \
   --control-mode msp_raw_rc \
   --allow-control \
   --detector-source rknn_bytetrack \
-  --rknn-perception-rate-hz 15 \
   --disable-web-preview \
-  --isolate-rknn-process
+  --isolate-rknn-process \
+  --main-cpu-affinity 6,7 \
+  --rknn-cpu-affinity 4,5
 ```
 
-线程限制、15 Hz 感知和进程隔离不改变批准 JSON 或控制包线，并会写入 meta。隔离模式要求
-关闭 MJPEG；根页面的 JSON/SSE 状态仍可读，但视频流不可用，目标位置需在接管前通过 log-only
-预览确认。配置现在要求 `msp_runtime.transport_mode=async_pipeline`，启动时会以非阻塞方式运行
-单 UART；历史同步测试的 65.964/68.568 ms 缺口仍须用新版本重新实测关闭。
+线程限制、进程隔离和 CPU 分区不改变批准 JSON 或控制包线，并会写入 meta。当前 RK3588 已验证
+主进程/MSP 使用 CPU 6--7、相机/RKNN/ByteTrack 子进程使用 CPU 4--5；集合重叠或系统拒绝
+affinity 时程序会在启动阶段失败。隔离模式要求关闭 MJPEG；根页面的 JSON/SSE 状态仍可读，但
+视频流不可用，目标位置需在接管前通过 log-only 预览确认。配置要求
+`msp_runtime.transport_mode=async_pipeline`，单 UART 使用非阻塞请求/响应流水线。
 
 严格按以下顺序操作：
 
@@ -883,9 +895,9 @@ RC7 MSP OVERRIDE 和移动目标流程均已执行。60284 次 SET_RAW_RC 全部
 目标测试也出现一次 65.964 ms。问题发生于单 UART 的同步 MSP 轮询/发送调度，不是 RC 错误或
 控制包线越界。该结论是异步修正前的历史基线，不得用来评价新 pipeline。
 
-### 3.2 单 UART 异步修正与待执行复验
+### 3.2 单 UART 异步修正与板端基线
 
-2026-08-27 已离线完成异步 MSP 实现，Orange Pi 在实现期间保持断电，尚无新硬件日志。每个
+2026-08-27 离线完成、2026-08-28 板端部署异步 MSP 实现。每个
 20 ms worker 周期严格执行：写最新 SET_RAW_RC、排入最多一个到期遥测请求、在最多 3 ms 内
 排空响应；错过的发布周期直接跳过，不补发积压命令。解析器保存跨周期字节缓冲，可处理分片、
 粘包和噪声重同步。每种遥测命令最多保留一个未决请求，SET ACK 则按 FIFO 关联到实际写入帧。
@@ -898,7 +910,19 @@ OVERRIDE 关闭后恢复 RC 查询。最后一个 SET ACK 超过 250 ms 时，�
 `safety.aux_enable.satisfied_by_override_mode=true`；若以后改用独立 AUX，必须设为 false 并恢复
 该通道的持续物理 RC 证据。
 
-重新上电后按以下顺序验证，全部保持拆桨：
+板端定位发现完整统计快照位于 50 Hz 热路径会随样本数增长拖慢 worker；修复后改为轻量 ACK/
+write 时间读取、增量有序分位数和固定时基调度，并保留 16 ms 最小写间隔防止追赶式突发。
+纯 MSP 日志 `transport_incremental_fix_20260828_190022_20260828_190023.csv` 审计通过，平均
+49.799 Hz、最大间隔28.700 ms且deadline miss为0。未做CPU分区的完整RKNN日志只有38.148 Hz、
+最大159.706 ms并出现3行`physical_rc_stale`；程序均按设计退回预填充，未发送算法命令。
+
+使用程序参数显式分区后的
+`isolated_explicit_affinity_20260828_192131_20260828_192132.csv`在完整RKNN+ByteTrack负载下
+审计0违规：平均49.955 Hz、最大29.578 ms、P99.9 27.035 ms、deadline miss为0，RC最大年龄
+145.610 ms，发送/请求/checksum/parser错误均为0。meta记录main `[6,7]`、detector `[4,5]`。
+这只关闭RC5 DISARM、RC7人工侧的满载传输基线；尚未关闭ACTIVE算法输出或故障注入验收。
+
+继续按以下顺序验证，全部保持拆桨：
 
 1. 先运行 `log_only`，不带 `--allow-control`，确认 Web 中 transport 为 `async_pipeline`，
    SET write/ACK 都为 0，所有遥测命令持续更新且 parser/checksum error 为 0。
@@ -1025,9 +1049,15 @@ rate limit 和 `rate_gain_matrix` 标定。
   `reacquire_area_ratio` / `track_hint_max_misses`
 - `rknn_bytetrack.detector_conf_threshold` / `detector_iou_threshold`
 - `rknn_bytetrack.track_high_thresh` / `track_low_thresh` / `new_track_thresh` /
-  `match_thresh` / `fuse_score`
+  `match_thresh` / `low_match_thresh` / `fuse_score`
 - `rknn_bytetrack.track_buffer_s` / `frame_rate` / `minimum_confirmed_frames` /
-  `perception_rate_hz`
+  `perception_rate_hz` / `final_min_score`
+
+`match_thresh`控制高分检测的第一阶段关联；`low_match_thresh`控制低分检测的第二阶段IoU距离
+上限，默认`0.5`。阈值越大，关联越宽松，必须通过相同视频A/B证明ID switch、fragment和误关联
+均未恶化后才能修改。`final_min_score`是跟踪成功后的最终输出门槛，不能与建轨门槛混为一谈。
+当前实物LOG_ONLY候选仅验证`track_low_thresh=0.05`和`final_min_score=0.05`；
+`low_match_thresh=0.8`在低对比合成A/B中无改善，已拒绝用于实机候选配置。
 - `rc_mapping.channel_map`
 - `msp_runtime.set_raw_rc_channel_map`（当前必须与上项同为 `AETR1234`）
 - `msp_runtime.prefill_enabled` / `prefill_min_frames` / `prefill_valid_min_us` /
@@ -1057,6 +1087,11 @@ rate limit 和 `rate_gain_matrix` 标定。
 - `rc_mapping.throttle_max_us`
 - `rc_mapping.neutral_throttle_us`
 - `rc_mapping.max_delta_us_per_s`
+- `guidance.law`（`ttc_png`或`fixed_vm_png`，禁止隐式混用）
+- `guidance.max_guidance_accel_mps2`
+- 固定Vm模式的`guidance.navigation_constant`和`guidance.fixed_vm_m_s`
+- `guidance_command.guidance_eval_frame`（必须为`inertial_ned`）
+- `guidance_command.rate_gain_input_frame`（必须为`body_frd`）
 - `guidance_command.entry_handoff.enabled` / `duration_s` / `rate_source`（当前必须为`zero`）
 - `guidance_command.tilt_envelope.enabled` / `max_roll_angle_deg` /
   `max_pitch_angle_deg` / `softcap_band_deg` / `hardcap_margin_deg` /
@@ -1125,6 +1160,10 @@ PyTorch/ByteTrack 基线：
 
 ### 导引与控制映射
 
+- 导引律选择。`ttc_png`要求尺度膨胀TTC有效；`fixed_vm_png`使用
+  `N * Vm * (omega_LOS x lambda_I)`并仅旁路TTC门，不能旁路LOS和安全状态机。
+- 固定Vm不是测速结果。`fixed_vm_m_s`必须写明试验假设，首轮拆桨候选值为1.0 m/s；正式飞行前
+  必须根据实测拦截机速度重新确定，禁止照搬AirSim的`speed_ratio * intruder_speed`。
 - `guidance_command.rate_gain_matrix` 的符号、轴向和增益。
 - `rc_mapping.channel_map` 是否与 Betaflight Receiver tab 一致。
 - roll/pitch/yaw 命令方向和最大幅度。
@@ -1139,6 +1178,20 @@ PyTorch/ByteTrack 基线：
 - 非碰撞近距通过标准和终止条件。
 - 急停、人工接管、围挡/软目标、无桨和系留验收流程。
 - 每轮测试后必须检查 CSV/meta 与 Blackbox 是否一致。
+
+### 固定 Vm 无桨测试顺序
+
+1. 从已验证硬件local配置复制独立VM配置和独立批准文件，不覆盖TTC配置。
+   批准工具会显式校验并记录`law/N/Vm/N*Vm`，且无桨配置的
+   `max_guidance_accel_mps2`不得超过1.0；修改任一值后必须重新生成批准文件。
+2. DISARM、RC7人工侧，以`log_only`运行；网页应显示`fixed_vm_png`、`N*Vm=3.0`和TTC
+   `BYPASS`，`SET_RAW_RC`写入必须为0。
+3. 放置静止单目标，确认tracker/LOS/guidance有效且候选rate接近0；若静止目标产生持续大命令，
+   先查相机抖动、姿态同步和LOS滤波，不进入接管。
+4. 手持目标分别缓慢向机头、机尾、左、右移动，记录`omega_los`、`g_eval`、shaper输入和目标RC，
+   确认符号与既有外参验证一致。
+5. 仅在以上数据通过后，保持拆桨并使用独立VM批准启动`msp_raw_rc --allow-control`；先ARM怠速，
+   再由操作者切RC7。确认ACTIVE/algorithm、命令不跳变、退出RC7立即回人工透传，最后DISARM。
 
 ## 不应直接沿用的参数
 
