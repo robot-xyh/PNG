@@ -10,6 +10,8 @@ from vision_guidance.flight_control import (
     GuidanceCommandShaperConfig,
     GuidanceSetpoint,
     GuidanceSetpointHold,
+    MotorOutputInterlock,
+    MotorOutputInterlockConfig,
     RcCommandMapper,
     RcMappingConfig,
     SafetyInputs,
@@ -246,6 +248,97 @@ class FlightControlTest(unittest.TestCase):
         )
         self.assertEqual(decision.state, SafetyState.ACTIVE)
         self.assertTrue(decision.command_active)
+
+        decision = safety.update(
+            SafetyInputs(
+                control_requested=True,
+                allow_control=True,
+                telemetry_fresh=True,
+                attitude_synced=True,
+                motor_output_ok=False,
+                voltage_ok=True,
+                watchdog_ok=True,
+                armed=True,
+                override_available=True,
+                override_active=True,
+                physical_rc_fresh=True,
+                snapshot_approved=True,
+                config_conflict_free=True,
+                aux_enabled=True,
+                target_valid=True,
+            )
+        )
+        self.assertEqual(decision.state, SafetyState.FAILSAFE)
+        self.assertEqual(decision.reason, "motor_output_interlock")
+
+    def test_motor_output_interlock_latches_until_disarm(self):
+        interlock = MotorOutputInterlock(
+            MotorOutputInterlockConfig(
+                enabled=True,
+                channel_count=4,
+                max_output_us=1200,
+                max_spread_us=150,
+                telemetry_timeout_s=0.75,
+                latch_until_disarm=True,
+            )
+        )
+
+        safe = interlock.update(
+            armed=True,
+            motor_outputs=(1056, 1057, 1056, 1057),
+            telemetry_age_s=0.1,
+        )
+        self.assertTrue(safe.ok)
+        fault = interlock.update(
+            armed=True,
+            motor_outputs=(1363, 1456, 1056, 1431),
+            telemetry_age_s=0.1,
+        )
+        self.assertFalse(fault.ok)
+        self.assertTrue(fault.latched)
+        self.assertEqual(fault.reason, "motor_output_high")
+        self.assertEqual(fault.output_max_us, 1456)
+        self.assertEqual(fault.output_spread_us, 400)
+
+        still_latched = interlock.update(
+            armed=True,
+            motor_outputs=(1056, 1057, 1056, 1057),
+            telemetry_age_s=0.1,
+        )
+        self.assertFalse(still_latched.ok)
+        self.assertTrue(still_latched.latched)
+        self.assertEqual(still_latched.output_max_us, 1456)
+        self.assertTrue(
+            interlock.update(
+                armed=False,
+                motor_outputs=(1000, 1000, 1000, 1000),
+                telemetry_age_s=0.1,
+            ).ok
+        )
+
+    def test_motor_output_interlock_fails_closed_on_stale_telemetry(self):
+        interlock = MotorOutputInterlock(
+            MotorOutputInterlockConfig(enabled=True, telemetry_timeout_s=0.5)
+        )
+
+        state = interlock.update(
+            armed=True,
+            motor_outputs=(1056, 1057, 1056, 1057),
+            telemetry_age_s=0.6,
+        )
+
+        self.assertFalse(state.ok)
+        self.assertTrue(state.latched)
+        self.assertEqual(state.reason, "motor_telemetry_stale")
+
+        recovered = interlock.update(
+            armed=True,
+            motor_outputs=(1056, 1057, 1056, 1057),
+            telemetry_age_s=0.1,
+        )
+        self.assertFalse(recovered.ok)
+        self.assertTrue(recovered.latched)
+        self.assertEqual(recovered.reason, "motor_telemetry_stale")
 
     def test_watchdog_freshness(self):
         watchdog = CommandWatchdog(timeout_s=0.5)

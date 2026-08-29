@@ -794,6 +794,137 @@ class SafetyState(str, Enum):
 
 
 @dataclass(frozen=True)
+class MotorOutputInterlockConfig:
+    enabled: bool = False
+    channel_count: int = 4
+    max_output_us: int = 1200
+    max_spread_us: int = 150
+    telemetry_timeout_s: float = 0.75
+    latch_until_disarm: bool = True
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "MotorOutputInterlockConfig":
+        return cls(
+            enabled=bool(values.get("enabled", False)),
+            channel_count=int(values.get("channel_count", 4)),
+            max_output_us=int(values.get("max_output_us", 1200)),
+            max_spread_us=int(values.get("max_spread_us", 150)),
+            telemetry_timeout_s=float(values.get("telemetry_timeout_s", 0.75)),
+            latch_until_disarm=bool(values.get("latch_until_disarm", True)),
+        )
+
+    def __post_init__(self) -> None:
+        if not 1 <= self.channel_count <= 8:
+            raise ValueError("motor interlock channel_count must be in [1, 8]")
+        if not 1000 <= self.max_output_us <= 2000:
+            raise ValueError("motor interlock max_output_us must be in [1000, 2000]")
+        if not 0 <= self.max_spread_us <= 1000:
+            raise ValueError("motor interlock max_spread_us must be in [0, 1000]")
+        if self.telemetry_timeout_s <= 0.0:
+            raise ValueError("motor interlock telemetry_timeout_s must be positive")
+
+
+@dataclass(frozen=True)
+class MotorOutputInterlockState:
+    ok: bool
+    reason: str
+    latched: bool
+    output_max_us: float | None = None
+    output_spread_us: float | None = None
+    telemetry_age_s: float | None = None
+
+
+class MotorOutputInterlock:
+    def __init__(self, config: MotorOutputInterlockConfig):
+        self.config = config
+        self._latched = False
+        self._latched_reason = ""
+        self._latched_output_max_us: float | None = None
+        self._latched_output_spread_us: float | None = None
+
+    def update(
+        self,
+        *,
+        armed: bool,
+        motor_outputs: Sequence[float] | None,
+        telemetry_age_s: float | None,
+    ) -> MotorOutputInterlockState:
+        if not self.config.enabled:
+            return MotorOutputInterlockState(True, "disabled", False, telemetry_age_s=telemetry_age_s)
+        if not armed:
+            self._latched = False
+            self._latched_reason = ""
+            self._latched_output_max_us = None
+            self._latched_output_spread_us = None
+            return MotorOutputInterlockState(True, "disarmed", False, telemetry_age_s=telemetry_age_s)
+        if self._latched:
+            return MotorOutputInterlockState(
+                False,
+                self._latched_reason or "motor_output_fault_latched",
+                True,
+                self._latched_output_max_us,
+                self._latched_output_spread_us,
+                telemetry_age_s=telemetry_age_s,
+            )
+        if telemetry_age_s is None or telemetry_age_s > self.config.telemetry_timeout_s:
+            return self._fault(
+                "motor_telemetry_stale",
+                telemetry_age_s=telemetry_age_s,
+            )
+        source_outputs = () if motor_outputs is None else motor_outputs
+        values = tuple(float(value) for value in source_outputs[: self.config.channel_count])
+        if len(values) != self.config.channel_count or not np.all(np.isfinite(values)) or any(
+            value <= 0.0 for value in values
+        ):
+            return self._fault(
+                "motor_telemetry_invalid",
+                telemetry_age_s=telemetry_age_s,
+            )
+        output_max = max(values)
+        output_spread = output_max - min(values)
+        reason = ""
+        if output_max > self.config.max_output_us:
+            reason = "motor_output_high"
+        elif output_spread > self.config.max_spread_us:
+            reason = "motor_output_spread_high"
+        if reason:
+            return self._fault(
+                reason,
+                output_max,
+                output_spread,
+                telemetry_age_s,
+            )
+        return MotorOutputInterlockState(
+            True,
+            "ok",
+            False,
+            output_max,
+            output_spread,
+            telemetry_age_s,
+        )
+
+    def _fault(
+        self,
+        reason: str,
+        output_max_us: float | None = None,
+        output_spread_us: float | None = None,
+        telemetry_age_s: float | None = None,
+    ) -> MotorOutputInterlockState:
+        self._latched = bool(self.config.latch_until_disarm)
+        self._latched_reason = reason
+        self._latched_output_max_us = output_max_us
+        self._latched_output_spread_us = output_spread_us
+        return MotorOutputInterlockState(
+            False,
+            reason,
+            self._latched,
+            output_max_us,
+            output_spread_us,
+            telemetry_age_s,
+        )
+
+
+@dataclass(frozen=True)
 class SafetyInputs:
     control_requested: bool = False
     allow_control: bool = False
@@ -801,6 +932,7 @@ class SafetyInputs:
     aux_enabled: bool = False
     telemetry_fresh: bool = False
     attitude_synced: bool = False
+    motor_output_ok: bool = True
     voltage_ok: bool = True
     watchdog_ok: bool = False
     armed: bool = False
@@ -849,6 +981,8 @@ class BetaflightSafetyStateMachine:
             return self._set(SafetyState.FAILSAFE, False, "telemetry_stale")
         if not inputs.attitude_synced:
             return self._set(SafetyState.FAILSAFE, False, "attitude_not_synced")
+        if not inputs.motor_output_ok:
+            return self._set(SafetyState.FAILSAFE, False, "motor_output_interlock")
         if not inputs.voltage_ok:
             return self._set(SafetyState.FAILSAFE, False, "low_voltage")
         if not inputs.watchdog_ok:

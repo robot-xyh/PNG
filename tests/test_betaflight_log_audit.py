@@ -79,6 +79,86 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertIn("web_no_telemetry_published", codes)
             self.assertIn("web_runtime_errors", codes)
 
+    def test_armed_motor_output_and_spread_exceed_noprop_limits(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                armed="1",
+                motor_output_count="4",
+                motor_output_ch1="1363",
+                motor_output_ch2="1456",
+                motor_output_ch3="1056",
+                motor_output_ch4="1431",
+            )
+            csv_path = self._write_log(Path(directory), row)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertIn("armed_motor_output_high", codes)
+            self.assertIn("armed_motor_spread_high", codes)
+            self.assertEqual(result["metrics"]["max_armed_motor_output"], 1456.0)
+            self.assertEqual(result["metrics"]["max_armed_motor_spread"], 400.0)
+            output_violation = next(
+                item for item in result["violations"] if item["code"] == "armed_motor_output_high"
+            )
+            self.assertEqual(output_violation["first_elapsed_s"], 1.0)
+            self.assertEqual(output_violation["limit"], 1200)
+
+    def test_motor_output_limits_ignore_disarmed_telemetry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                armed="0",
+                msp_publish_mode="passthrough",
+                motor_output_count="4",
+                motor_output_ch1="1363",
+                motor_output_ch2="1456",
+                motor_output_ch3="1056",
+                motor_output_ch4="1431",
+            )
+            csv_path = self._write_log(Path(directory), row)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertNotIn("armed_motor_output_high", codes)
+            self.assertNotIn("armed_motor_spread_high", codes)
+
+    def test_schema_v13_rejects_algorithm_output_without_motor_interlock(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                motor_interlock_ok="0",
+                motor_interlock_reason="motor_output_high",
+                motor_interlock_latched="1",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=13)
+
+            result = tool.analyze_log(csv_path)
+            violation = next(
+                item
+                for item in result["violations"]
+                if item["code"] == "algorithm_without_motor_interlock"
+            )
+
+            self.assertEqual(violation["count"], 1)
+            self.assertEqual(violation["first_elapsed_s"], 1.0)
+
+    def test_transport_gap_reports_first_cumulative_crossing_time(self):
+        with tempfile.TemporaryDirectory() as directory:
+            first = self._safe_row()
+            second = dict(first)
+            first.update(elapsed_s="1.0", msp_set_raw_rc_write_max_interval_s="0.03")
+            second.update(elapsed_s="2.0", msp_set_raw_rc_write_max_interval_s="0.081534")
+            csv_path = self._write_log(Path(directory), [first, second])
+
+            result = tool.analyze_log(csv_path)
+            violation = next(item for item in result["violations"] if item["code"] == "set_raw_rc_gap")
+
+            self.assertEqual(violation["first_elapsed_s"], 2.0)
+            self.assertEqual(violation["observed"], 0.081534)
+
     def test_schema_v4_rejects_guidance_hold_outside_worker_gap(self):
         with tempfile.TemporaryDirectory() as directory:
             row = self._safe_row()
@@ -305,11 +385,12 @@ class BetaflightLogAuditTest(unittest.TestCase):
 
     @staticmethod
     def _write_log(directory: Path, row, *, web_enabled=False, schema_version=10):
+        rows = row if isinstance(row, list) else [row]
         csv_path = directory / "bench.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as stream:
-            writer = csv.DictWriter(stream, fieldnames=list(row))
+            writer = csv.DictWriter(stream, fieldnames=list(rows[0]))
             writer.writeheader()
-            writer.writerow(row)
+            writer.writerows(rows)
         meta = {
             "config": {
                 "msp_runtime": {

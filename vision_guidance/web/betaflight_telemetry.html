@@ -180,6 +180,7 @@
           <div class="gate"><label>MSP Telemetry</label><output id="gateTelemetry" class="unknown">--</output></div>
           <div class="gate"><label>Attitude Sync</label><output id="gateAttitude" class="unknown">--</output></div>
           <div class="gate"><label>Voltage</label><output id="gateVoltage" class="unknown">--</output></div>
+          <div class="gate"><label>Motor Interlock</label><output id="gateMotor" class="unknown">--</output></div>
           <div class="gate"><label>Tracker</label><output id="gateTracker" class="unknown">--</output></div>
           <div class="gate"><label>LOS</label><output id="gateLos" class="unknown">--</output></div>
           <div class="gate"><label>TTC</label><output id="gateTtc" class="unknown">--</output></div>
@@ -261,6 +262,7 @@
           <tr><th>Detector</th><td id="detectorReason">--</td><th>Worker</th><td id="workerState">--</td></tr>
           <tr><th>Perception</th><td id="perceptionState">--</td><th>Vision / attitude</th><td id="attitudeOffset">--</td></tr>
           <tr><th>Orange Pi</th><td id="hostState">--</td><th>Web</th><td id="webState">--</td></tr>
+          <tr><th>Python GC</th><td id="gcState">--</td><th>Loop period</th><td id="runtimeLoopPeriod">--</td></tr>
         </table>
         <div id="errorLine" class="error-line">No active errors</div>
       </section>
@@ -312,6 +314,7 @@
       physical_rc_stale: "Physical RC is stale",
       telemetry_stale: "MSP telemetry is stale",
       attitude_not_synced: "Attitude is not synchronized",
+      motor_output_interlock: "Motor output interlock blocked control",
       low_voltage: "Battery voltage gate failed",
       watchdog_expired: "Guidance watchdog expired",
       aux_disabled: "RC7/AUX gate is disabled",
@@ -385,6 +388,9 @@
       setGate("gateTelemetry", safety.telemetry_fresh, "FRESH", "STALE", "fail");
       setGate("gateAttitude", safety.attitude_synced, "SYNCED", "STALE", "fail");
       setGate("gateVoltage", safety.voltage_ok, "OK", "LOW", "fail");
+      const motorInterlock = safety.motor_interlock || {};
+      setGate("gateMotor", motorInterlock.ok, "OK", motorInterlock.latched ? "LATCHED" : "BLOCKED", "fail");
+      $("gateMotor").title = `${text(motorInterlock.reason)} / max ${number(motorInterlock.output_max_us, 0, " us")} / spread ${number(motorInterlock.output_spread_us, 0, " us")}`;
       const trackerLabel = `${vision.display_held ? "HELD" : "TRACK"} ${text(vision.track_id)}`;
       setGate("gateTracker", vision.tracker_confirmed, trackerLabel, "NO TRACK");
       setGate("gateLos", guidance.los_valid, "VALID", "INVALID");
@@ -509,6 +515,9 @@
       const rss = path(data, ["host", "rss_mb"]);
       setMetric("hostState", `${number(temp, 0, " C")} / ${number(rss, 0, " MB")}`);
       setMetric("webState", `${text(path(data, ["web", "sse_clients"]))} SSE / ${text(path(data, ["web", "mjpeg_clients"]))} MJPEG`);
+      const pythonGc = path(data, ["host", "python_gc"], {});
+      setMetric("gcState", `${number(pythonGc.max_pause_ms, 3, " ms max")} / ${text(pythonGc.collection_count)} runs`);
+      setMetric("runtimeLoopPeriod", number(path(data, ["run", "loop_period_s"]), 3, " s"));
       updateChannels(data);
       updateControlReadiness(data);
 

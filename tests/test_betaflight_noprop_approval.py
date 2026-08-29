@@ -234,6 +234,29 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "guidance.law must be explicitly configured"):
             tool._validate_noprop_config(implicit, output)
 
+    def test_noprop_approval_requires_latched_motor_output_interlock(self):
+        config = _with_verified_upward_camera(
+            json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        )
+        output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
+
+        tool._validate_noprop_config(config, output)
+
+        disabled = copy.deepcopy(config)
+        disabled["safety"]["motor_output_interlock"]["enabled"] = False
+        with self.assertRaisesRegex(RuntimeError, "must be enabled"):
+            tool._validate_noprop_config(disabled, output)
+
+        excessive = copy.deepcopy(config)
+        excessive["safety"]["motor_output_interlock"]["max_output_us"] = 1201
+        with self.assertRaisesRegex(RuntimeError, "between throttle max and 1200"):
+            tool._validate_noprop_config(excessive, output)
+
+        not_latched = copy.deepcopy(config)
+        not_latched["safety"]["motor_output_interlock"]["latch_until_disarm"] = False
+        with self.assertRaisesRegex(RuntimeError, "latch until DISARM"):
+            tool._validate_noprop_config(not_latched, output)
+
     def test_override_cli_mode_id_must_be_explicit(self):
         config = _with_verified_upward_camera(
             json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())

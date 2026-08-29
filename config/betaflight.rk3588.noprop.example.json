@@ -200,6 +200,14 @@
     "attitude_timeout_s": 0.5,
     "watchdog_timeout_s": 0.25,
     "min_vbat_v": 0.0,
+    "motor_output_interlock": {
+      "enabled": true,
+      "channel_count": 4,
+      "max_output_us": 1200,
+      "max_spread_us": 150,
+      "telemetry_timeout_s": 0.75,
+      "latch_until_disarm": true
+    },
     "require_aux_enable": true,
     "aux_enable": {
       "channel_index": 7,

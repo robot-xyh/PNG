@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 9
+WEB_SCHEMA_VERSION = 10
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -164,6 +164,13 @@ def telemetry_payload_from_log_row(
             "publish_mode": _text(row.get("msp_publish_mode")),
             "telemetry_fresh": _boolean(row.get("telemetry_fresh")),
             "attitude_synced": _boolean(row.get("attitude_synced")),
+            "motor_interlock": {
+                "ok": _boolean(row.get("motor_interlock_ok")),
+                "reason": _text(row.get("motor_interlock_reason")),
+                "latched": _boolean(row.get("motor_interlock_latched")),
+                "output_max_us": _number(row.get("motor_interlock_output_max_us")),
+                "output_spread_us": _number(row.get("motor_interlock_output_spread_us")),
+            },
             "physical_rc_fresh": _boolean(row.get("physical_rc_fresh")),
             "watchdog_ok": _boolean(row.get("watchdog_ok")),
             "voltage_ok": _boolean(row.get("voltage_ok")),
@@ -439,6 +446,13 @@ def telemetry_payload_from_log_row(
                 _number(row.get("host_cpu_freq_max_mhz")),
             ],
             "npu_freq_mhz": _number(row.get("host_npu_freq_mhz")),
+            "python_gc": {
+                "collection_count": _integer(row.get("python_gc_collection_count")),
+                "last_generation": _integer(row.get("python_gc_last_generation")),
+                "last_pause_ms": _number(row.get("python_gc_last_pause_ms")),
+                "max_pause_ms": _number(row.get("python_gc_max_pause_ms")),
+                "total_pause_ms": _number(row.get("python_gc_total_pause_ms")),
+            },
             "error": _text(row.get("host_health_error")),
         },
         "web": {

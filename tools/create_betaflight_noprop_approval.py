@@ -23,6 +23,9 @@ from vision_guidance.geometry import camera_mount_diagnostics, validated_rotatio
 MSP_OVERRIDE_PERMANENT_ID = 50
 MAX_NOPROP_RATE_DEG_S = 3.0
 MAX_NOPROP_THROTTLE_US = 1100
+MAX_NOPROP_MOTOR_OUTPUT_US = 1200
+MAX_NOPROP_MOTOR_SPREAD_US = 150
+MAX_NOPROP_MOTOR_TELEMETRY_AGE_S = 0.75
 MIN_ENTRY_HANDOFF_DURATION_S = 0.8
 MAX_ENTRY_GYRO_AGE_S = 0.25
 MAX_NOPROP_TILT_ANGLE_DEG = 35.0
@@ -78,6 +81,9 @@ def main() -> None:
         "limits": {
             "max_rate_deg_s": MAX_NOPROP_RATE_DEG_S,
             "max_throttle_us": MAX_NOPROP_THROTTLE_US,
+            "max_motor_output_us": MAX_NOPROP_MOTOR_OUTPUT_US,
+            "max_motor_spread_us": MAX_NOPROP_MOTOR_SPREAD_US,
+            "max_motor_telemetry_age_s": MAX_NOPROP_MOTOR_TELEMETRY_AGE_S,
             "prefill_required": True,
             "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
             "msp_override_cli_mode_id": override_mode_cli_id,
@@ -172,7 +178,8 @@ def _validate_noprop_config(
         raise RuntimeError("MSP async response drain budget must be positive")
     if float(runtime.get("response_stale_s", 999.0)) > 0.25:
         raise RuntimeError("MSP SET_RAW_RC acknowledgement timeout must not exceed 0.25 s")
-    aux_enable = dict(config.get("safety", {}).get("aux_enable", {}))
+    safety = dict(config.get("safety", {}))
+    aux_enable = dict(safety.get("aux_enable", {}))
     if int(aux_enable.get("channel_index", -1)) != 7:
         raise RuntimeError("no-prop control enable must remain on physical RC7/AUX3")
     if aux_enable.get("satisfied_by_override_mode") is not True:
@@ -210,6 +217,24 @@ def _validate_noprop_config(
         raise RuntimeError("no-prop RC slew limit must not exceed 100 us/s")
     if float(rc.get("thrust_max", 9999.0)) > 0.10:
         raise RuntimeError("thrust_max exceeds no-prop limit")
+    motor_interlock = dict(safety.get("motor_output_interlock", {}))
+    if motor_interlock.get("enabled") is not True:
+        raise RuntimeError("no-prop motor_output_interlock must be enabled")
+    if motor_interlock.get("latch_until_disarm") is not True:
+        raise RuntimeError("no-prop motor_output_interlock must latch until DISARM")
+    if int(motor_interlock.get("channel_count", 0)) != 4:
+        raise RuntimeError("no-prop motor_output_interlock must monitor four motors")
+    motor_output_limit_us = int(motor_interlock.get("max_output_us", 9999))
+    if not throttle_max_us <= motor_output_limit_us <= MAX_NOPROP_MOTOR_OUTPUT_US:
+        raise RuntimeError("no-prop motor output limit must be between throttle max and 1200 us")
+    motor_spread_limit_us = int(motor_interlock.get("max_spread_us", 9999))
+    if not 0 <= motor_spread_limit_us <= MAX_NOPROP_MOTOR_SPREAD_US:
+        raise RuntimeError("no-prop motor spread limit must be in [0, 150] us")
+    motor_timeout_s = float(motor_interlock.get("telemetry_timeout_s", 9999.0))
+    if not 0.0 < motor_timeout_s <= MAX_NOPROP_MOTOR_TELEMETRY_AGE_S:
+        raise RuntimeError("no-prop motor telemetry timeout must be in (0, 0.75] s")
+    if float(runtime.get("motor_poll_hz", 0.0)) < 2.0:
+        raise RuntimeError("no-prop motor interlock requires motor_poll_hz >= 2")
     if parsed_cli is not None:
         _validate_rate_profile(rc, parsed_cli)
 

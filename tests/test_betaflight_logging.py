@@ -583,6 +583,11 @@ class BetaflightLoggingTest(unittest.TestCase):
                 "guidance_eval_frame": "inertial_ned",
                 "rate_gain_input_frame": "body_frd",
                 "msp_last_sent_channels": tuple(range(1000, 1016)),
+                "python_gc_collection_count": 4,
+                "python_gc_last_generation": 2,
+                "python_gc_last_pause_ms": 1.25,
+                "python_gc_max_pause_ms": 3.5,
+                "python_gc_total_pause_ms": 7.75,
             },
             detection=detection,
             result=result,
@@ -649,6 +654,8 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["rc_raw_ch3"], 900)
         self.assertEqual(row["rc_clipped_ch3"], 1)
         self.assertEqual(row["rc_slew_limited_ch3"], 1)
+        self.assertEqual(row["python_gc_collection_count"], 4)
+        self.assertEqual(row["python_gc_max_pause_ms"], "3.500000")
 
     def test_log_row_uses_empty_strings_for_missing_optional_data(self):
         intrinsics = CameraIntrinsics(500.0, 500.0, 320.0, 240.0, 640, 480)
@@ -707,6 +714,7 @@ class BetaflightLoggingTest(unittest.TestCase):
                 log_path=log_path,
                 fields=["timestamp", "mode_flags"],
                 fc_identity={"fc_variant": "BTFL"},
+                runtime_diagnostics={"python_gc_pause_monitor": True},
             )
 
             data = json.loads(path.read_text())
@@ -715,7 +723,8 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 12)
+            self.assertEqual(data["log_schema_version"], 13)
+            self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):
         legacy = {"camera": {"pitch_up_deg": 90.0}}
@@ -762,6 +771,22 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(events[1]["old"], 0)
             self.assertEqual(events[1]["new"], 1)
             self.assertEqual(events[1]["context"]["rc_sent"][2], 1000)
+
+    def test_python_gc_pause_monitor_records_incremental_pauses(self):
+        times = iter((1.0, 1.0125, 2.0, 2.003))
+        monitor = runner.PythonGcPauseMonitor(clock=lambda: next(times))
+
+        monitor._callback("start", {"generation": 2})
+        monitor._callback("stop", {"generation": 2})
+        monitor._callback("start", {"generation": 0})
+        monitor._callback("stop", {"generation": 0})
+        snapshot = monitor.snapshot()
+
+        self.assertEqual(snapshot["python_gc_collection_count"], 2)
+        self.assertEqual(snapshot["python_gc_last_generation"], 0)
+        self.assertAlmostEqual(snapshot["python_gc_last_pause_ms"], 3.0)
+        self.assertAlmostEqual(snapshot["python_gc_max_pause_ms"], 12.5)
+        self.assertAlmostEqual(snapshot["python_gc_total_pause_ms"], 15.5)
 
 
 if __name__ == "__main__":

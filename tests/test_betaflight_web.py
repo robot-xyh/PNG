@@ -56,6 +56,7 @@ class BetaflightWebTest(unittest.TestCase):
             "gatePhysicalRc",
             "gateTelemetry",
             "gateAttitude",
+            "gateMotor",
             "gateTracker",
             "gateLos",
             "gateTtc",
@@ -90,6 +91,8 @@ class BetaflightWebTest(unittest.TestCase):
             "targetSelectorReason",
             "guidanceLaw",
             "guidanceGain",
+            "gcState",
+            "runtimeLoopPeriod",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('["rc", "physical_us", 0]', dashboard)
@@ -183,6 +186,11 @@ class BetaflightWebTest(unittest.TestCase):
             "msp_last_publish_override_release_hold_active": "1",
             "msp_last_publish_command_active": "1",
             "msp_last_publish_command_reason": "active",
+            "motor_interlock_ok": "0",
+            "motor_interlock_reason": "motor_output_high",
+            "motor_interlock_latched": "1",
+            "motor_interlock_output_max_us": "1456",
+            "motor_interlock_output_spread_us": "400",
             "track_id": "7",
             "detection_score": "0.75",
             "detector_best_score": "0.22",
@@ -208,6 +216,11 @@ class BetaflightWebTest(unittest.TestCase):
             "rc_sent_ch1": "",
             "web_running": "1",
             "web_error_count": "0",
+            "python_gc_collection_count": "4",
+            "python_gc_last_generation": "2",
+            "python_gc_last_pause_ms": "1.25",
+            "python_gc_max_pause_ms": "3.5",
+            "python_gc_total_pause_ms": "7.75",
         }
 
         payload = telemetry_payload_from_log_row(row, channel_count=8)
@@ -226,6 +239,16 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["msp"]["motor_age_s"], 0.12)
         self.assertTrue(payload["msp"]["parser"]["override_release_hold_active"])
         self.assertTrue(payload["msp"]["last_publish_gates"]["command_active"])
+        self.assertEqual(
+            payload["safety"]["motor_interlock"],
+            {
+                "ok": False,
+                "reason": "motor_output_high",
+                "latched": True,
+                "output_max_us": 1456.0,
+                "output_spread_us": 400.0,
+            },
+        )
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
         self.assertEqual(payload["vision"]["detector_best_score"], 0.22)
         self.assertEqual(
@@ -252,6 +275,16 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(shaping["tilt_envelope"]["softcap_factor"], [0.5, 1.0])
         self.assertEqual(shaping["tilt_envelope"]["level_weight"], [0.0, 0.25])
         self.assertFalse(shaping["tilt_envelope"]["hardcap_active"])
+        self.assertEqual(
+            payload["host"]["python_gc"],
+            {
+                "collection_count": 4,
+                "last_generation": 2,
+                "last_pause_ms": 1.25,
+                "max_pause_ms": 3.5,
+                "total_pause_ms": 7.75,
+            },
+        )
         self.assertEqual(
             payload["vision"]["fusion"],
             {"status": None, "pending_count": None, "dropped_count": None, "wait_ms": None},

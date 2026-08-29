@@ -23,9 +23,12 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     meta_path = csv_path.with_name(f"{csv_path.stem}_meta.json")
     meta = _read_json(meta_path)
     config = dict(meta.get("config", {}))
+    bench = dict(config.get("bench_profile", {}))
     runtime = dict(config.get("msp_runtime", {}))
     mapping = dict(config.get("rc_mapping", {}))
     guidance_command = dict(config.get("guidance_command", {}))
+    safety = dict(config.get("safety", {}))
+    motor_interlock = dict(safety.get("motor_output_interlock", {}))
     tilt_config = dict(guidance_command.get("tilt_envelope", {}))
     web_config = dict(config.get("telemetry_web", {}))
     web_enabled = bool(web_config.get("enabled", False))
@@ -34,6 +37,36 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     valid_max_us = int(runtime.get("prefill_valid_max_us", 2100))
     throttle_channel = int(runtime.get("throttle_channel_zero_based", 2)) + 1
     throttle_max_us = int(mapping.get("throttle_max_us", 1100))
+    motor_channel_count = min(
+        8,
+        max(
+            1,
+            int(
+                motor_interlock.get(
+                    "channel_count",
+                    bench.get("motor_output_channel_count", 4),
+                )
+            ),
+        ),
+    )
+    motor_output_max_us = max(
+        1000,
+        int(
+            motor_interlock.get(
+                "max_output_us",
+                bench.get("max_armed_motor_output_us", throttle_max_us + 100),
+            )
+        ),
+    )
+    motor_spread_max_us = max(
+        0,
+        int(
+            motor_interlock.get(
+                "max_spread_us",
+                bench.get("max_armed_motor_spread_us", 150),
+            )
+        ),
+    )
     rate_limits = {
         "roll": float(mapping.get("roll_command_limit_deg_s", 3.0)),
         "pitch": float(mapping.get("pitch_command_limit_deg_s", 3.0)),
@@ -48,6 +81,9 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "valid_rc_min_us": valid_min_us,
         "valid_rc_max_us": valid_max_us,
         "algorithm_throttle_max_us": throttle_max_us,
+        "armed_motor_output_max_us": motor_output_max_us,
+        "armed_motor_spread_max_us": motor_spread_max_us,
+        "motor_output_channel_count": motor_channel_count,
         "rate_limits_deg_s": rate_limits,
         "tilt_envelope": {
             "enabled": bool(tilt_config.get("enabled", False)),
@@ -64,7 +100,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -80,6 +116,9 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     hardcap_flag_rows = []
     invalid_guidance_frame_rows = []
     missing_body_guidance_rows = []
+    armed_motor_output_rows: list[dict[str, str]] = []
+    armed_motor_spread_rows: list[dict[str, str]] = []
+    algorithm_motor_interlock_rows: list[dict[str, str]] = []
     rate_rows: dict[str, list[dict[str, str]]] = {axis: [] for axis in rate_limits}
     for row in rows:
         sent = [_number(row.get(f"rc_sent_ch{index}")) for index in range(1, 5)]
@@ -106,6 +145,24 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                     gate_rows.append(row)
             else:
                 legacy_algorithm_rows.append(row)
+            if schema_version is not None and schema_version >= 13 and (
+                _integer(row.get("motor_interlock_ok")) != 1
+                or _integer(row.get("motor_interlock_latched")) == 1
+            ):
+                algorithm_motor_interlock_rows.append(row)
+        motor_outputs = [
+            _number(row.get(f"motor_output_ch{index}"))
+            for index in range(1, motor_channel_count + 1)
+        ]
+        valid_motor_outputs = [value for value in motor_outputs if value is not None and value > 0.0]
+        motor_output_active = (
+            _integer(row.get("armed")) == 1 or row.get("msp_publish_mode") == "algorithm"
+        )
+        if motor_output_active and valid_motor_outputs:
+            if max(valid_motor_outputs) > motor_output_max_us:
+                armed_motor_output_rows.append(row)
+            if max(valid_motor_outputs) - min(valid_motor_outputs) > motor_spread_max_us:
+                armed_motor_spread_rows.append(row)
         if schema_version is not None and schema_version >= 4 and row.get("sp_source") == "guidance_hold":
             allowed_gap_reasons = {"perception_no_new_result"}
             if schema_version >= 6:
@@ -225,6 +282,28 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "tilt_hardcap_flag_missing", hardcap_flag_rows)
     _append_violation(violations, "invalid_guidance_command_frames", invalid_guidance_frame_rows)
     _append_violation(violations, "guidance_body_vector_missing", missing_body_guidance_rows)
+    _append_violation(
+        violations,
+        "algorithm_without_motor_interlock",
+        algorithm_motor_interlock_rows,
+    )
+    _append_threshold_violation(
+        violations,
+        "armed_motor_output_high",
+        armed_motor_output_rows,
+        observed=_maximum_abs(
+            armed_motor_output_rows,
+            tuple(f"motor_output_ch{index}" for index in range(1, motor_channel_count + 1)),
+        ),
+        limit=motor_output_max_us,
+    )
+    _append_threshold_violation(
+        violations,
+        "armed_motor_spread_high",
+        armed_motor_spread_rows,
+        observed=_maximum_motor_spread(armed_motor_spread_rows, motor_channel_count),
+        limit=motor_spread_max_us,
+    )
     for axis, failed_rows in rate_rows.items():
         _append_violation(violations, f"{axis}_rate_limit", failed_rows)
 
@@ -235,11 +314,21 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     )
     max_send_gap_s = _maximum(rows, max_send_gap_field)
     if max_send_gap_s is not None and max_send_gap_s > thresholds["max_send_gap_s"]:
+        first_gap_row = next(
+            (
+                row
+                for row in rows
+                if (_number(row.get(max_send_gap_field)) or 0.0) > thresholds["max_send_gap_s"]
+            ),
+            None,
+        )
         violations.append(
             {
                 "code": "set_raw_rc_gap",
                 "count": 1,
-                "first_elapsed_s": None,
+                "first_elapsed_s": (
+                    None if first_gap_row is None else _number(first_gap_row.get("elapsed_s"))
+                ),
                 "observed": max_send_gap_s,
                 "limit": thresholds["max_send_gap_s"],
             }
@@ -270,11 +359,22 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             )
         p999_gap_s = _maximum(rows, "msp_set_raw_rc_write_p999_interval_s")
         if p999_gap_s is not None and p999_gap_s > thresholds["p999_set_write_gap_s"]:
+            first_p999_row = next(
+                (
+                    row
+                    for row in rows
+                    if (_number(row.get("msp_set_raw_rc_write_p999_interval_s")) or 0.0)
+                    > thresholds["p999_set_write_gap_s"]
+                ),
+                None,
+            )
             violations.append(
                 {
                     "code": "set_raw_rc_write_p999_gap",
                     "count": 1,
-                    "first_elapsed_s": None,
+                    "first_elapsed_s": (
+                        None if first_p999_row is None else _number(first_p999_row.get("elapsed_s"))
+                    ),
                     "observed": p999_gap_s,
                     "limit": thresholds["p999_set_write_gap_s"],
                 }
@@ -381,6 +481,24 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             rows,
             tuple(f"motor_output_ch{index}" for index in range(1, 9)),
         ),
+        "max_armed_motor_output": _maximum_abs(
+            (
+                row
+                for row in rows
+                if _integer(row.get("armed")) == 1 or row.get("msp_publish_mode") == "algorithm"
+            ),
+            tuple(f"motor_output_ch{index}" for index in range(1, motor_channel_count + 1)),
+        ),
+        "max_armed_motor_spread": _maximum_motor_spread(
+            (
+                row
+                for row in rows
+                if _integer(row.get("armed")) == 1 or row.get("msp_publish_mode") == "algorithm"
+            ),
+            motor_channel_count,
+        ),
+        "max_loop_period_s": _maximum(rows, "loop_period_s"),
+        "max_python_gc_pause_ms": _maximum(rows, "python_gc_max_pause_ms"),
         "log_schema_version": schema_version,
         "web_enabled": web_enabled,
         "web_publish_count": web_publish_count,
@@ -414,6 +532,27 @@ def _append_violation(violations: list[dict[str, Any]], code: str, rows: list[di
         )
 
 
+def _append_threshold_violation(
+    violations: list[dict[str, Any]],
+    code: str,
+    rows: list[dict[str, str]],
+    *,
+    observed: float | None,
+    limit: float,
+) -> None:
+    if not rows:
+        return
+    violations.append(
+        {
+            "code": code,
+            "count": len(rows),
+            "first_elapsed_s": _number(rows[0].get("elapsed_s")),
+            "observed": observed,
+            "limit": limit,
+        }
+    )
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
@@ -445,6 +584,21 @@ def _maximum(rows: Iterable[dict[str, str]], field: str) -> float | None:
 def _maximum_abs(rows: Iterable[dict[str, str]], fields: Iterable[str]) -> float | None:
     values = [_number(row.get(field)) for row in rows for field in fields]
     return max((abs(value) for value in values if value is not None), default=None)
+
+
+def _maximum_motor_spread(rows: Iterable[dict[str, str]], channel_count: int) -> float | None:
+    maximum = None
+    for row in rows:
+        values = [
+            _number(row.get(f"motor_output_ch{index}"))
+            for index in range(1, int(channel_count) + 1)
+        ]
+        valid = [value for value in values if value is not None and value > 0.0]
+        if len(valid) < 2:
+            continue
+        spread = max(valid) - min(valid)
+        maximum = spread if maximum is None else max(maximum, spread)
+    return maximum
 
 
 def main() -> None:

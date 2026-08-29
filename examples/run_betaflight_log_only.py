@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import gc
 import hashlib
 import importlib
 import json
@@ -58,6 +59,8 @@ from vision_guidance.flight_control import (  # noqa: E402
     GuidanceCommandShapingDiagnostics,
     GuidanceSetpoint,
     GuidanceSetpointHold,
+    MotorOutputInterlock,
+    MotorOutputInterlockConfig,
     RcCommand,
     RcCommandMapper,
     RcMappingConfig,
@@ -85,7 +88,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 12
+LOG_SCHEMA_VERSION = 13
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -191,6 +194,75 @@ class EdgeEventLogger:
 
     def close(self) -> None:
         self._stream.close()
+
+
+class PythonGcPauseMonitor:
+    def __init__(self, *, clock=time.perf_counter):
+        self._clock = clock
+        self._lock = threading.RLock()
+        self._starts: dict[int, float] = {}
+        self._collection_count = 0
+        self._last_generation: int | None = None
+        self._last_pause_ms: float | None = None
+        self._max_pause_ms: float | None = None
+        self._total_pause_ms = 0.0
+        self._callback_ref = self._callback
+        self._registered = False
+
+    def start(self) -> None:
+        with self._lock:
+            if self._registered:
+                return
+            gc.callbacks.append(self._callback_ref)
+            self._registered = True
+
+    def close(self) -> None:
+        with self._lock:
+            if not self._registered:
+                return
+            try:
+                gc.callbacks.remove(self._callback_ref)
+            except ValueError:
+                pass
+            self._registered = False
+            self._starts.clear()
+
+    def snapshot(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "python_gc_collection_count": self._collection_count,
+                "python_gc_last_generation": (
+                    "" if self._last_generation is None else self._last_generation
+                ),
+                "python_gc_last_pause_ms": (
+                    "" if self._last_pause_ms is None else self._last_pause_ms
+                ),
+                "python_gc_max_pause_ms": "" if self._max_pause_ms is None else self._max_pause_ms,
+                "python_gc_total_pause_ms": self._total_pause_ms,
+            }
+
+    @staticmethod
+    def metadata() -> dict[str, Any]:
+        return {"python_gc_pause_monitor": True, "clock": "time.perf_counter"}
+
+    def _callback(self, phase: str, info: dict[str, Any]) -> None:
+        generation = int(info.get("generation", -1))
+        timestamp = float(self._clock())
+        with self._lock:
+            if phase == "start":
+                self._starts[generation] = timestamp
+                return
+            if phase != "stop":
+                return
+            started = self._starts.pop(generation, None)
+            if started is None:
+                return
+            pause_ms = 1000.0 * max(0.0, timestamp - started)
+            self._collection_count += 1
+            self._last_generation = generation
+            self._last_pause_ms = pause_ms
+            self._max_pause_ms = pause_ms if self._max_pause_ms is None else max(self._max_pause_ms, pause_ms)
+            self._total_pause_ms += pause_ms
 
 
 class DetectionCsvSource:
@@ -1031,6 +1103,19 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         )
     command_shaper = GuidanceCommandShaper(command_shaper_config)
     safety_cfg = dict(config.get("safety", {}))
+    motor_interlock_config = MotorOutputInterlockConfig.from_mapping(
+        dict(safety_cfg.get("motor_output_interlock", {}))
+    )
+    motor_interlock = MotorOutputInterlock(motor_interlock_config)
+    msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
+    bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
+    if control_output_requested and bench_scope == "noprop_bench":
+        if not motor_interlock_config.enabled or not motor_interlock_config.latch_until_disarm:
+            raise RuntimeError(
+                "noprop_bench control requires a latched safety.motor_output_interlock"
+            )
+        if msp_runtime_config.motor_poll_hz <= 0.0:
+            raise RuntimeError("noprop_bench motor interlock requires msp_runtime.motor_poll_hz")
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
@@ -1045,7 +1130,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         box_ids=box_ids,
         parameters_path=args.config,
     )
-    msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
     if args.control_mode == "msp_raw_rc" and args.allow_control and not msp_runtime_config.io_worker_enabled:
         raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
     if (
@@ -1087,6 +1171,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         if platform_health_hz <= 0.0
         else PlatformHealthSampler(sample_hz=platform_health_hz, log_directory=log_path.parent)
     )
+    gc_pause_monitor = PythonGcPauseMonitor()
     start = time.monotonic()
     _write_run_meta(
         meta_path,
@@ -1113,6 +1198,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         guidance=guidance_metadata,
         camera_calibration=camera_calibration,
         platform_health={} if platform_health is None else platform_health.metadata(),
+        runtime_diagnostics=gc_pause_monitor.metadata(),
         web_telemetry=web_service.metadata(),
     )
     frame_id = 0
@@ -1165,6 +1251,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     )
     if platform_health is not None:
         platform_health.start()
+    gc_pause_monitor.start()
     try:
         with log_path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
@@ -1277,6 +1364,33 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and physical_rc_age_s <= msp_runtime_config.physical_rc_timeout_s
                 )
                 armed = armed_from_telemetry(telemetry, box_ids)
+                motor_age_s = (
+                    worker_snapshot.motor_age_s
+                    if worker_snapshot is not None
+                    else None
+                    if telemetry is None or telemetry.motor_timestamp_s is None
+                    else max(0.0, loop_start - telemetry.motor_timestamp_s)
+                )
+                motor_interlock_state = motor_interlock.update(
+                    armed=armed,
+                    motor_outputs=None if telemetry is None else telemetry.motor_outputs,
+                    telemetry_age_s=motor_age_s,
+                )
+                detector_stats.update(
+                    motor_interlock_ok=int(motor_interlock_state.ok),
+                    motor_interlock_reason=motor_interlock_state.reason,
+                    motor_interlock_latched=int(motor_interlock_state.latched),
+                    motor_interlock_output_max_us=(
+                        ""
+                        if motor_interlock_state.output_max_us is None
+                        else motor_interlock_state.output_max_us
+                    ),
+                    motor_interlock_output_spread_us=(
+                        ""
+                        if motor_interlock_state.output_spread_us is None
+                        else motor_interlock_state.output_spread_us
+                    ),
+                )
                 override_available = MSP_OVERRIDE_PERMANENT_ID in box_ids
                 override_active = bool(
                     telemetry is not None
@@ -1309,6 +1423,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and physical_rc_fresh
                     and telemetry_fresh
                     and attitude_synced
+                    and motor_interlock_state.ok
                     and voltage_ok
                     and aux_enabled
                     and watchdog_ok
@@ -1348,6 +1463,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         aux_enabled=aux_enabled,
                         telemetry_fresh=telemetry_fresh,
                         attitude_synced=attitude_synced,
+                        motor_output_ok=motor_interlock_state.ok,
                         voltage_ok=voltage_ok,
                         watchdog_ok=watchdog_ok,
                         armed=armed,
@@ -1397,6 +1513,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 )
                 if platform_health is not None:
                     detector_stats.update(_platform_health_log_stats(platform_health.snapshot(), loop_start))
+                detector_stats.update(gc_pause_monitor.snapshot())
                 detector_stats.update(web_service.log_stats())
                 event_logger.update(
                     {
@@ -1412,6 +1529,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "track_id": None if detection is None else detection.track_id,
                         "telemetry_fresh": int(telemetry_fresh),
                         "attitude_synced": int(attitude_synced),
+                        "motor_interlock_ok": int(motor_interlock_state.ok),
+                        "motor_interlock_reason": motor_interlock_state.reason,
                         "physical_rc_fresh": int(physical_rc_fresh),
                         "watchdog_ok": int(watchdog_ok),
                         "msp_telemetry_error": telemetry_error,
@@ -1502,6 +1621,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         if platform_health is not None:
                             platform_health.close()
                     finally:
+                        gc_pause_monitor.close()
                         stopped_s = time.monotonic()
                         event_logger.write("run_stop", timestamp_s=stopped_s, new="normal_or_exception")
                         event_logger.close()
@@ -2163,6 +2283,7 @@ def _write_run_meta(
     guidance: dict[str, Any] | None = None,
     camera_calibration: dict[str, Any] | None = None,
     platform_health: dict[str, Any] | None = None,
+    runtime_diagnostics: dict[str, Any] | None = None,
     web_telemetry: dict[str, Any] | None = None,
 ) -> None:
     config_path = Path(str(getattr(args, "config", ""))).expanduser()
@@ -2198,6 +2319,7 @@ def _write_run_meta(
         "guidance": guidance or {},
         "camera_calibration": camera_calibration or {},
         "platform_health": platform_health or {},
+        "runtime_diagnostics": runtime_diagnostics or {},
         "web_telemetry": web_telemetry or {},
         "detector": detector_metadata or {},
     }
@@ -2351,6 +2473,11 @@ def _log_fields(channel_count: int) -> list[str]:
         "mag_raw_z",
         "motor_output_count",
         "motor_output_all",
+        "motor_interlock_ok",
+        "motor_interlock_reason",
+        "motor_interlock_latched",
+        "motor_interlock_output_max_us",
+        "motor_interlock_output_spread_us",
         "rc_in_count",
         "rc_in_all",
         "detector_source",
@@ -2499,6 +2626,11 @@ def _log_fields(channel_count: int) -> list[str]:
         "map_yaw_stick",
         "map_requested_thrust",
         "map_limited_thrust",
+        "python_gc_collection_count",
+        "python_gc_last_generation",
+        "python_gc_last_pause_ms",
+        "python_gc_max_pause_ms",
+        "python_gc_total_pause_ms",
         "host_sample_age_s",
         "host_load_1m",
         "host_process_rss_mb",
@@ -2773,6 +2905,15 @@ def _log_row(
         "mag_raw_z": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 2),
         "motor_output_count": len(motor_outputs),
         "motor_output_all": _channels_field(motor_outputs),
+        "motor_interlock_ok": detector_stats.get("motor_interlock_ok", ""),
+        "motor_interlock_reason": detector_stats.get("motor_interlock_reason", ""),
+        "motor_interlock_latched": detector_stats.get("motor_interlock_latched", ""),
+        "motor_interlock_output_max_us": _stats_float(
+            detector_stats, "motor_interlock_output_max_us", precision=3
+        ),
+        "motor_interlock_output_spread_us": _stats_float(
+            detector_stats, "motor_interlock_output_spread_us", precision=3
+        ),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),
         "detector_source": detector_stats.get("detector_source", ""),
@@ -2939,6 +3080,17 @@ def _log_row(
         "map_yaw_stick": _sequence_field(rc_command.stick_deflections, 2),
         "map_requested_thrust": "" if rc_command.requested_thrust is None else rc_command.requested_thrust,
         "map_limited_thrust": "" if rc_command.limited_thrust is None else rc_command.limited_thrust,
+        "python_gc_collection_count": detector_stats.get("python_gc_collection_count", ""),
+        "python_gc_last_generation": detector_stats.get("python_gc_last_generation", ""),
+        "python_gc_last_pause_ms": _stats_float(
+            detector_stats, "python_gc_last_pause_ms", precision=6
+        ),
+        "python_gc_max_pause_ms": _stats_float(
+            detector_stats, "python_gc_max_pause_ms", precision=6
+        ),
+        "python_gc_total_pause_ms": _stats_float(
+            detector_stats, "python_gc_total_pause_ms", precision=6
+        ),
         "host_sample_age_s": _stats_float(detector_stats, "host_sample_age_s", precision=6),
         "host_load_1m": _stats_float(detector_stats, "host_load_1m", precision=3),
         "host_process_rss_mb": _stats_float(detector_stats, "host_process_rss_mb", precision=3),
