@@ -6,6 +6,7 @@ from typing import Mapping, Protocol, Sequence
 
 import numpy as np
 
+from .geometry import validated_rotation_matrix
 from .types import GuidanceEval
 
 
@@ -887,6 +888,7 @@ class CommandWatchdog:
 def guidance_eval_to_setpoint(
     guidance: GuidanceEval | None,
     *,
+    R_IB: Sequence[Sequence[float]] | None,
     rate_gain_matrix: Sequence[Sequence[float]],
     hover_thrust: float,
     yaw_rate_deg_s: float = 0.0,
@@ -901,15 +903,30 @@ def guidance_eval_to_setpoint(
             source="guidance_eval",
         )
     gain = np.asarray(rate_gain_matrix, dtype=float)
-    vector = np.asarray(guidance.g_eval, dtype=float)
-    if gain.shape != (3, 3) or vector.shape != (3,) or not np.all(np.isfinite(gain)) or not np.all(np.isfinite(vector)):
+    if gain.shape != (3, 3) or not np.all(np.isfinite(gain)):
         return GuidanceSetpoint(
             timestamp=float(guidance.timestamp),
             valid=False,
             reject_reason="invalid_guidance_rate_mapping",
             source="guidance_eval",
         )
-    rates = gain @ vector
+    if R_IB is None:
+        return GuidanceSetpoint(
+            timestamp=float(guidance.timestamp),
+            valid=False,
+            reject_reason="guidance_attitude_missing",
+            source="guidance_eval",
+        )
+    try:
+        vector_body_frd = inertial_vector_to_body_frd(guidance.g_eval, R_IB)
+    except ValueError:
+        return GuidanceSetpoint(
+            timestamp=float(guidance.timestamp),
+            valid=False,
+            reject_reason="invalid_guidance_frame_transform",
+            source="guidance_eval",
+        )
+    rates = gain @ vector_body_frd
     return GuidanceSetpoint(
         timestamp=float(guidance.timestamp),
         roll_rate_deg_s=float(rates[0]),
@@ -919,6 +936,19 @@ def guidance_eval_to_setpoint(
         valid=True,
         source="guidance_eval",
     )
+
+
+def inertial_vector_to_body_frd(
+    vector_inertial_ned: Sequence[float],
+    R_IB: Sequence[Sequence[float]],
+) -> np.ndarray:
+    """Rotate an inertial NED vector into the Betaflight FRD body frame."""
+
+    vector = np.asarray(vector_inertial_ned, dtype=float)
+    if vector.shape != (3,) or not np.all(np.isfinite(vector)):
+        raise ValueError("inertial guidance vector must be finite with shape (3,)")
+    rotation = validated_rotation_matrix(np.asarray(R_IB, dtype=float), name="guidance R_IB")
+    return rotation.T @ vector
 
 
 def aux_range_enabled(channels: Sequence[int], *, channel_index: int, min_us: int, max_us: int) -> bool:

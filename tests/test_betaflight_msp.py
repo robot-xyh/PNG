@@ -286,6 +286,8 @@ class BetaflightMSPTest(unittest.TestCase):
 
         self.assertEqual([item.request_id for item in responses], [first, second])
         self.assertEqual(adapter.snapshot_stats().set_raw_rc_ack_count, 2)
+        self.assertIsNotNone(adapter.last_set_raw_rc_ack_monotonic_s())
+        self.assertIsNotNone(adapter.last_set_raw_rc_write_monotonic_s())
 
     def test_async_allows_only_one_outstanding_request_per_telemetry_command(self):
         transport = FakeTransport([])
@@ -298,6 +300,17 @@ class BetaflightMSPTest(unittest.TestCase):
         self.assertIsNotNone(first)
         self.assertIsNone(duplicate)
         self.assertEqual(len(transport.writes), 1)
+
+    def test_set_raw_rc_interval_percentiles_are_incremental_and_exact(self):
+        adapter = BetaflightMSPAdapter("/dev/null", transport=FakeTransport([]))
+        for timestamp in (1.0, 1.02, 1.05, 1.09):
+            adapter._record_set_raw_rc_write(timestamp)
+
+        stats = adapter.snapshot_stats()
+
+        self.assertAlmostEqual(stats.set_raw_rc_write_p50_interval_s, 0.03)
+        self.assertAlmostEqual(stats.set_raw_rc_write_p95_interval_s, 0.04)
+        self.assertAlmostEqual(stats.set_raw_rc_write_p999_interval_s, 0.04)
 
 
 if __name__ == "__main__":

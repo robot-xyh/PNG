@@ -9,7 +9,7 @@ import numpy as np
 from .attitude_buffer import AttitudeHistoryBuffer
 from .geometry import camera_ray_from_pixel, los_camera_to_inertial
 from .los_filter import LOSKalmanFilter6D
-from .png_eval import GuidanceEvaluator
+from .png_eval import FixedVmGuidanceEvaluator, GuidanceEvaluator
 from .ttc import ScaleExpansionTTC
 from .types import CameraIntrinsics, FrameDetection, GuidanceEval, LOSEstimate, TTCState
 
@@ -20,6 +20,7 @@ class VisionGuidanceResult:
     los: Optional[LOSEstimate]
     ttc: Optional[TTCState]
     guidance: GuidanceEval
+    R_IB: Optional[np.ndarray] = None
 
 
 @dataclass(frozen=True)
@@ -48,7 +49,7 @@ class PureVisionGuidancePipeline:
         attitude_buffer: AttitudeHistoryBuffer,
         los_filter: LOSKalmanFilter6D | None = None,
         ttc_filter: ScaleExpansionTTC | None = None,
-        evaluator: GuidanceEvaluator | None = None,
+        evaluator: GuidanceEvaluator | FixedVmGuidanceEvaluator | None = None,
     ):
         self.intrinsics = intrinsics
         self.R_BC = np.asarray(R_BC, dtype=float)
@@ -76,11 +77,17 @@ class PureVisionGuidancePipeline:
         los = self.los_filter.update(detection.exposure_ts, lambda_measured)
         ttc = self.ttc_filter.update(detection, self.intrinsics.width, self.intrinsics.height)
         guidance = self.evaluator.evaluate(los, ttc)
-        return VisionGuidanceResult(detection, los, ttc, guidance)
+        return VisionGuidanceResult(
+            detection,
+            los,
+            ttc,
+            guidance,
+            np.array(lookup.sample.R_IB, dtype=float, copy=True),
+        )
 
     def _reject(self, detection: FrameDetection, reason: str) -> VisionGuidanceResult:
         guidance = GuidanceEval(detection.exposure_ts, np.zeros(3), False, 0.0, reason)
-        return VisionGuidanceResult(detection, None, None, guidance)
+        return VisionGuidanceResult(detection, None, None, guidance, None)
 
 
 class DeferredAttitudeFusion:

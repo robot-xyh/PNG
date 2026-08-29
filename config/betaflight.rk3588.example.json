@@ -103,6 +103,7 @@
     "track_low_thresh": 0.1,
     "new_track_thresh": 0.25,
     "match_thresh": 0.8,
+    "low_match_thresh": 0.5,
     "fuse_score": false,
     "track_buffer": 30,
     "track_buffer_s": 0.5,
@@ -123,6 +124,10 @@
     "max_wait_s": 0.2,
     "max_pending": 8
   },
+  "guidance": {
+    "law": "ttc_png",
+    "max_guidance_accel_mps2": 10.0
+  },
   "rc_mapping": {
     "channel_map": "AETR1234",
     "channel_count": 8,
@@ -140,6 +145,8 @@
     "aux_values_us": {}
   },
   "guidance_command": {
+    "guidance_eval_frame": "inertial_ned",
+    "rate_gain_input_frame": "body_frd",
     "rate_gain_matrix": [
       [0.0, 0.0, 0.0],
       [0.0, 0.0, 0.0],

@@ -64,7 +64,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -78,6 +78,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     invalid_algorithm_shaping_rows = []
     hardcap_not_leveling_rows = []
     hardcap_flag_rows = []
+    invalid_guidance_frame_rows = []
+    missing_body_guidance_rows = []
     rate_rows: dict[str, list[dict[str, str]]] = {axis: [] for axis in rate_limits}
     for row in rows:
         sent = [_number(row.get(f"rc_sent_ch{index}")) for index in range(1, 5)]
@@ -170,6 +172,21 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                         hardcap_flag_rows.append(row)
             if shaping_nonfinite:
                 shaping_nonfinite_rows.append(row)
+        if schema_version is not None and schema_version >= 11:
+            if (
+                row.get("guidance_eval_frame") != "inertial_ned"
+                or row.get("rate_gain_input_frame") != "body_frd"
+            ):
+                invalid_guidance_frame_rows.append(row)
+            if _integer(row.get("guidance_valid")) == 1 and any(
+                _number(row.get(field)) is None
+                for field in (
+                    "g_eval_body_frd_x",
+                    "g_eval_body_frd_y",
+                    "g_eval_body_frd_z",
+                )
+            ):
+                missing_body_guidance_rows.append(row)
 
     _append_violation(violations, "invalid_sent_rc", invalid_rc_rows)
     _append_violation(violations, "sent_885_us", exact_885_rows)
@@ -182,6 +199,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "algorithm_with_invalid_command_shaping", invalid_algorithm_shaping_rows)
     _append_violation(violations, "tilt_hardcap_not_leveling", hardcap_not_leveling_rows)
     _append_violation(violations, "tilt_hardcap_flag_missing", hardcap_flag_rows)
+    _append_violation(violations, "invalid_guidance_command_frames", invalid_guidance_frame_rows)
+    _append_violation(violations, "guidance_body_vector_missing", missing_body_guidance_rows)
     for axis, failed_rows in rate_rows.items():
         _append_violation(violations, f"{axis}_rate_limit", failed_rows)
 

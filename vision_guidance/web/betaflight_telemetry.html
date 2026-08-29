@@ -221,8 +221,13 @@
           <div class="metric"><label>VBAT</label><output id="vbat">--</output></div>
           <div class="metric"><label>Track</label><output id="trackId">--</output></div>
           <div class="metric"><label>Score</label><output id="score">--</output></div>
+          <div class="metric"><label>Guidance law</label><output id="guidanceLaw">--</output></div>
+          <div class="metric"><label>N * Vm</label><output id="guidanceGain">--</output></div>
           <div class="metric"><label>TTC</label><output id="ttc">--</output></div>
           <div class="metric"><label>Guidance</label><output id="guidance">--</output></div>
+          <div class="metric"><label>g I / NED</label><output id="guidanceInertial">--</output></div>
+          <div class="metric"><label>g B / FRD</label><output id="guidanceBody">--</output></div>
+          <div class="metric"><label>Rate input frame</label><output id="rateInputFrame">--</output></div>
           <div class="metric"><label>RKNN</label><output id="rknn">--</output></div>
           <div class="metric"><label>Tracker</label><output id="trackerFps">--</output></div>
           <div class="metric"><label>MSP age</label><output id="mspAge">--</output></div>
@@ -381,8 +386,13 @@
       setGate("gateTracker", vision.tracker_confirmed, trackerLabel, "NO TRACK");
       setGate("gateLos", guidance.los_valid, "VALID", "INVALID");
       $("gateLos").title = text(guidance.los_reason);
-      setGate("gateTtc", guidance.ttc_valid, number(guidance.ttc_s, 2, " s"), "INVALID");
-      $("gateTtc").title = text(guidance.ttc_reason);
+      if (guidance.ttc_required === false || guidance.law === "fixed_vm_png") {
+        setGate("gateTtc", true, "BYPASS", "BYPASS");
+        $("gateTtc").title = "Fixed-VM PNG does not use TTC";
+      } else {
+        setGate("gateTtc", guidance.ttc_valid, number(guidance.ttc_s, 2, " s"), "INVALID");
+        $("gateTtc").title = text(guidance.ttc_reason);
+      }
       setGate("gateWatchdog", safety.watchdog_ok, "FRESH", "EXPIRED", "fail");
       setGate("gateGuidance", guidance.valid, "VALID", "INVALID");
       $("gateGuidance").title = text(guidance.reason);
@@ -460,8 +470,15 @@
       const trackId = text(path(data, ["vision", "track_id"]));
       setMetric("trackId", trackerHeld ? `${trackId} held` : trackId);
       setMetric("score", number(path(data, ["vision", "score"]), 2));
-      setMetric("ttc", number(path(data, ["guidance", "ttc_s"]), 2, " s"));
+      const guidanceLaw = path(data, ["guidance", "law"]);
+      const fixedVm = guidanceLaw === "fixed_vm_png";
+      setMetric("guidanceLaw", text(guidanceLaw));
+      setMetric("guidanceGain", number(path(data, ["guidance", "fixed_gain"]), 2));
+      setMetric("ttc", fixedVm ? "BYPASS" : number(path(data, ["guidance", "ttc_s"]), 2, " s"));
       setMetric("guidance", boolText(path(data, ["guidance", "valid"]), "VALID", "INVALID"));
+      setMetric("guidanceInertial", formatVector(path(data, ["guidance", "g_eval"]), 3));
+      setMetric("guidanceBody", formatVector(path(data, ["guidance", "g_eval_body_frd"]), 3));
+      setMetric("rateInputFrame", text(path(data, ["guidance", "rate_gain_input_frame"])));
       setMetric("rknn", number(path(data, ["vision", "rknn_ms", "total"]), 1, " ms"));
       setMetric("trackerFps", number(path(data, ["vision", "tracker_fps"]), 1, " fps"));
       setMetric("bestCandidateScore", number(path(data, ["vision", "detector_best_score"]), 3));

@@ -2,6 +2,7 @@ import importlib.util
 import json
 import queue
 import tempfile
+import threading
 import time
 import unittest
 from pathlib import Path
@@ -77,6 +78,9 @@ class _FakeCv2:
     CAP_PROP_FOURCC = 4
     CAP_PROP_BUFFERSIZE = 5
     INTER_LINEAR = 6
+    IMWRITE_JPEG_QUALITY = 7
+    FONT_HERSHEY_SIMPLEX = 8
+    LINE_AA = 9
 
     @staticmethod
     def VideoWriter_fourcc(*characters):
@@ -93,14 +97,62 @@ class _FakeCv2:
         del matrix, distortion, new_matrix
         return image
 
+    @staticmethod
+    def rectangle(*_args, **_kwargs):
+        return None
+
+    @staticmethod
+    def putText(*_args, **_kwargs):
+        return None
+
+    @staticmethod
+    def imencode(_extension, _image, _params):
+        return True, np.asarray([0xFF, 0xD8, 0xFF, 0xD9], dtype=np.uint8)
+
 
 class BetaflightLoggingTest(unittest.TestCase):
+    def test_cpu_affinity_parser_accepts_ranges_and_rejects_overlap(self):
+        self.assertEqual(runner._parse_cpu_affinity("4-5,7"), (4, 5, 7))
+        self.assertEqual(runner._parse_cpu_affinity(""), ())
+        with self.assertRaisesRegex(ValueError, "invalid CPU affinity range"):
+            runner._parse_cpu_affinity("5-4")
+        with self.assertRaisesRegex(ValueError, "overlap"):
+            runner._validate_cpu_affinity_plan((6, 7), (4, 7), isolate_rknn_process=True)
+        with self.assertRaisesRegex(ValueError, "requires --isolate-rknn-process"):
+            runner._validate_cpu_affinity_plan((6, 7), (4, 5), isolate_rknn_process=False)
+
     def test_latest_queue_replaces_stale_perception_result(self):
         channel = queue.Queue(maxsize=1)
         self.assertFalse(runner._queue_replace(channel, "first"))
         self.assertTrue(runner._queue_replace(channel, "second"))
         self.assertEqual(runner._queue_latest(channel), "second")
         self.assertIsNone(runner._queue_latest(channel))
+
+    def test_isolated_preview_encoder_is_demand_driven_and_latest_only(self):
+        channel = queue.Queue(maxsize=1)
+        requested = threading.Event()
+        encoder = runner._IsolatedPreviewEncoder(
+            channel,
+            requested,
+            max_fps=10.0,
+            jpeg_quality=70,
+            cv2_module=_FakeCv2,
+        )
+        image = np.zeros((20, 20, 3), dtype=np.uint8)
+
+        encoder.offer_preview(image, {"bbox_xyxy": [1, 2, 10, 12]})
+        self.assertIsNone(runner._queue_latest(channel))
+
+        requested.set()
+        encoder.offer_preview(
+            image,
+            {"bbox_xyxy": [1, 2, 10, 12], "track_id": 4, "score": 0.75},
+        )
+        self.assertEqual(runner._queue_latest(channel), b"\xff\xd8\xff\xd9")
+        encoder.offer_preview(image)
+        self.assertIsNone(runner._queue_latest(channel))
+        self.assertEqual(encoder.stats()["perception_preview_encode_count"], 1)
+        self.assertEqual(encoder.stats()["perception_preview_error_count"], 0)
 
     def test_camera_only_source_configures_resizes_and_logs_frame(self):
         image = np.zeros((1024, 1280, 3), dtype=np.uint8)
@@ -332,6 +384,69 @@ class BetaflightLoggingTest(unittest.TestCase):
 
         runner._validate_yolo_runtime(config, "rknn")
 
+    def test_guidance_evaluator_defaults_to_ttc_and_builds_fixed_vm(self):
+        evaluator, metadata = runner._guidance_evaluator({})
+        self.assertEqual(type(evaluator).__name__, "GuidanceEvaluator")
+        self.assertEqual(metadata["law"], "ttc_png")
+        self.assertTrue(metadata["ttc_required"])
+
+        evaluator, metadata = runner._guidance_evaluator(
+            {
+                "guidance": {
+                    "law": "fixed_vm_png",
+                    "navigation_constant": 3.0,
+                    "fixed_vm_m_s": 1.5,
+                    "max_guidance_accel_mps2": 1.0,
+                }
+            }
+        )
+        self.assertEqual(type(evaluator).__name__, "FixedVmGuidanceEvaluator")
+        self.assertEqual(metadata["fixed_gain"], 4.5)
+        self.assertFalse(metadata["ttc_required"])
+
+    def test_guidance_evaluator_rejects_unknown_or_incomplete_vm_config(self):
+        with self.assertRaisesRegex(RuntimeError, "unsupported guidance.law"):
+            runner._guidance_evaluator({"guidance": {"law": "vm"}})
+        with self.assertRaisesRegex(RuntimeError, "guidance.fixed_vm_m_s is required"):
+            runner._guidance_evaluator(
+                {"guidance": {"law": "fixed_vm_png", "navigation_constant": 3.0}}
+            )
+        with self.assertRaisesRegex(RuntimeError, "finite and positive"):
+            runner._guidance_evaluator(
+                {
+                    "guidance": {
+                        "law": "fixed_vm_png",
+                        "navigation_constant": 3.0,
+                        "fixed_vm_m_s": 1.0,
+                        "max_guidance_accel_mps2": 0.0,
+                    }
+                }
+            )
+
+    def test_guidance_command_frames_are_explicit_and_body_frd(self):
+        metadata = runner._guidance_command_frame_metadata(
+            {
+                "guidance_command": {
+                    "guidance_eval_frame": "inertial_ned",
+                    "rate_gain_input_frame": "body_frd",
+                }
+            }
+        )
+        self.assertEqual(metadata["guidance_eval_frame"], "inertial_ned")
+        self.assertEqual(metadata["rate_gain_input_frame"], "body_frd")
+
+        with self.assertRaisesRegex(RuntimeError, "guidance_eval_frame"):
+            runner._guidance_command_frame_metadata({"guidance_command": {}})
+        with self.assertRaisesRegex(RuntimeError, "rate_gain_input_frame"):
+            runner._guidance_command_frame_metadata(
+                {
+                    "guidance_command": {
+                        "guidance_eval_frame": "inertial_ned",
+                        "rate_gain_input_frame": "inertial_ned",
+                    }
+                }
+            )
+
     def test_log_row_includes_expanded_telemetry_guidance_and_rc_fields(self):
         intrinsics = CameraIntrinsics(500.0, 500.0, 320.0, 240.0, 640, 480)
         detection = FrameDetection(
@@ -364,7 +479,13 @@ class BetaflightLoggingTest(unittest.TestCase):
             valid=True,
             quality=0.7,
         )
-        result = VisionGuidanceResult(detection=detection, los=los, ttc=ttc, guidance=guidance)
+        result = VisionGuidanceResult(
+            detection=detection,
+            los=los,
+            ttc=ttc,
+            guidance=guidance,
+            R_IB=np.eye(3),
+        )
         telemetry = BetaflightTelemetry(
             timestamp=10.0,
             status=StatusTelemetry(cycle_time_us=1000, i2c_error_count=1, sensor_flags=3, mode_flags=5, profile=2),
@@ -452,6 +573,14 @@ class BetaflightLoggingTest(unittest.TestCase):
                 "rknn_inference_ms": 4.0,
                 "rknn_postprocess_ms": 0.5,
                 "rknn_total_ms": 5.5,
+                "guidance_law": "fixed_vm_png",
+                "guidance_navigation_constant": 3.0,
+                "guidance_fixed_vm_m_s": 1.5,
+                "guidance_fixed_gain": 4.5,
+                "guidance_max_accel_mps2": 1.0,
+                "guidance_ttc_required": 0,
+                "guidance_eval_frame": "inertial_ned",
+                "rate_gain_input_frame": "body_frd",
                 "msp_last_sent_channels": tuple(range(1000, 1016)),
             },
             detection=detection,
@@ -475,6 +604,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             allow_control=True,
             intrinsics=intrinsics,
             channel_count=8,
+            guidance_body_frd=np.array([0.1, 0.2, 0.3]),
         )
 
         fields = runner._log_fields(8)
@@ -500,6 +630,12 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["los_valid"], 1)
         self.assertEqual(row["lambda_dot_I_y"], "0.100000000")
         self.assertEqual(row["ttc_s"], "2.500000000")
+        self.assertEqual(row["guidance_law"], "fixed_vm_png")
+        self.assertEqual(row["guidance_fixed_gain"], "4.500000")
+        self.assertEqual(row["guidance_ttc_required"], 0)
+        self.assertEqual(row["guidance_eval_frame"], "inertial_ned")
+        self.assertEqual(row["rate_gain_input_frame"], "body_frd")
+        self.assertEqual(row["g_eval_body_frd_y"], "0.200000000")
         self.assertEqual(row["sp_source"], "guidance_eval")
         self.assertEqual(row["pre_shape_sp_roll_rate_deg_s"], "4.000000")
         self.assertEqual(row["sp_roll_rate_deg_s"], "1.000000")
@@ -576,7 +712,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 9)
+            self.assertEqual(data["log_schema_version"], 11)
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):
         legacy = {"camera": {"pitch_up_deg": 90.0}}

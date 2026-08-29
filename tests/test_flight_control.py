@@ -17,6 +17,7 @@ from vision_guidance.flight_control import (
     TiltEnvelopeConfig,
     aux_range_enabled,
     guidance_eval_to_setpoint,
+    inertial_vector_to_body_frd,
 )
 from vision_guidance.types import GuidanceEval
 
@@ -520,6 +521,7 @@ class FlightControlTest(unittest.TestCase):
 
         setpoint = guidance_eval_to_setpoint(
             guidance,
+            R_IB=np.eye(3),
             rate_gain_matrix=[[10.0, 0.0, 0.0], [0.0, -5.0, 0.0], [0.0, 0.0, 2.0]],
             hover_thrust=0.55,
         )
@@ -529,6 +531,60 @@ class FlightControlTest(unittest.TestCase):
         self.assertEqual(setpoint.pitch_rate_deg_s, -10.0)
         self.assertEqual(setpoint.yaw_rate_deg_s, 6.0)
         self.assertEqual(setpoint.thrust, 0.55)
+
+    def test_guidance_eval_to_setpoint_rotates_inertial_vector_into_body_frd(self):
+        guidance = GuidanceEval(
+            timestamp=2.0,
+            g_eval=np.array([1.0, 0.0, 0.0]),
+            valid=True,
+            quality=1.0,
+        )
+        yaw_right_90_R_IB = np.array(
+            [
+                [0.0, -1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+            ]
+        )
+
+        body = inertial_vector_to_body_frd(guidance.g_eval, yaw_right_90_R_IB)
+        setpoint = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=yaw_right_90_R_IB,
+            rate_gain_matrix=[[0.0, 1.0, 0.0], [1.0, 0.0, 0.0], [0.0, 0.0, 0.0]],
+            hover_thrust=0.5,
+        )
+
+        self.assertTrue(np.allclose(body, np.array([0.0, -1.0, 0.0]), atol=1e-9))
+        self.assertAlmostEqual(setpoint.roll_rate_deg_s, -1.0)
+        self.assertAlmostEqual(setpoint.pitch_rate_deg_s, 0.0)
+
+    def test_guidance_eval_to_setpoint_rejects_missing_or_invalid_attitude(self):
+        guidance = GuidanceEval(
+            timestamp=2.0,
+            g_eval=np.array([1.0, 0.0, 0.0]),
+            valid=True,
+            quality=1.0,
+        )
+        matrix = np.eye(3)
+
+        missing = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=None,
+            rate_gain_matrix=matrix,
+            hover_thrust=0.5,
+        )
+        invalid = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=np.zeros((3, 3)),
+            rate_gain_matrix=matrix,
+            hover_thrust=0.5,
+        )
+
+        self.assertFalse(missing.valid)
+        self.assertEqual(missing.reject_reason, "guidance_attitude_missing")
+        self.assertFalse(invalid.valid)
+        self.assertEqual(invalid.reject_reason, "invalid_guidance_frame_transform")
 
     def test_aux_range_enabled_uses_one_based_channel_index(self):
         self.assertTrue(aux_range_enabled((1500, 1500, 1500, 1500, 1800), channel_index=5, min_us=1700, max_us=2100))

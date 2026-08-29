@@ -71,6 +71,32 @@ class ByteTrackAdapterTest(unittest.TestCase):
         self.assertEqual(low.stats["bbox_measurement_source"], "none")
         self.assertEqual(high.selected.track_id, track_id)
 
+    def test_low_match_threshold_can_retain_fast_low_score_detection(self):
+        baseline = self.make_tracker(
+            fuse_score=False,
+            track_low_thresh=0.05,
+            final_min_score=0.05,
+            low_match_thresh=0.5,
+        )
+        permissive = self.make_tracker(
+            fuse_score=False,
+            track_low_thresh=0.05,
+            final_min_score=0.05,
+            low_match_thresh=0.8,
+        )
+        for frame in range(3):
+            baseline.update([_detection(10.0 + frame)], timestamp=frame * 0.2)
+            permissive_locked = permissive.update([_detection(10.0 + frame)], timestamp=frame * 0.2)
+
+        baseline_low = baseline.update([_detection(24.0, score=0.08)], timestamp=0.6)
+        permissive_low = permissive.update([_detection(24.0, score=0.08)], timestamp=0.6)
+
+        self.assertIsNone(baseline_low.selected)
+        self.assertEqual(baseline_low.stats["tracker_state"], "lost")
+        self.assertIsNotNone(permissive_low.selected)
+        self.assertEqual(permissive_low.selected.track_id, permissive_locked.selected.track_id)
+        self.assertEqual(permissive_low.stats["tracker_association_stage"], "low")
+
     def test_does_not_switch_to_other_track_while_active_track_is_lost(self):
         tracker = self.make_tracker(track_buffer_s=1.0)
         for frame in range(3):
@@ -87,6 +113,9 @@ class ByteTrackAdapterTest(unittest.TestCase):
     def test_rejects_invalid_threshold_order(self):
         with self.assertRaisesRegex(ValueError, "low < high"):
             ByteTrackAdapter(ByteTrackConfig(track_low_thresh=0.3, track_high_thresh=0.25))
+
+        with self.assertRaisesRegex(ValueError, "low_match_thresh"):
+            ByteTrackAdapter(ByteTrackConfig(low_match_thresh=0.0))
 
 
 if __name__ == "__main__":

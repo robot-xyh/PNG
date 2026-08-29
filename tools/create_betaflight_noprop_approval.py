@@ -27,6 +27,9 @@ MIN_ENTRY_HANDOFF_DURATION_S = 0.8
 MAX_ENTRY_GYRO_AGE_S = 0.25
 MAX_NOPROP_TILT_ANGLE_DEG = 35.0
 MAX_NOPROP_HARDCAP_MARGIN_DEG = 5.0
+MAX_NOPROP_GUIDANCE_ACCEL_MPS2 = 1.0
+GUIDANCE_EVAL_FRAME = "inertial_ned"
+RATE_GAIN_INPUT_FRAME = "body_frd"
 
 
 def parse_args() -> argparse.Namespace:
@@ -55,6 +58,8 @@ def main() -> None:
         expected_override_mode_cli_id=override_mode_cli_id,
     )
     camera_extrinsic = _validate_noprop_config(config, output_path, parsed_cli=parsed_cli)
+    guidance = _validate_guidance_config(config)
+    guidance_command_frames = _validate_guidance_command_frames(config)
 
     approval = {
         "schema_version": 1,
@@ -80,8 +85,11 @@ def main() -> None:
             "entry_handoff_max_gyro_age_s": MAX_ENTRY_GYRO_AGE_S,
             "max_tilt_angle_deg": MAX_NOPROP_TILT_ANGLE_DEG,
             "max_hardcap_level_rate_deg_s": MAX_NOPROP_RATE_DEG_S,
+            "max_guidance_accel_mps2": MAX_NOPROP_GUIDANCE_ACCEL_MPS2,
         },
         "camera_extrinsic": camera_extrinsic,
+        "guidance": guidance,
+        "guidance_command_frames": guidance_command_frames,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(approval, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -205,7 +213,10 @@ def _validate_noprop_config(
     if parsed_cli is not None:
         _validate_rate_profile(rc, parsed_cli)
 
+    _validate_guidance_config(config)
+
     guidance_command = dict(config.get("guidance_command", {}))
+    _validate_guidance_command_frames(config)
     entry = dict(guidance_command.get("entry_handoff", {}))
     if entry.get("enabled") is not True:
         raise RuntimeError("no-prop entry_handoff must be enabled")
@@ -248,6 +259,72 @@ def _validate_noprop_config(
     if int(aux.get("channel_index", 0)) != 7 or int(aux.get("min_us", 0)) != 1700:
         raise RuntimeError("no-prop takeover gate must use RC7/AUX3 high")
     return camera_extrinsic
+
+
+def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
+    values = dict(config.get("guidance", {}))
+    if "law" not in values:
+        raise RuntimeError("guidance.law must be explicitly configured for no-prop approval")
+    law = str(values["law"]).strip().lower()
+    if law not in {"ttc_png", "fixed_vm_png"}:
+        raise RuntimeError(
+            f"unsupported guidance.law={law!r}; expected 'ttc_png' or 'fixed_vm_png'"
+        )
+    max_accel = _positive_guidance_float(values, "max_guidance_accel_mps2")
+    if max_accel > MAX_NOPROP_GUIDANCE_ACCEL_MPS2:
+        raise RuntimeError(
+            "guidance.max_guidance_accel_mps2 exceeds no-prop limit "
+            f"{MAX_NOPROP_GUIDANCE_ACCEL_MPS2}"
+        )
+
+    metadata = {
+        "law": law,
+        "navigation_constant": None,
+        "fixed_vm_m_s": None,
+        "fixed_gain": None,
+        "max_guidance_accel_mps2": max_accel,
+        "ttc_required": law == "ttc_png",
+    }
+    if law == "fixed_vm_png":
+        navigation_constant = _positive_guidance_float(values, "navigation_constant")
+        fixed_vm_m_s = _positive_guidance_float(values, "fixed_vm_m_s")
+        fixed_gain = navigation_constant * fixed_vm_m_s
+        if not math.isfinite(fixed_gain):
+            raise RuntimeError("guidance navigation_constant * fixed_vm_m_s must be finite")
+        metadata.update(
+            navigation_constant=navigation_constant,
+            fixed_vm_m_s=fixed_vm_m_s,
+            fixed_gain=fixed_gain,
+        )
+    return metadata
+
+
+def _validate_guidance_command_frames(config: dict[str, Any]) -> dict[str, str]:
+    values = dict(config.get("guidance_command", {}))
+    guidance_eval_frame = str(values.get("guidance_eval_frame", "")).strip().lower()
+    rate_gain_input_frame = str(values.get("rate_gain_input_frame", "")).strip().lower()
+    if guidance_eval_frame != GUIDANCE_EVAL_FRAME:
+        raise RuntimeError(
+            f"guidance_command.guidance_eval_frame must be {GUIDANCE_EVAL_FRAME!r}"
+        )
+    if rate_gain_input_frame != RATE_GAIN_INPUT_FRAME:
+        raise RuntimeError(
+            f"guidance_command.rate_gain_input_frame must be {RATE_GAIN_INPUT_FRAME!r}"
+        )
+    return {
+        "guidance_eval_frame": guidance_eval_frame,
+        "rate_gain_input_frame": rate_gain_input_frame,
+    }
+
+
+def _positive_guidance_float(values: dict[str, Any], key: str) -> float:
+    try:
+        value = float(values[key])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"guidance.{key} must be a finite positive number") from exc
+    if not math.isfinite(value) or value <= 0.0:
+        raise RuntimeError(f"guidance.{key} must be a finite positive number")
+    return value
 
 
 def _validate_camera_extrinsic(config: dict[str, Any]) -> dict[str, Any]:

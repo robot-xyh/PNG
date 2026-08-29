@@ -658,10 +658,13 @@ class BetaflightMspIoWorker:
                     self.adapter.drain_async_responses(self.config.response_drain_budget_ms)
                 )
                 completed = time.monotonic()
-                if completed > next_publish + publish_period:
-                    next_publish = completed + publish_period
-                else:
-                    next_publish += publish_period
+                periods = max(1, int((completed - next_publish) / publish_period) + 1)
+                next_publish += periods * publish_period
+                with self._lock:
+                    last_send_success_s = self._last_send_success_s
+                if last_send_success_s is not None:
+                    minimum_spacing_s = 0.8 * publish_period
+                    next_publish = max(next_publish, last_send_success_s + minimum_spacing_s)
         except Exception as exc:
             with self._lock:
                 self._worker_error = str(exc)
@@ -918,11 +921,11 @@ class BetaflightMspIoWorker:
                 or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
             )
             prefill_ready = self._prefill_ready()
-        adapter_stats = self.adapter.snapshot_stats()
+        last_ack_s = self.adapter.last_set_raw_rc_ack_monotonic_s()
         ack_age = (
             None
-            if adapter_stats.set_raw_rc_last_ack_monotonic_s is None
-            else max(0.0, now - adapter_stats.set_raw_rc_last_ack_monotonic_s)
+            if last_ack_s is None
+            else max(0.0, now - last_ack_s)
         )
         ack_fresh = self.config.transport_mode != "async_pipeline" or (
             ack_age is not None and ack_age <= self.config.response_stale_s
@@ -1028,12 +1031,10 @@ class BetaflightMspIoWorker:
             else:
                 self.adapter.send_raw_rc(tuple(channels))
             sent_s = now
-            write_stats = self.adapter.snapshot_stats()
-            if (
-                self.config.transport_mode == "async_pipeline"
-                and write_stats.set_raw_rc_last_write_monotonic_s is not None
-            ):
-                sent_s = write_stats.set_raw_rc_last_write_monotonic_s
+            if self.config.transport_mode == "async_pipeline":
+                last_write_s = self.adapter.last_set_raw_rc_write_monotonic_s()
+                if last_write_s is not None:
+                    sent_s = last_write_s
             with self._lock:
                 if self._last_send_success_s is not None:
                     send_interval_s = max(0.0, sent_s - self._last_send_success_s)

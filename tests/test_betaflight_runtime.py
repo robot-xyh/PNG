@@ -74,6 +74,12 @@ class _Adapter:
     def snapshot_stats(self):
         return MspAdapterStats(set_raw_rc_attempt_count=len(self.sent), set_raw_rc_success_count=len(self.sent))
 
+    def last_set_raw_rc_ack_monotonic_s(self):
+        return None
+
+    def last_set_raw_rc_write_monotonic_s(self):
+        return None
+
 
 class _AsyncTransport:
     def __init__(self, *, first_set_delay_s=0.0):
@@ -600,6 +606,29 @@ class BetaflightRuntimeTest(unittest.TestCase):
         ]
         self.assertGreaterEqual(len(set_times), 3)
         self.assertGreaterEqual(min(b - a for a, b in zip(set_times, set_times[1:])), 0.015)
+
+    def test_publish_hot_path_does_not_build_full_adapter_statistics(self):
+        class HotPathAdapter(_Adapter):
+            def __init__(self):
+                super().__init__()
+                self.snapshot_stats_calls = 0
+
+            def snapshot_stats(self):
+                self.snapshot_stats_calls += 1
+                return super().snapshot_stats()
+
+        adapter = HotPathAdapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(prefill_enabled=True, shutdown_passthrough_frames=0),
+        )
+        worker._poll(1.0)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+
+        worker._publish(1.01)
+
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
+        self.assertEqual(adapter.snapshot_stats_calls, 0)
 
 
 if __name__ == "__main__":

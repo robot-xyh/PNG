@@ -32,6 +32,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertTrue(result["passed"])
             self.assertEqual(result["violations"], [])
             self.assertEqual(result["metrics"]["algorithm_rows"], 1)
+            self.assertNotIn("unsupported_log_schema_version:10", result["warnings"])
 
     def test_unsafe_noprop_log_reports_envelope_and_transport_failures(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -172,6 +173,24 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertIn("command_shaping_nonfinite", codes)
             self.assertIn("algorithm_with_invalid_command_shaping", codes)
 
+    def test_schema_v11_requires_explicit_frames_and_body_guidance_vector(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                guidance_eval_frame="inertial_ned",
+                rate_gain_input_frame="inertial_ned",
+                guidance_valid="1",
+                g_eval_body_frd_x="",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=11)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertNotIn("unsupported_log_schema_version:11", result["warnings"])
+            self.assertIn("invalid_guidance_command_frames", codes)
+            self.assertIn("guidance_body_vector_missing", codes)
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
@@ -248,10 +267,16 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "gyro_roll_deg_s": "",
             "gyro_pitch_deg_s": "",
             "gyro_yaw_deg_s": "",
+            "guidance_eval_frame": "inertial_ned",
+            "rate_gain_input_frame": "body_frd",
+            "guidance_valid": "1",
+            "g_eval_body_frd_x": "0.1",
+            "g_eval_body_frd_y": "0.2",
+            "g_eval_body_frd_z": "0.3",
         }
 
     @staticmethod
-    def _write_log(directory: Path, row, *, web_enabled=False, schema_version=9):
+    def _write_log(directory: Path, row, *, web_enabled=False, schema_version=10):
         csv_path = directory / "bench.csv"
         with csv_path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=list(row))

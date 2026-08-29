@@ -24,6 +24,7 @@ class PipelineTest(unittest.TestCase):
         self.assertIsNotNone(result)
         self.assertIsNotNone(result.los)
         self.assertIsNotNone(result.ttc)
+        self.assertTrue(np.allclose(result.R_IB, np.eye(3)))
         self.assertTrue(result.guidance.valid)
 
     def test_pipeline_rejects_track_change(self):
@@ -37,6 +38,7 @@ class PipelineTest(unittest.TestCase):
         result = pipe.process(FrameDetection(2, 0.06, (300, 220, 321, 241), 2))
         self.assertFalse(result.guidance.valid)
         self.assertEqual(result.guidance.reject_reason, "track_id_changed")
+        self.assertIsNone(result.R_IB)
 
 
 if __name__ == "__main__":

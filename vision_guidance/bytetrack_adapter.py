@@ -21,6 +21,7 @@ class ByteTrackConfig:
     track_low_thresh: float = 0.10
     new_track_thresh: float = 0.25
     match_thresh: float = 0.80
+    low_match_thresh: float = 0.50
     fuse_score: bool = True
     track_buffer: int = 30
     track_buffer_s: float = 0.50
@@ -37,6 +38,7 @@ class ByteTrackConfig:
             track_low_thresh=float(values.get("track_low_thresh", 0.10)),
             new_track_thresh=float(values.get("new_track_thresh", 0.25)),
             match_thresh=float(values.get("match_thresh", 0.80)),
+            low_match_thresh=float(values.get("low_match_thresh", 0.50)),
             fuse_score=bool(values.get("fuse_score", True)),
             track_buffer=int(values.get("track_buffer", 30)),
             track_buffer_s=float(values.get("track_buffer_s", 0.50)),
@@ -60,6 +62,8 @@ class ByteTrackConfig:
             raise ValueError("new_track_thresh must be at least track_high_thresh")
         if not 0.0 < self.match_thresh <= 1.0:
             raise ValueError("match_thresh must be in (0, 1]")
+        if not 0.0 < self.low_match_thresh <= 1.0:
+            raise ValueError("low_match_thresh must be in (0, 1]")
         if self.frame_rate <= 0.0 or self.minimum_confirmed_frames <= 0:
             raise ValueError("frame_rate and minimum_confirmed_frames must be positive")
         if self.final_min_bbox_area < 0.0 or self.final_max_bbox_aspect_ratio < 1.0:
@@ -114,6 +118,7 @@ class ByteTrackAdapter:
             track_low_thresh=config.track_low_thresh,
             new_track_thresh=config.new_track_thresh,
             match_thresh=config.match_thresh,
+            low_match_thresh=config.low_match_thresh,
             fuse_score=config.fuse_score,
             track_buffer=config.effective_track_buffer,
         )

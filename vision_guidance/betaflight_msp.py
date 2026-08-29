@@ -3,6 +3,7 @@ from __future__ import annotations
 import struct
 import threading
 import time
+from bisect import bisect_left, insort
 from collections import deque
 from dataclasses import dataclass
 from typing import Any, Sequence
@@ -375,6 +376,7 @@ class BetaflightMSPAdapter:
         self._set_raw_rc_write_max_interval_s: float | None = None
         self._set_raw_rc_write_times: deque[float] = deque(maxlen=4096)
         self._set_raw_rc_write_intervals: deque[float] = deque(maxlen=4096)
+        self._set_raw_rc_write_intervals_sorted: list[float] = []
         self._async_active = False
         self._async_original_timeout: float | None = None
         self._async_rx_buffer = bytearray()
@@ -478,8 +480,6 @@ class BetaflightMSPAdapter:
 
     def snapshot_stats(self) -> MspAdapterStats:
         with self._io_lock:
-            intervals = tuple(self._set_raw_rc_write_intervals)
-            write_times = tuple(self._set_raw_rc_write_times)
             return MspAdapterStats(
                 request_count=self._request_count,
                 request_error_count=self._request_error_count,
@@ -496,11 +496,19 @@ class BetaflightMSPAdapter:
                 set_raw_rc_last_ack_monotonic_s=self._set_raw_rc_last_ack_s,
                 set_raw_rc_write_interval_s=self._set_raw_rc_write_interval_s,
                 set_raw_rc_write_max_interval_s=self._set_raw_rc_write_max_interval_s,
-                set_raw_rc_write_rate_hz=_sample_rate_hz(write_times),
-                set_raw_rc_write_p50_interval_s=_percentile(intervals, 50.0),
-                set_raw_rc_write_p95_interval_s=_percentile(intervals, 95.0),
-                set_raw_rc_write_p99_interval_s=_percentile(intervals, 99.0),
-                set_raw_rc_write_p999_interval_s=_percentile(intervals, 99.9),
+                set_raw_rc_write_rate_hz=_sample_rate_hz(self._set_raw_rc_write_times),
+                set_raw_rc_write_p50_interval_s=_ordered_percentile(
+                    self._set_raw_rc_write_intervals_sorted, 50.0
+                ),
+                set_raw_rc_write_p95_interval_s=_ordered_percentile(
+                    self._set_raw_rc_write_intervals_sorted, 95.0
+                ),
+                set_raw_rc_write_p99_interval_s=_ordered_percentile(
+                    self._set_raw_rc_write_intervals_sorted, 99.0
+                ),
+                set_raw_rc_write_p999_interval_s=_ordered_percentile(
+                    self._set_raw_rc_write_intervals_sorted, 99.9
+                ),
                 async_pending_telemetry_count=len(self._async_pending_telemetry),
                 rx_discarded_bytes=self._rx_discarded_bytes,
                 rx_checksum_error_count=self._rx_checksum_error_count,
@@ -519,6 +527,18 @@ class BetaflightMSPAdapter:
                     for command, stats in sorted(self._command_stats.items())
                 ),
             )
+
+    def last_set_raw_rc_ack_monotonic_s(self) -> float | None:
+        """Return the latest SET_RAW_RC ACK time without computing log statistics."""
+
+        with self._io_lock:
+            return self._set_raw_rc_last_ack_s
+
+    def last_set_raw_rc_write_monotonic_s(self) -> float | None:
+        """Return the latest SET_RAW_RC write time without computing log statistics."""
+
+        with self._io_lock:
+            return self._set_raw_rc_last_write_s
 
     def read_api_version(self) -> ApiVersion:
         return parse_api_version(self.request(MSP_API_VERSION).payload)
@@ -802,7 +822,12 @@ class BetaflightMSPAdapter:
                 self._set_raw_rc_write_max_interval_s or 0.0,
                 interval,
             )
+            if len(self._set_raw_rc_write_intervals) == self._set_raw_rc_write_intervals.maxlen:
+                expired = self._set_raw_rc_write_intervals[0]
+                expired_index = bisect_left(self._set_raw_rc_write_intervals_sorted, expired)
+                self._set_raw_rc_write_intervals_sorted.pop(expired_index)
             self._set_raw_rc_write_intervals.append(interval)
+            insort(self._set_raw_rc_write_intervals_sorted, interval)
         self._set_raw_rc_last_write_s = timestamp
         self._set_raw_rc_write_times.append(timestamp)
 
@@ -862,5 +887,11 @@ def _percentile(values: Sequence[float], percentile: float) -> float | None:
     if not values:
         return None
     ordered = sorted(float(value) for value in values)
+    return _ordered_percentile(ordered, percentile)
+
+
+def _ordered_percentile(ordered: Sequence[float], percentile: float) -> float | None:
+    if not ordered:
+        return None
     rank = max(0, min(len(ordered) - 1, int(np.ceil(float(percentile) * len(ordered) / 100.0)) - 1))
-    return ordered[rank]
+    return float(ordered[rank])

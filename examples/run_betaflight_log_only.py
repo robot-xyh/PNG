@@ -6,6 +6,7 @@ import hashlib
 import importlib
 import json
 import multiprocessing
+import os
 import platform
 import queue
 import signal
@@ -62,6 +63,7 @@ from vision_guidance.flight_control import (  # noqa: E402
     SafetyInputs,
     aux_range_enabled,
     guidance_eval_to_setpoint,
+    inertial_vector_to_body_frd,
 )
 from vision_guidance.fusion import (  # noqa: E402
     DeferredAttitudeFusion,
@@ -74,6 +76,7 @@ from vision_guidance.geometry import (  # noqa: E402
     validated_rotation_matrix,
 )
 from vision_guidance.platform_health import PlatformHealthSampler  # noqa: E402
+from vision_guidance.png_eval import FixedVmGuidanceEvaluator, GuidanceEvaluator  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
 from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
 from vision_guidance.bytetrack_adapter import ByteTrackConfig  # noqa: E402
@@ -81,7 +84,9 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 9
+LOG_SCHEMA_VERSION = 11
+GUIDANCE_EVAL_FRAME = "inertial_ned"
+RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
@@ -135,6 +140,16 @@ def parse_args() -> argparse.Namespace:
         "--isolate-rknn-process",
         action="store_true",
         help="Run RKNN+ByteTrack in a spawned process so perception cannot hold the MSP worker GIL.",
+    )
+    parser.add_argument(
+        "--main-cpu-affinity",
+        default="",
+        help="Linux CPU list for the main process and MSP/Web threads, for example 6,7.",
+    )
+    parser.add_argument(
+        "--rknn-cpu-affinity",
+        default="",
+        help="Linux CPU list for the isolated RKNN process, for example 4,5.",
     )
     return parser.parse_args()
 
@@ -610,7 +625,13 @@ class OpenCvRknnByteTrackSource:
 
 
 class IsolatedRknnByteTrackSource:
-    def __init__(self, args: argparse.Namespace, config: dict[str, Any]) -> None:
+    def __init__(
+        self,
+        args: argparse.Namespace,
+        config: dict[str, Any],
+        *,
+        preview_sink: Any = None,
+    ) -> None:
         tracker_values = dict(config.get("rknn_bytetrack", {}))
         override_rate_hz = float(getattr(args, "rknn_perception_rate_hz", 0.0) or 0.0)
         self.perception_rate_hz = override_rate_hz or float(tracker_values.get("perception_rate_hz", 0.0))
@@ -621,6 +642,21 @@ class IsolatedRknnByteTrackSource:
         self._result_queue = context.Queue(maxsize=1)
         self._startup_queue = context.Queue(maxsize=1)
         self._error_queue = context.Queue(maxsize=1)
+        preview_config = getattr(getattr(preview_sink, "config", None), "preview", None)
+        preview_supported = bool(
+            preview_sink is not None
+            and preview_config is not None
+            and bool(getattr(preview_config, "enabled", False))
+            and callable(getattr(preview_sink, "wants_preview", None))
+            and callable(getattr(preview_sink, "offer_encoded_preview", None))
+        )
+        self._preview_sink = preview_sink if preview_supported else None
+        self._preview_request_event = context.Event() if preview_supported else None
+        self._preview_queue = context.Queue(maxsize=1) if preview_supported else None
+        preview_values = None if not preview_supported else {
+            "max_fps": float(preview_config.max_fps),
+            "jpeg_quality": int(preview_config.jpeg_quality),
+        }
         self._metadata: dict[str, Any] = {}
         self._process = context.Process(
             target=_isolated_rknn_bytetrack_main,
@@ -632,6 +668,9 @@ class IsolatedRknnByteTrackSource:
                 self._result_queue,
                 self._startup_queue,
                 self._error_queue,
+                self._preview_queue,
+                self._preview_request_event,
+                preview_values,
             ),
             name="rknn-bytetrack-process",
             daemon=True,
@@ -646,7 +685,11 @@ class IsolatedRknnByteTrackSource:
             self.close()
             raise RuntimeError(f"isolated RKNN process failed to start: {payload}")
         self._metadata = dict(payload)
-        self._metadata.update(process_isolation=True, perception_rate_hz=self.perception_rate_hz)
+        self._metadata.update(
+            process_isolation=True,
+            perception_rate_hz=self.perception_rate_hz,
+            preview_transport="jpeg_latest_queue" if preview_supported else "disabled",
+        )
 
     def close(self) -> None:
         self._stop_event.set()
@@ -656,7 +699,7 @@ class IsolatedRknnByteTrackSource:
             if process.is_alive():
                 process.terminate()
                 process.join(timeout=2.0)
-        for channel_name in ("_result_queue", "_startup_queue", "_error_queue"):
+        for channel_name in ("_result_queue", "_startup_queue", "_error_queue", "_preview_queue"):
             channel = getattr(self, channel_name, None)
             if channel is not None:
                 channel.close()
@@ -673,6 +716,7 @@ class IsolatedRknnByteTrackSource:
         active_track_id: int | None,
     ) -> tuple[FrameDetection | None, dict[str, Any]]:
         del frame_id, active_track_id
+        self._relay_preview()
         error = _queue_latest(self._error_queue)
         if error is not None:
             raise RuntimeError(f"isolated RKNN process failed: {error}")
@@ -696,6 +740,109 @@ class IsolatedRknnByteTrackSource:
         )
         return detection, stats
 
+    def _relay_preview(self) -> None:
+        if self._preview_sink is None:
+            return
+        requested = bool(self._preview_sink.wants_preview())
+        if requested:
+            self._preview_request_event.set()
+        else:
+            self._preview_request_event.clear()
+        jpeg = _queue_latest(self._preview_queue)
+        if requested and jpeg is not None:
+            self._preview_sink.offer_encoded_preview(jpeg)
+
+
+class _IsolatedPreviewEncoder:
+    """Encode latest-only debug frames inside the isolated perception process."""
+
+    def __init__(
+        self,
+        output_queue: Any,
+        request_event: Any,
+        *,
+        max_fps: float,
+        jpeg_quality: int,
+        cv2_module: Any = None,
+    ) -> None:
+        self.output_queue = output_queue
+        self.request_event = request_event
+        self.max_fps = float(max_fps)
+        self.jpeg_quality = int(jpeg_quality)
+        self.cv2 = cv2_module
+        self._next_encode_s = 0.0
+        self._offer_count = 0
+        self._encode_count = 0
+        self._drop_count = 0
+        self._error_count = 0
+        self._last_error = ""
+
+    def offer_preview(self, image_bgr: Any, overlay: dict[str, Any] | None = None) -> None:
+        self._offer_count += 1
+        if image_bgr is None or not self.request_event.is_set():
+            return
+        now = time.monotonic()
+        if now < self._next_encode_s:
+            return
+        try:
+            if self.cv2 is None:
+                self.cv2 = importlib.import_module("cv2")
+            canvas = _draw_isolated_preview_overlay(self.cv2, image_bgr, overlay or {})
+            ok, encoded = self.cv2.imencode(
+                ".jpg",
+                canvas,
+                [int(self.cv2.IMWRITE_JPEG_QUALITY), self.jpeg_quality],
+            )
+            if not ok:
+                raise RuntimeError("cv2.imencode returned false")
+            if _queue_replace(self.output_queue, encoded.tobytes()):
+                self._drop_count += 1
+            self._encode_count += 1
+            self._next_encode_s = now + 1.0 / max(1.0, self.max_fps)
+        except Exception as exc:
+            self._error_count += 1
+            self._last_error = f"{type(exc).__name__}:{exc}"[:500]
+
+    def stats(self) -> dict[str, Any]:
+        return {
+            "perception_preview_offer_count": self._offer_count,
+            "perception_preview_encode_count": self._encode_count,
+            "perception_preview_drop_count": self._drop_count,
+            "perception_preview_error_count": self._error_count,
+            "perception_preview_last_error": self._last_error,
+        }
+
+
+def _draw_isolated_preview_overlay(cv2: Any, image_bgr: Any, overlay: dict[str, Any]) -> Any:
+    canvas = np.ascontiguousarray(image_bgr).copy()
+    bbox = overlay.get("bbox_xyxy")
+    if not isinstance(bbox, (list, tuple)) or len(bbox) != 4:
+        return canvas
+    height, width = canvas.shape[:2]
+    x1, y1, x2, y2 = (int(round(float(value))) for value in bbox)
+    x1 = min(max(0, x1), max(0, width - 1))
+    x2 = min(max(0, x2), max(0, width - 1))
+    y1 = min(max(0, y1), max(0, height - 1))
+    y2 = min(max(0, y2), max(0, height - 1))
+    cv2.rectangle(canvas, (x1, y1), (x2, y2), (40, 220, 80), 2)
+    label_parts = []
+    if overlay.get("track_id") is not None:
+        label_parts.append(f"ID {overlay['track_id']}")
+    if overlay.get("score") is not None:
+        label_parts.append(f"{float(overlay['score']):.2f}")
+    if label_parts and callable(getattr(cv2, "putText", None)):
+        cv2.putText(
+            canvas,
+            " ".join(label_parts),
+            (x1, max(14, y1 - 6)),
+            int(getattr(cv2, "FONT_HERSHEY_SIMPLEX", 0)),
+            0.45,
+            (40, 220, 80),
+            1,
+            int(getattr(cv2, "LINE_AA", 8)),
+        )
+    return canvas
+
 
 def _isolated_rknn_bytetrack_main(
     args_values: dict[str, Any],
@@ -705,18 +852,35 @@ def _isolated_rknn_bytetrack_main(
     result_queue: Any,
     startup_queue: Any,
     error_queue: Any,
+    preview_queue: Any,
+    preview_request_event: Any,
+    preview_values: dict[str, Any] | None,
 ) -> None:
     source = None
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         child_args = argparse.Namespace(**args_values)
+        child_cpu_affinity = _apply_cpu_affinity(
+            str(getattr(child_args, "rknn_cpu_affinity", "")),
+            label="isolated RKNN process",
+        )
         child_args.rknn_perception_rate_hz = 0.0
         child_config = dict(config)
         tracker_values = dict(child_config.get("rknn_bytetrack", {}))
         tracker_values["perception_rate_hz"] = 0.0
         child_config["rknn_bytetrack"] = tracker_values
-        source = OpenCvRknnByteTrackSource(child_args, child_config, preview_sink=None)
-        startup_queue.put(("ready", source.metadata()))
+        preview_encoder = None
+        if preview_queue is not None and preview_request_event is not None and preview_values is not None:
+            preview_encoder = _IsolatedPreviewEncoder(
+                preview_queue,
+                preview_request_event,
+                max_fps=float(preview_values["max_fps"]),
+                jpeg_quality=int(preview_values["jpeg_quality"]),
+            )
+        source = OpenCvRknnByteTrackSource(child_args, child_config, preview_sink=preview_encoder)
+        child_metadata = dict(source.metadata())
+        child_metadata["cpu_affinity"] = list(child_cpu_affinity)
+        startup_queue.put(("ready", child_metadata))
         period_s = 1.0 / float(perception_rate_hz)
         sequence = 0
         dropped_count = 0
@@ -735,6 +899,8 @@ def _isolated_rknn_bytetrack_main(
                 perception_worker_rate_hz=perception_rate_hz,
                 perception_worker_error="",
             )
+            if preview_encoder is not None:
+                stats.update(preview_encoder.stats())
             if _queue_replace(result_queue, (detection, stats)):
                 dropped_count += 1
             stats["perception_queue_dropped"] = dropped_count
@@ -803,6 +969,22 @@ def _publish_preview(
 
 def main() -> None:
     args = parse_args()
+    main_cpu_affinity = _parse_cpu_affinity(args.main_cpu_affinity)
+    rknn_cpu_affinity = _parse_cpu_affinity(args.rknn_cpu_affinity)
+    _validate_cpu_affinity_plan(
+        main_cpu_affinity,
+        rknn_cpu_affinity,
+        isolate_rknn_process=bool(args.isolate_rknn_process),
+    )
+    args.main_cpu_affinity_applied = list(
+        _apply_cpu_affinity(args.main_cpu_affinity, label="main process")
+    )
+    if main_cpu_affinity or rknn_cpu_affinity:
+        print(
+            "CPU affinity: "
+            f"main={','.join(str(cpu) for cpu in args.main_cpu_affinity_applied) or '-'} "
+            f"isolated_rknn={','.join(str(cpu) for cpu in rknn_cpu_affinity) or '-'}"
+        )
     config = _load_config(args.config)
     web_values = dict(config.get("telemetry_web", {}))
     if args.disable_web_preview:
@@ -877,10 +1059,13 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
 
     detection_source = _create_detection_source(args, config, preview_sink=web_service)
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
+    guidance_evaluator, guidance_metadata = _guidance_evaluator(config)
+    guidance_metadata.update(_guidance_command_frame_metadata(config))
     pipeline = PureVisionGuidancePipeline(
         intrinsics=intrinsics,
         R_BC=camera_R_BC,
         attitude_buffer=attitude_buffer,
+        evaluator=guidance_evaluator,
     )
     fusion_cfg = dict(config.get("attitude_fusion", {}))
     deferred_fusion = DeferredAttitudeFusion(
@@ -923,6 +1108,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "max_wait_s": deferred_fusion.max_wait_s,
             "max_pending": deferred_fusion.max_pending,
         },
+        guidance=guidance_metadata,
         camera_calibration=camera_calibration,
         platform_health={} if platform_health is None else platform_health.metadata(),
         web_telemetry=web_service.metadata(),
@@ -936,6 +1122,19 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
+    print(
+        "Guidance law: "
+        f"{guidance_metadata['law']}; "
+        f"N={guidance_metadata['navigation_constant'] or '-'} "
+        f"Vm={guidance_metadata['fixed_vm_m_s'] or '-'} "
+        f"N*Vm={guidance_metadata['fixed_gain'] or '-'} "
+        f"limit={guidance_metadata['max_guidance_accel_mps2']} "
+        f"frame={guidance_metadata['guidance_eval_frame']}"
+    )
+    print(
+        "Guidance command mapping: "
+        f"input_frame={guidance_metadata['rate_gain_input_frame']}"
+    )
     print(
         f"Authorization: approved={int(authorization.approved)} reason={authorization.reason} "
         f"scope={authorization.scope or '-'}"
@@ -956,7 +1155,11 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     event_logger.write(
         "run_start",
         timestamp_s=start,
-        new={"control_mode": args.control_mode, "allow_control": bool(args.allow_control)},
+        new={
+            "control_mode": args.control_mode,
+            "allow_control": bool(args.allow_control),
+            "guidance": guidance_metadata,
+        },
     )
     if platform_health is not None:
         platform_health.start()
@@ -1034,11 +1237,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     else 1000.0 * (detection.exposure_ts - last_attitude_buffer_sample_s)
                 )
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
+                detector_stats.update(_guidance_log_stats(guidance_metadata))
                 result = fusion_state.result
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
                     watchdog.kick(loop_start)
-                raw_setpoint = _guidance_setpoint(config, guidance, loop_start)
+                raw_setpoint, guidance_body_frd = _guidance_setpoint(
+                    config,
+                    result,
+                    loop_start,
+                )
 
                 telemetry_age_s = (
                     worker_snapshot.telemetry_age_s
@@ -1263,6 +1471,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     allow_control=allow_control,
                     intrinsics=intrinsics,
                     channel_count=rc_mapper.config.channel_count,
+                    guidance_body_frd=guidance_body_frd,
                 )
                 writer.writerow(row)
                 web_service.publish(
@@ -1302,6 +1511,97 @@ def _load_config(path: str) -> dict[str, Any]:
     config_path = Path(path).expanduser()
     with config_path.open("r") as stream:
         return json.load(stream)
+
+
+def _guidance_evaluator(
+    config: dict[str, Any],
+) -> tuple[GuidanceEvaluator | FixedVmGuidanceEvaluator, dict[str, Any]]:
+    values = dict(config.get("guidance", {}))
+    law = str(values.get("law", "ttc_png")).strip().lower()
+    max_norm = _positive_guidance_value(
+        values,
+        "max_guidance_accel_mps2",
+        default=10.0,
+    )
+    if law == "ttc_png":
+        return GuidanceEvaluator(max_norm=max_norm), {
+            "law": law,
+            "navigation_constant": None,
+            "fixed_vm_m_s": None,
+            "fixed_gain": None,
+            "max_guidance_accel_mps2": max_norm,
+            "ttc_required": True,
+        }
+    if law == "fixed_vm_png":
+        navigation_constant = _positive_guidance_value(values, "navigation_constant")
+        fixed_vm_m_s = _positive_guidance_value(values, "fixed_vm_m_s")
+        evaluator = FixedVmGuidanceEvaluator(
+            navigation_constant=navigation_constant,
+            fixed_vm_m_s=fixed_vm_m_s,
+            max_norm=max_norm,
+        )
+        return evaluator, {
+            "law": law,
+            "navigation_constant": navigation_constant,
+            "fixed_vm_m_s": fixed_vm_m_s,
+            "fixed_gain": evaluator.fixed_gain,
+            "max_guidance_accel_mps2": max_norm,
+            "ttc_required": False,
+        }
+    raise RuntimeError(
+        f"unsupported guidance.law={law!r}; expected 'ttc_png' or 'fixed_vm_png'"
+    )
+
+
+def _positive_guidance_value(
+    values: dict[str, Any],
+    key: str,
+    *,
+    default: float | None = None,
+) -> float:
+    if key not in values:
+        if default is None:
+            raise RuntimeError(f"guidance.{key} is required")
+        value = float(default)
+    else:
+        try:
+            value = float(values[key])
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(f"guidance.{key} must be numeric") from exc
+    if not np.isfinite(value) or value <= 0.0:
+        raise RuntimeError(f"guidance.{key} must be finite and positive")
+    return value
+
+
+def _guidance_log_stats(metadata: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "guidance_law": metadata["law"],
+        "guidance_navigation_constant": metadata["navigation_constant"],
+        "guidance_fixed_vm_m_s": metadata["fixed_vm_m_s"],
+        "guidance_fixed_gain": metadata["fixed_gain"],
+        "guidance_max_accel_mps2": metadata["max_guidance_accel_mps2"],
+        "guidance_ttc_required": int(bool(metadata["ttc_required"])),
+        "guidance_eval_frame": metadata["guidance_eval_frame"],
+        "rate_gain_input_frame": metadata["rate_gain_input_frame"],
+    }
+
+
+def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, str]:
+    values = dict(config.get("guidance_command", {}))
+    guidance_eval_frame = str(values.get("guidance_eval_frame", "")).strip().lower()
+    rate_gain_input_frame = str(values.get("rate_gain_input_frame", "")).strip().lower()
+    if guidance_eval_frame != GUIDANCE_EVAL_FRAME:
+        raise RuntimeError(
+            f"guidance_command.guidance_eval_frame must be {GUIDANCE_EVAL_FRAME!r}"
+        )
+    if rate_gain_input_frame != RATE_GAIN_INPUT_FRAME:
+        raise RuntimeError(
+            f"guidance_command.rate_gain_input_frame must be {RATE_GAIN_INPUT_FRAME!r}"
+        )
+    return {
+        "guidance_eval_frame": guidance_eval_frame,
+        "rate_gain_input_frame": rate_gain_input_frame,
+    }
 
 
 def _rc_mapping_config(config: dict[str, Any]) -> RcMappingConfig:
@@ -1482,9 +1782,7 @@ def _create_detection_source(
         return OpenCvRknnSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_bytetrack":
         if args.isolate_rknn_process:
-            if not args.disable_web_preview:
-                raise RuntimeError("--isolate-rknn-process requires --disable-web-preview")
-            return IsolatedRknnByteTrackSource(args, config)
+            return IsolatedRknnByteTrackSource(args, config, preview_sink=preview_sink)
         return OpenCvRknnByteTrackSource(args, config, preview_sink=preview_sink)
     raise ValueError(f"unsupported detector source: {args.detector_source}")
 
@@ -1738,19 +2036,44 @@ def _process_detection(pipeline: PureVisionGuidancePipeline, detection: FrameDet
     return pipeline.process(detection)
 
 
-def _guidance_setpoint(config: dict[str, Any], guidance, timestamp: float) -> GuidanceSetpoint:
+def _guidance_setpoint(
+    config: dict[str, Any],
+    result: VisionGuidanceResult | None,
+    timestamp: float,
+) -> tuple[GuidanceSetpoint, np.ndarray | None]:
+    guidance = None if result is None else result.guidance
     if guidance is None:
-        return GuidanceSetpoint(timestamp=timestamp, valid=False, source="guidance_eval", reject_reason="guidance_missing")
+        return (
+            GuidanceSetpoint(
+                timestamp=timestamp,
+                valid=False,
+                source="guidance_eval",
+                reject_reason="guidance_missing",
+            ),
+            None,
+        )
     command_cfg = dict(config.get("guidance_command", {}))
     setpoint = guidance_eval_to_setpoint(
         guidance,
+        R_IB=None if result is None else result.R_IB,
         rate_gain_matrix=command_cfg.get("rate_gain_matrix", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
         hover_thrust=float(command_cfg.get("hover_thrust", config.get("rc_mapping", {}).get("thrust_hover", 0.5))),
         yaw_rate_deg_s=float(command_cfg.get("yaw_rate_bias_deg_s", 0.0)),
     )
+    body_vector = None
+    if guidance.valid and result is not None and result.R_IB is not None:
+        try:
+            body_vector = inertial_vector_to_body_frd(guidance.g_eval, result.R_IB)
+        except ValueError:
+            body_vector = None
     if setpoint.timestamp == 0.0:
-        return GuidanceSetpoint(timestamp=timestamp, valid=setpoint.valid, source=setpoint.source, reject_reason=setpoint.reject_reason)
-    return setpoint
+        setpoint = GuidanceSetpoint(
+            timestamp=timestamp,
+            valid=setpoint.valid,
+            source=setpoint.source,
+            reject_reason=setpoint.reject_reason,
+        )
+    return setpoint, body_vector
 
 
 def _voltage_ok(telemetry: BetaflightTelemetry | None, safety_cfg: dict[str, Any]) -> bool:
@@ -1825,6 +2148,7 @@ def _write_run_meta(
     control_authorization: dict[str, Any] | None = None,
     msp_runtime: dict[str, Any] | None = None,
     attitude_fusion: dict[str, Any] | None = None,
+    guidance: dict[str, Any] | None = None,
     camera_calibration: dict[str, Any] | None = None,
     platform_health: dict[str, Any] | None = None,
     web_telemetry: dict[str, Any] | None = None,
@@ -1859,6 +2183,7 @@ def _write_run_meta(
         "control_authorization": control_authorization or {},
         "msp_runtime": msp_runtime or {},
         "attitude_fusion": attitude_fusion or {},
+        "guidance": guidance or {},
         "camera_calibration": camera_calibration or {},
         "platform_health": platform_health or {},
         "web_telemetry": web_telemetry or {},
@@ -2093,6 +2418,14 @@ def _log_fields(channel_count: int) -> list[str]:
         "omega_los_x",
         "omega_los_y",
         "omega_los_z",
+        "guidance_law",
+        "guidance_navigation_constant",
+        "guidance_fixed_vm_m_s",
+        "guidance_fixed_gain",
+        "guidance_max_accel_mps2",
+        "guidance_ttc_required",
+        "guidance_eval_frame",
+        "rate_gain_input_frame",
         "ttc_valid",
         "ttc_reject_reason",
         "ttc_quality",
@@ -2105,6 +2438,9 @@ def _log_fields(channel_count: int) -> list[str]:
         "g_eval_x",
         "g_eval_y",
         "g_eval_z",
+        "g_eval_body_frd_x",
+        "g_eval_body_frd_y",
+        "g_eval_body_frd_z",
         "pre_shape_sp_valid",
         "pre_shape_sp_source",
         "pre_shape_sp_reject_reason",
@@ -2218,6 +2554,7 @@ def _log_row(
     allow_control: bool,
     intrinsics: CameraIntrinsics,
     channel_count: int,
+    guidance_body_frd: np.ndarray | None = None,
 ) -> dict[str, Any]:
     guidance = None if result is None else result.guidance
     los = None if result is None else result.los
@@ -2488,6 +2825,22 @@ def _log_row(
         "omega_los_x": _vector_field(los.omega_los if los is not None else None, 0),
         "omega_los_y": _vector_field(los.omega_los if los is not None else None, 1),
         "omega_los_z": _vector_field(los.omega_los if los is not None else None, 2),
+        "guidance_law": detector_stats.get("guidance_law", ""),
+        "guidance_navigation_constant": _stats_float(
+            detector_stats, "guidance_navigation_constant", precision=6
+        ),
+        "guidance_fixed_vm_m_s": _stats_float(
+            detector_stats, "guidance_fixed_vm_m_s", precision=6
+        ),
+        "guidance_fixed_gain": _stats_float(
+            detector_stats, "guidance_fixed_gain", precision=6
+        ),
+        "guidance_max_accel_mps2": _stats_float(
+            detector_stats, "guidance_max_accel_mps2", precision=6
+        ),
+        "guidance_ttc_required": detector_stats.get("guidance_ttc_required", ""),
+        "guidance_eval_frame": detector_stats.get("guidance_eval_frame", ""),
+        "rate_gain_input_frame": detector_stats.get("rate_gain_input_frame", ""),
         "ttc_valid": "" if ttc is None else int(ttc.valid),
         "ttc_reject_reason": "" if ttc is None else ttc.reject_reason or "",
         "ttc_quality": "" if ttc is None else f"{ttc.quality:.6f}",
@@ -2500,6 +2853,9 @@ def _log_row(
         "g_eval_x": "" if guidance is None else f"{guidance.g_eval[0]:.9f}",
         "g_eval_y": "" if guidance is None else f"{guidance.g_eval[1]:.9f}",
         "g_eval_z": "" if guidance is None else f"{guidance.g_eval[2]:.9f}",
+        "g_eval_body_frd_x": _vector_field(guidance_body_frd, 0),
+        "g_eval_body_frd_y": _vector_field(guidance_body_frd, 1),
+        "g_eval_body_frd_z": _vector_field(guidance_body_frd, 2),
         "pre_shape_sp_valid": int(pre_shape_setpoint.valid),
         "pre_shape_sp_source": pre_shape_setpoint.source,
         "pre_shape_sp_reject_reason": pre_shape_setpoint.reject_reason,
@@ -2647,6 +3003,63 @@ def _camera_device_value(value: Any) -> int | str:
     if not text:
         return 0
     return str(Path(text).expanduser())
+
+
+def _parse_cpu_affinity(value: str | None) -> tuple[int, ...]:
+    text = str(value or "").strip()
+    if not text:
+        return ()
+    cpus: set[int] = set()
+    for item in text.split(","):
+        token = item.strip()
+        if not token:
+            raise ValueError("CPU affinity contains an empty item")
+        if "-" in token:
+            start_text, end_text = token.split("-", 1)
+            start, end = int(start_text), int(end_text)
+            if start < 0 or end < start:
+                raise ValueError(f"invalid CPU affinity range: {token}")
+            cpus.update(range(start, end + 1))
+        else:
+            cpu = int(token)
+            if cpu < 0:
+                raise ValueError(f"invalid CPU affinity index: {token}")
+            cpus.add(cpu)
+    return tuple(sorted(cpus))
+
+
+def _validate_cpu_affinity_plan(
+    main_cpus: tuple[int, ...],
+    rknn_cpus: tuple[int, ...],
+    *,
+    isolate_rknn_process: bool,
+) -> None:
+    if rknn_cpus and not isolate_rknn_process:
+        raise ValueError("--rknn-cpu-affinity requires --isolate-rknn-process")
+    overlap = sorted(set(main_cpus).intersection(rknn_cpus))
+    if overlap:
+        raise ValueError(f"main and RKNN CPU affinity sets overlap: {overlap}")
+
+
+def _apply_cpu_affinity(value: str | None, *, label: str) -> tuple[int, ...]:
+    requested = _parse_cpu_affinity(value)
+    if not requested:
+        if hasattr(os, "sched_getaffinity"):
+            return tuple(sorted(os.sched_getaffinity(0)))
+        return ()
+    if not hasattr(os, "sched_setaffinity") or not hasattr(os, "sched_getaffinity"):
+        raise RuntimeError(f"{label} CPU affinity is unsupported on this platform")
+    cpu_count = os.cpu_count()
+    if cpu_count is not None and requested[-1] >= cpu_count:
+        raise ValueError(f"{label} CPU affinity exceeds available CPU count {cpu_count}: {requested}")
+    try:
+        os.sched_setaffinity(0, set(requested))
+    except OSError as exc:
+        raise RuntimeError(f"failed to apply {label} CPU affinity {requested}: {exc}") from exc
+    applied = tuple(sorted(os.sched_getaffinity(0)))
+    if applied != requested:
+        raise RuntimeError(f"{label} CPU affinity mismatch: requested={requested}, applied={applied}")
+    return applied
 
 
 def _decode_fourcc(value: int) -> str:

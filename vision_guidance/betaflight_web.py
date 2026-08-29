@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 7
+WEB_SCHEMA_VERSION = 8
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -333,6 +333,12 @@ def telemetry_payload_from_log_row(
             "worker_error": _text(row.get("perception_worker_error")),
         },
         "guidance": {
+            "law": _text(row.get("guidance_law")),
+            "navigation_constant": _number(row.get("guidance_navigation_constant")),
+            "fixed_vm_m_s": _number(row.get("guidance_fixed_vm_m_s")),
+            "fixed_gain": _number(row.get("guidance_fixed_gain")),
+            "max_accel_mps2": _number(row.get("guidance_max_accel_mps2")),
+            "ttc_required": _boolean(row.get("guidance_ttc_required")),
             "los_valid": _boolean(row.get("los_valid")),
             "los_reason": _text(row.get("los_reject_reason")),
             "los_quality": _number(row.get("los_quality")),
@@ -348,7 +354,13 @@ def telemetry_payload_from_log_row(
             "valid": _boolean(row.get("guidance_valid")),
             "reason": _text(row.get("guidance_reject_reason")),
             "quality": _number(row.get("guidance_quality")),
+            "eval_frame": _text(row.get("guidance_eval_frame")),
+            "rate_gain_input_frame": _text(row.get("rate_gain_input_frame")),
             "g_eval": _vector(row, ("g_eval_x", "g_eval_y", "g_eval_z")),
+            "g_eval_body_frd": _vector(
+                row,
+                ("g_eval_body_frd_x", "g_eval_body_frd_y", "g_eval_body_frd_z"),
+            ),
         },
         "command": {
             "valid": _boolean(row.get("sp_valid")),
@@ -575,6 +587,29 @@ class TelemetryHub:
             self._preview_pending = (frame_bgr, dict(overlay or {}))
             self._preview_condition.notify()
 
+    def wants_preview(self) -> bool:
+        """Return whether a connected client currently needs preview frames."""
+        with self._lock:
+            return bool(
+                self.config.preview.enabled
+                and self._running
+                and self._mjpeg_clients > 0
+            )
+
+    def offer_encoded_preview(self, jpeg: bytes | bytearray | memoryview) -> None:
+        """Publish JPEG bytes produced outside the control process."""
+        if not self.config.preview.enabled or not jpeg:
+            return
+        payload = bytes(jpeg)
+        with self._jpeg_condition:
+            self._preview_offer_count += 1
+            if not self._running or self._mjpeg_clients <= 0:
+                return
+            self._jpeg = payload
+            self._jpeg_sequence += 1
+            self._preview_encode_count += 1
+            self._jpeg_condition.notify_all()
+
     def try_add_client(self, kind: str) -> bool:
         with self._lock:
             if kind == "sse":
@@ -761,6 +796,13 @@ class TelemetryWebService:
     def offer_preview(self, frame_bgr: Any, overlay: Mapping[str, Any] | None = None) -> None:
         if self.config.enabled:
             self.hub.offer_preview(frame_bgr, overlay)
+
+    def wants_preview(self) -> bool:
+        return bool(self.config.enabled and self.hub.wants_preview())
+
+    def offer_encoded_preview(self, jpeg: bytes | bytearray | memoryview) -> None:
+        if self.config.enabled:
+            self.hub.offer_encoded_preview(jpeg)
 
     def log_stats(self) -> dict[str, Any]:
         if not self.config.enabled:

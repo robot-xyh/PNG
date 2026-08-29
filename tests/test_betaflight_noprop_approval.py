@@ -44,6 +44,16 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
 
         tool._validate_noprop_config(config, output)
 
+        missing_eval_frame = copy.deepcopy(config)
+        missing_eval_frame["guidance_command"].pop("guidance_eval_frame")
+        with self.assertRaisesRegex(RuntimeError, "guidance_eval_frame"):
+            tool._validate_noprop_config(missing_eval_frame, output)
+
+        wrong_rate_frame = copy.deepcopy(config)
+        wrong_rate_frame["guidance_command"]["rate_gain_input_frame"] = "inertial_ned"
+        with self.assertRaisesRegex(RuntimeError, "rate_gain_input_frame"):
+            tool._validate_noprop_config(wrong_rate_frame, output)
+
         with self.assertRaisesRegex(RuntimeError, "R_BC must be explicit"):
             tool._validate_noprop_config(example, output)
 
@@ -185,6 +195,44 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
                     snapshot_path,
                     expected_override_mode_cli_id=50,
                 )
+
+    def test_fixed_vm_guidance_is_explicit_and_bounded_for_approval(self):
+        config = _with_verified_upward_camera(
+            json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        )
+        output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
+        config["guidance"] = {
+            "law": "fixed_vm_png",
+            "navigation_constant": 3.0,
+            "fixed_vm_m_s": 1.0,
+            "max_guidance_accel_mps2": 1.0,
+        }
+
+        tool._validate_noprop_config(config, output)
+        metadata = tool._validate_guidance_config(config)
+        self.assertEqual(metadata["fixed_gain"], 3.0)
+        self.assertFalse(metadata["ttc_required"])
+
+        for key in ("navigation_constant", "fixed_vm_m_s"):
+            invalid = copy.deepcopy(config)
+            invalid["guidance"].pop(key)
+            with self.subTest(missing=key), self.assertRaisesRegex(RuntimeError, f"guidance.{key}"):
+                tool._validate_noprop_config(invalid, output)
+
+        excessive = copy.deepcopy(config)
+        excessive["guidance"]["max_guidance_accel_mps2"] = 1.01
+        with self.assertRaisesRegex(RuntimeError, "exceeds no-prop limit"):
+            tool._validate_noprop_config(excessive, output)
+
+        unknown = copy.deepcopy(config)
+        unknown["guidance"]["law"] = "vm"
+        with self.assertRaisesRegex(RuntimeError, "unsupported guidance.law"):
+            tool._validate_noprop_config(unknown, output)
+
+        implicit = copy.deepcopy(config)
+        implicit.pop("guidance")
+        with self.assertRaisesRegex(RuntimeError, "guidance.law must be explicitly configured"):
+            tool._validate_noprop_config(implicit, output)
 
     def test_override_cli_mode_id_must_be_explicit(self):
         config = _with_verified_upward_camera(

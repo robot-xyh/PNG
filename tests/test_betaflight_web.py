@@ -88,9 +88,12 @@ class BetaflightWebTest(unittest.TestCase):
             "trackerHits",
             "trackerAssociation",
             "targetSelectorReason",
+            "guidanceLaw",
+            "guidanceGain",
         ):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('["rc", "physical_us", 0]', dashboard)
+        self.assertIn('setGate("gateTtc", true, "BYPASS", "BYPASS")', dashboard)
         self.assertNotIn('id="targetPill"', dashboard)
 
     def test_config_validates_network_and_preview_bounds(self):
@@ -130,6 +133,20 @@ class BetaflightWebTest(unittest.TestCase):
             "msp_set_raw_rc_write_p999_interval_s": "0.024",
             "msp_rx_checksum_error_count": "0",
             "guidance_valid": "1",
+            "guidance_law": "fixed_vm_png",
+            "guidance_navigation_constant": "3.0",
+            "guidance_fixed_vm_m_s": "1.5",
+            "guidance_fixed_gain": "4.5",
+            "guidance_max_accel_mps2": "1.0",
+            "guidance_ttc_required": "0",
+            "guidance_eval_frame": "inertial_ned",
+            "rate_gain_input_frame": "body_frd",
+            "g_eval_x": "0.1",
+            "g_eval_y": "0.2",
+            "g_eval_z": "0.3",
+            "g_eval_body_frd_x": "0.4",
+            "g_eval_body_frd_y": "0.5",
+            "g_eval_body_frd_z": "0.6",
             "sp_valid": "1",
             "pre_shape_sp_roll_rate_deg_s": "3.0",
             "pre_shape_sp_pitch_rate_deg_s": "-2.0",
@@ -205,6 +222,13 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["vision"]["tracker_association_stage"], "low")
         self.assertEqual(payload["vision"]["tracker_match_iou"], 0.63)
         self.assertEqual(payload["vision"]["target_selector_reason"], "no_tracked_output")
+        self.assertEqual(payload["guidance"]["law"], "fixed_vm_png")
+        self.assertEqual(payload["guidance"]["fixed_gain"], 4.5)
+        self.assertFalse(payload["guidance"]["ttc_required"])
+        self.assertEqual(payload["guidance"]["eval_frame"], "inertial_ned")
+        self.assertEqual(payload["guidance"]["rate_gain_input_frame"], "body_frd")
+        self.assertEqual(payload["guidance"]["g_eval"], [0.1, 0.2, 0.3])
+        self.assertEqual(payload["guidance"]["g_eval_body_frd"], [0.4, 0.5, 0.6])
         shaping = payload["command"]["shaping"]
         self.assertTrue(shaping["valid"])
         self.assertEqual(shaping["input_rate_deg_s"], [3.0, -2.0])
@@ -331,6 +355,28 @@ class BetaflightWebTest(unittest.TestCase):
             self.assertEqual(jpeg, b"\xff\xd8\xff\xd9")
             self.assertEqual(hub.stats()["web_preview_encode_count"], 1)
             hub.remove_client("mjpeg")
+        finally:
+            hub.close()
+
+    def test_preencoded_preview_bypasses_local_encoder_and_tracks_demand(self):
+        config = TelemetryWebConfig(
+            preview=PreviewWebConfig(enabled=True, max_fps=30.0, jpeg_quality=70, max_clients=1)
+        )
+        hub = TelemetryHub(config, cv2_module=_FakeCv2)
+        hub.start()
+        try:
+            self.assertFalse(hub.wants_preview())
+            self.assertTrue(hub.try_add_client("mjpeg"))
+            self.assertTrue(hub.wants_preview())
+
+            hub.offer_encoded_preview(b"isolated-jpeg")
+            sequence, jpeg = hub.wait_for_jpeg(0, timeout_s=1.0)
+
+            self.assertEqual(sequence, 1)
+            self.assertEqual(jpeg, b"isolated-jpeg")
+            self.assertEqual(hub.stats()["web_preview_encode_count"], 1)
+            hub.remove_client("mjpeg")
+            self.assertFalse(hub.wants_preview())
         finally:
             hub.close()
 
