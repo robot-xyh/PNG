@@ -14,6 +14,12 @@
 - 已实现单 UART 异步 MSP pipeline：SET_RAW_RC 不等待同步 ACK，响应由持久缓冲解析，SET 写入
   始终先于每周期最多一个遥测请求；同步接口仅保留给启动 identity/BOXID 探测和离线工具。
 - 已实现 8 通道 RC 映射、限幅、斜率限制、watchdog、AUX gate 和安全状态机。
+- 已增加 `accel_tilt_rate` 飞行候选映射：固定 Vm PNG 的惯性系加速度先转换为目标 roll/pitch，
+  再由显式姿态 P 外环生成 Betaflight rate；该路径尚未获得飞行参数或装桨批准。
+- 已实现带30 Hz采样、实测延迟、FOV门控、随机漏检/噪声/风扰动的matrix15 Monte Carlo放行工具。
+  3600条评估中当前悬停fixed-thrust初始可见命中率仅4.6%--8.3%，`release_passed=false`；在实现
+  三维速度保持、可变推力和视场保持并重新通过95%门限前，不得进行自主实机拦截。完整结果见
+  `doc/BETAFLIGHT_INTERCEPTION_TEST_PLAN.md`。
 - 已实现 `examples/run_betaflight_log_only.py`，可记录 MSP、视觉、导引、候选 setpoint、
   输出 RC 和安全状态。
 - 已新增 `config/betaflight.rk3588.noprop.example.json` 无桨受限配置：程序在 RC7 切入前
@@ -89,8 +95,8 @@ PureVisionGuidancePipeline
 
 ### 1. 导引量到 Betaflight rate setpoint
 
-`guidance_eval_to_setpoint()` 先用检测曝光时刻的姿态把惯性系导引量旋转到FRD机体系，再用
-3x3矩阵映射为Betaflight可接收的roll/pitch/yaw rate候选量：
+`guidance_eval_to_setpoint()` 保留两种显式映射。`direct_rate_matrix` 先用检测曝光时刻的姿态把
+惯性系导引量旋转到FRD机体系，再用3x3矩阵映射为Betaflight可接收的rate候选量：
 
 ```text
 g_eval_B = R_IB^T * g_eval_I
@@ -105,6 +111,22 @@ thrust = hover_thrust
 `config/betaflight.example.json` 中 `rate_gain_matrix` 默认全零，目的是让未标定系统
 只产生日志和中性 RC，不产生实际姿态命令。上机前必须通过无桨台架确认矩阵符号、轴向
 和增益。
+
+`accel_tilt_rate` 用于物理量一致的飞行候选链。它把固定 Vm PNG 的 `m/s2` 加速度在当前 yaw
+平面转换为目标 roll/pitch，再由姿态误差和显式P增益生成 `deg/s`：
+
+```text
+a_yaw = Rz(yaw)^T * g_eval_I
+vertical_force = max(f_min, gravity - a_yaw,z)
+roll_des  = atan2(a_yaw,y,  vertical_force)
+pitch_des = atan2(-a_yaw,x, vertical_force)
+roll_rate  = sign_roll  * Kp_roll  * (roll_des  - roll_current)
+pitch_rate = sign_pitch * Kp_pitch * (pitch_des - pitch_current)
+```
+
+目标倾角和rate各自限幅。runner启动时要求`accel_tilt_rate`的重力、两轴Kp、倾角/rate上限、符号
+和最小垂向比力全部显式填写；schema 15记录目标/当前姿态及误差。待确认参数和离线权威性结果见
+`doc/BETAFLIGHT_PNG_FLIGHT_CANDIDATE.md`。这一路径尚未完成两轴符号、悬停油门或有桨闭环标定。
 
 ### 2. RC 通道映射、限幅和斜率限制
 
@@ -273,6 +295,7 @@ CSV 字段按用途分组如下。
 |LOS|`los_valid`, `los_reject_reason`, `los_quality`, `los_innovation_norm`, `lambda_I_*`, `lambda_dot_I_*`, `omega_los_*`|
 |TTC|`ttc_valid`, `ttc_reject_reason`, `ttc_quality`, `ttc_s`, `ttc_area_filtered`, `ttc_area_dot_filtered`|
 |导引|`guidance_valid`, `guidance_reject_reason`, `guidance_quality`, `g_eval_x/y/z`|
+|加速度到姿态映射|`command_mapping_type`, `command_desired_*_angle_deg`, `command_current_*_angle_deg`, `command_*_attitude_error_deg`|
 |接管与倾角整形|`pre_shape_sp_*`, `shaping_valid/reason`, `entry_handoff_*`, `tilt_*attitude_deg`, `tilt_*softcap_factor`, `tilt_*level_weight`, `tilt_hardcap_active`|
 |setpoint|`sp_valid`, `sp_source`, `sp_reject_reason`, `sp_roll_rate_deg_s`, `sp_pitch_rate_deg_s`, `sp_yaw_rate_deg_s`, `sp_thrust`|
 |映射链|`map_requested_*`, `map_limited_*`, `map_*_stick`, `rc_target_ch*`, `throttle_handover_*`|
@@ -304,7 +327,7 @@ Betaflight 非视觉能力的 `src` 来源、候选参数、已知冲突和迁�
 | 视觉与导引 | 算法已实现 | 真实镜头完成内外参、畸变、延迟标定，日志可复现 LOS/TTC |
 | RK3588 推理 | `src` 修改模型的 RKNN NPU backend 已接入并短测 | 完成真实目标精度回归、30 min 满载及 P95/P99/温度验收 |
 | 相机采集 | USB MJPG 通路已实测 | 固定曝光/增益，获得可信曝光时间戳并拒绝陈旧帧 |
-| 控制映射 | 候选映射已实现，矩阵默认为零 | 无桨确认轴向，并按 Betaflight 实际 rate 曲线标定 RC 到角速度 |
+| 控制映射 | direct矩阵和加速度到姿态外环均已实现；飞行参数未确认 | 确认轴向/Kp/倾角/rate，并按 Betaflight 实际曲线标定 RC 到角速度 |
 | 人工接管 | 只有 AUX 软件 gate | 发射机接管和急停不依赖 RK3588 进程，断电/死机时飞控进入已验证状态 |
 | 机载运行管理 | 未实现 | systemd、udev、日志轮转、异常重启和默认 `log_only` 均验证 |
 
@@ -577,7 +600,7 @@ Orange Pi 当前局域网配置为：
   "enabled": true,
   "bind": "0.0.0.0",
   "port": 8080,
-  "allowed_subnets": ["127.0.0.0/8", "192.168.124.0/24"],
+  "allowed_subnets": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
   "sample_hz": 5.0,
   "history_s": 60.0,
   "stale_after_s": 1.0,
@@ -586,7 +609,11 @@ Orange Pi 当前局域网配置为：
 }
 ```
 
-PC 访问 `http://192.168.124.42:8080/`。接口固定为 `GET /api/v1/telemetry`、
+飞场主链路使用LQ一对一以太网数传：AP管理地址为`192.168.1.200`，STA为`192.168.1.201`，
+地面电脑有线口为`192.168.1.123/24`，Orange Pi的`enP3p49s0`固定为`192.168.1.10/24`。
+两台主机的数传网口均不配置默认网关，避免覆盖电脑互联网和Orange Pi回退Wi-Fi路由。LQ仅承载
+以太网，不使用串口/SBUS透传，也不占用Betaflight MSP的`/dev/ttyS1`。PC固定访问
+`http://192.168.1.10:8080/`；手机热点地址只作为地面调试回退。接口固定为 `GET /api/v1/telemetry`、
 `GET /api/v1/history`、`GET /api/v1/stream`、`GET /api/v1/video/mjpeg` 和
 `GET /healthz`；所有写方法返回 405，非允许网段返回 403。SSE 以 5 Hz 发布结构化遥测，
 页面显示安全状态、MSP/RC、姿态、MSP gyro raw、检测/ByteTrack、LOS/TTC、PNG命令和平台状态。
@@ -999,15 +1026,27 @@ rate候选。详见`doc/BETAFLIGHT_BLACKBOX_LOG00042_ANALYSIS.md`。
 授权关闭，worker发送接管前锁存人工RC；本次ARM周期内不能重新接管，必须先RC7退出并DISARM。
 长时间感知/导引观察必须使用LOG_ONLY；需要观察电机方向时只做不超过3 s的短脉冲。
 
-### 4. 系留或低速悬停
+### 4. 转动台架
 
-- 人工遥控优先，伴随计算机只输出小幅辅助命令。
-- 逐步扩大 `rate_gain_matrix` 和 RC 限幅，不直接沿用 AirSim/PX4 参数。
+- 台架插在拆桨手持检查和带桨飞行之间，默认拆桨、DISARM、RC7人工侧、`LOG_ONLY`。
+- 先记录可动轴、正方向、机械限位、角速度、承载、编码器精度/采样率、急停和防护能力。
+- 每轴正反各重复3次，对齐台架编码器、MSP attitude、`gyro_msp_raw_*`、Blackbox和图像时间戳。
+- 世界固定目标下计算`lambda_I=R_IB*R_BC*lambda_C`，用惯性LOS角度/角速率残差检查外参和去旋转。
+- 动态段检查`detection_attitude_offset_ms`、结果年龄、跟踪ID、出框撤销和重捕获；无编码器时只能
+  形成方向检查，不能形成动态时延标定。
+- 只有台架明确额定支持整机推力且具备锚固、防护、机械限位和急停时，才允许可选带桨怠速；仍
+  禁止RC7接管、油门阶跃和主动PNG。刚性台架数据不得用于PID调参或推断自由飞行稳定性。
+- 详细矩阵、门限和归档格式见`doc/BETAFLIGHT_ROTARY_RIG_TEST_PLAN.md`。
+
+### 5. 系留或低速悬停
+
+- 当前`release_passed=false`，只允许人工遥控和`LOG_ONLY`采集；不得输出辅助命令。
+- 只有后续独立主动控制批准完成后，才讨论从最小`rate_gain_matrix`和RC限幅开始扩大包线。
 - 同步记录仓库 CSV/meta 和 Betaflight Blackbox。
 - 重点检查 `telemetry_age_s`、`attitude_age_s`、`watchdog_age_s`、LOS/TTC 连续性、
   RC 饱和、姿态响应和电压电流。
 
-### 5. 受控移动目标测试
+### 6. 受控移动目标测试
 
 - 先做非碰撞近距通过，不直接做撞击类测试。
 - 目标距离、侧向偏置、速度和机动幅度逐步扩大。
@@ -1019,6 +1058,87 @@ rate候选。详见`doc/BETAFLIGHT_BLACKBOX_LOG00042_ANALYSIS.md`。
 - `logs/betaflight_log_<stamp>.csv`
 - `logs/betaflight_log_<stamp>_meta.json`
 - `logs/betaflight_log_<stamp>_events.jsonl`
+
+### GPS/高度只读运动状态（schema v16）
+
+新增配置 `config/betaflight.rk3588.kinematics_log_only.example.json` 仅用于读取当前 M10 GPS 与
+DPS310 高度，不授权或发送 `MSP_SET_RAW_RC`。它在单 UART 上按 5 Hz 请求 `MSP_RAW_GPS(106)`和
+`MSP_ALTITUDE(109)`，并按 20 Hz 读取姿态；status/RAW_IMU/RC/analog 分别为 2/5/5/1 Hz，计划
+总轮询负载为 43 Hz，低于 50 Hz IO worker 上限。现有无桨和控制配置默认 GPS/高度轮询率仍为 0，
+行为不变。离线设备断电
+时不运行此命令；设备重新上电后先保持 DISARM、RC7 人工侧并关闭 Configurator，再执行：
+
+```bash
+python3 examples/run_betaflight_log_only.py \
+  --config config/betaflight.rk3588.kinematics_log_only.example.json \
+  --duration-s 120 --rate-hz 50 \
+  --control-mode log_only \
+  --detector-source rknn_bytetrack \
+  --isolate-rknn-process --main-cpu-affinity 6,7 --rknn-cpu-affinity 4,5
+```
+
+浏览器访问 `http://<orangepi-ip>:8080/` 的 **Read-Only Kinematics**。必须同时确认：
+
+- `MSP_SET_RAW_RC` write/ack 均为 0，`control_authorization.enabled=false`；
+- `gps fix >= 1`、卫星数至少 6，连续 3 个位置在 5 m 内后 `origin=LOCKED`；
+- GPS/高度年龄均不超过 0.5 s，`kinematics=VALID`；
+- 地速按真北顺时针航向转换为 NED 北/东速度；DPS310 上升率取反得到 NED 向下速度；
+- CSV 同时保存原始 WGS84/GPS/气压字段、NED 位置、原始/0.25 s 一阶滤波速度、样本时刻、年龄、
+  来源、原点、命令 RTT/错误；JSONL 保存 fix、原点锁定、有效性、陈旧和不支持命令的边沿变化。
+
+该状态源只允许做 `LOG_ONLY` 统计。正式控制前必须把控制发送与高频遥测拆到第二 UART，或让伴随
+计算机直接读取独立 GNSS；还要用实飞日志拟合速度噪声、延迟、丢包和气压符号。不得用
+`MSP_RAW_IMU` 积分伪造速度，也不得把当前单 UART 配置接入算法 RC 输出。
+
+#### 2026-08-30 实机结果与下一门槛
+
+首次启动因 `_write_run_meta()` 未接收新增的 `kinematics` 参数而在主循环前安全退出；未打开控制
+授权，也未产生任何 RC 写入。热修复为元数据写入函数增加可选运动学字段，并由日志单元测试覆盖。
+修复后在 `.42/orangepi5max` 完成 120 s、2391 行正式采集：全程 DISARM、RC7 人工侧、
+`LOG_ONLY/disabled`，`MSP_SET_RAW_RC` attempt/write/success/ACK 全部为 0，审计通过且 MSP、解析、
+校验和、Web 错误均为 0。GPS 请求 549 次、成功 548 次、错误 0；高度 1034/1034 成功。GPS 年龄
+P50/P95/max 为 114/215/262 ms，高度为 61/119/200 ms，RKNN 总耗时 P50/P95/max 为
+6.212/6.325/7.458 ms。
+
+该轮 GPS 始终为 `fix=0`、卫星数 0，运动学状态全部为 `gps_fix_invalid`。因此只证明 GPS/高度
+MSP 通信、日志和页面链路可用，不证明原点锁定、NED 位置或速度正确。证据包为
+`logs/deployment_archives/kinematics_logonly_online_20260830_141522.tar.gz`，SHA256 为
+`c73711476a91d297ba3a35eeba3785930f3a8eac54a34b24949b973a38b59e57`。
+
+下一轮必须在无遮挡天空下保持拆桨、DISARM、RC7 人工侧，等待至少 6 颗卫星、稳定 fix、
+`origin=LOCKED` 和 `kinematics=VALID`。达到门槛后才手持缓慢向北、向东和上下移动，核对 N/E/D
+速度与 DPS310 垂向符号；仍只运行 `LOG_ONLY`，不 ARM、不拨入 RC7、不传 `--allow-control`。
+
+室内延迟A/B确认运行参数必须为`--rate-hz 50`：20 Hz主循环会消费不过30 Hz感知结果，造成
+deferred-fusion积压。专用配置采用姿态20 Hz计划值、GPS/高度各5 Hz及总43 Hz MSP轮询预算后，
+实测结果年龄P50/P95为59.4/82.3 ms，较旧20 Hz主循环的153.8/204.6 ms明显降低，且没有新增
+MSP、解析或相机错误。当前配置SHA256为
+`259f9793fb4c74750275595ced8a07ff33986de3b0044d0cce9158c9dec50a99`。该优化只适用于LOG_ONLY
+数据采集；它没有解决GPS无fix、外参未验证、状态源单UART或候选离线非放行问题。
+
+### 离线速度建立型 PNG 候选
+
+`vision_guidance/betaflight_intercept_controller.py` 实现了纯函数式、离线专用控制器，不连接
+runner 安全状态机或 PWM 映射。其输入为时间同步 LOS/LOS rate、姿态和有效 NED 速度，输出仅为
+NED 加速度诊断：
+
+```text
+v_ref = Vm * lambda, with vertical component limit
+a_speed = clip[Kv * (v_ref - v_vehicle)]
+a_png = clip[N * Vm * lambda_dot]
+a_fov = clip[upward-camera body-XY centering]
+a_total = clip[a_speed + a_png + a_fov]
+```
+
+连续 5 个新鲜 LOS 帧后进入 `ACCELERATE`，LOS 方向速度达到 `0.8*Vm` 后进入 `PNG_TRACK`；检测
+年龄超过 0.35 s、速度年龄超过 0.5 s、姿态/状态无效或数值非有限时锁存 `ABORT`。候选从未调用
+`MSP_SET_RAW_RC`。未来飞行评审先使用 `msp_override_channels_mask=3`，保留人工 throttle/yaw；只有
+在独立状态源、推力标定和人工接管证据齐全后才重新评审 mask 15。
+
+离线100 seeds/case正式评估仍为`release_passed=false`：100 ms、实测P50、P95和压力场景的初始
+可见命中率分别为49.67%、10.00%、1.83%和0.17%。主要阻塞是固定上视目标陈旧/出框、20 deg
+倾角权威性，以及5 Hz状态在150--250 ms延迟和丢包下触发0.5 s速度陈旧ABORT。该结果禁止把本
+候选接入`MSP_SET_RAW_RC`；下一次上电仅采集LOG_ONLY状态源数据，不进行候选控制测试。
 
 执行无桨审计后另生成 `logs/betaflight_log_<stamp>_audit.json`。
 

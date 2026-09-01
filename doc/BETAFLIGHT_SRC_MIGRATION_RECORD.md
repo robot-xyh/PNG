@@ -1147,3 +1147,350 @@ MSP OVERRIDE未激活，物理RC5为2000 us、RC7为1000 us；四电机输出均
 `430c8a5626623c8fc8f3c81ac718fd4299cbbb765d24027ffae77a7d2e211b2f`。测试进程已停止，最终状态为
 RC7人工侧、RC5 DISARM、电机1000。该结论只证明无桨固定台架的短时接管和自动截止有效，不构成
 装桨、自由飞行或自主拦截授权。
+
+## 2026-08-29 无桨退出矩阵与 PNG 飞行候选映射
+
+在schema 14三秒截止验证后，又完成三个短时退出场景并归档为
+`logs/deployment_archives/schema14_noprop_exit_matrix_20260829.tar.gz`，SHA256为
+`cd60b0934917353fface6a38e711d05b534292f2fe6d2d28c4f148321242864c`：
+
+- 人工提前退出：ACTIVE 0.952 s，最大电机1077 us、最大极差4 us、最大MSP写间隔38.011 ms。
+- 丢目标退出：算法开始后约0.952 s变为`target_invalid`，再约50 ms回到passthrough；最大电机
+  1086 us、极差4 us、最大MSP间隔37.105 ms。
+- 超时锁存复位：同一ARM周期第二次RC7切入不再形成第二段算法输出，DISARM后才清锁；最大电机
+  1089 us、极差9 us、最大MSP间隔36.995 ms。
+
+以上日志审计均为0违规。armed状态进程崩溃场景没有成功杀死runner，不能宣称已验证；此前仅有
+DISARM进程退出后约2 s恢复物理RC的观察，且未捕获初始瞬态。这一项保留为有桨前阻断项。
+
+无桨配置的`Vm=1`、`a_max=1`、3 deg/s和1078 us只限制台架，不具备拦截权威性。旧
+`direct_rate_matrix`还把PNG加速度数值直接解释为rate，量纲不完整。离线代码新增
+`AccelerationTiltRateConfig`与`accel_tilt_rate`：
+
+```text
+a_png_I = clip_norm(N * Vm * (omega_LOS x lambda_I), a_max)
+a_yaw = Rz(yaw)^T * a_png_I
+phi_d/theta_d = acceleration_to_bounded_tilt(a_yaw, gravity)
+p/q = bounded(sign * attitude_Kp * (desired_attitude - current_attitude))
+```
+
+runner只在嵌套字段全部显式配置时接受该模式；日志升级到schema 15，新增映射类型、目标/当前
+roll/pitch和姿态误差，审计拒绝有效映射行中的空值。Web schema 12同步显示这些诊断。
+
+新增`tools/evaluate_betaflight_png_authority.py`，直接从tar归档读取真实CSV，逐行重算
+`N*Vm*(omega_LOS x lambda)`并扫描`Vm/a_max/Kp/tilt/rate`。真实横移983行、纵移784行在
+`N=3, Kp=3 s^-1, tilt=20 deg, rate=60 deg/s`下的纯导引最大轴rate统计为：
+
+|Vm / a_max|横移 P50 / P95 / max|纵移 P50 / P95 / max|
+|---|---|---|
+|1 / 1|2.57 / 7.98 / 17.38 deg/s|2.76 / 7.13 / 16.73 deg/s|
+|3 / 3|7.62 / 24.07 / 51.07 deg/s|8.27 / 21.09 / 47.53 deg/s|
+|5 / 5|12.54 / 39.82 / 60.00 deg/s|13.86 / 34.49 / 60.00 deg/s|
+|10 / 10|25.37 / 60.00 / 60.00 deg/s|27.55 / 60.00 / 60.00 deg/s|
+
+这只是开环指令权威性，不是拦截概率或稳定性结论。手持目标速度不等于`Vm`，固定机体没有闭环
+响应；`Vm=10`在回放中已触及候选rate/tilt上限。详细公式、复算命令和分阶段放行见
+`doc/BETAFLIGHT_PNG_FLIGHT_CANDIDATE.md`。机器可读待确认项保存在
+`config/betaflight.rk3588.flight_candidate.parameters.json`，其中悬停油门、Vm、Kp、符号、RC
+mask和飞行批准均保持`null/false`，文件明确不可运行。Orange Pi断电期间未进行部署或硬件操作。
+
+## 2026-08-29 Betaflight PNG matrix15 离线闭环
+
+断电期间新增`vision_guidance/betaflight_png_sim.py`和
+`tools/simulate_betaflight_png_matrix15.py`。工具复用生产`accel_tilt_rate`，用真值LOS、100 Hz点质量
+模型和40 ms一阶body-rate响应复跑原报告15个直线目标工况；同时区分悬停接管与已建立
+`Vm*lambda`速度，并比较固定油门、理想高度保持、速度保持+理想可变推力。
+
+35 deg/120 deg/s包线下，悬停固定油门和高度保持均为0/15；完整参考为真值15/15、全程FOV
+12/15。当前保守20 deg/60 deg/s包线下完整参考仍为真值15/15，但全程FOV降至9/15，平均倾角
+饱和47.39%；FOV失败为`M03/M06/M07/M12/M13/M14`。若预先建立三维拦截速度，当前固定油门路径
+为真值15/15、全程FOV 10/15，说明该路径只验证了法向制导，尚未解决从悬停建立和维持闭合速度。
+
+20/40/80 ms rate响应敏感性均得到真值15/15、FOV 9/15，当前主导缺口是LOS三维速度保持、垂向
+推力标定和视场保持。完整测试边界和复现命令归档于`doc/BETAFLIGHT_PNG_OFFLINE_MATRIX15.md`。
+结果包`logs/deployment_archives/betaflight_png_matrix15_offline_20260829.tar.gz`的SHA256为
+`09a437eba50e4ad50d65ea82f70791663b3c0a64aea9ea944d471a21f44b9a68`。该仿真绕过YOLO、ByteTrack、
+时延和串口，不构成飞行批准；Orange Pi保持断电，未执行网络或硬件操作。
+
+## 2026-08-30 schema 15 在线 LOG_ONLY 无桨验证
+
+仅连接已确认的`.42/orangepi5max`，部署前备份为
+`deployment_backups/schema15_pre_online_20260830_1100.tar.gz`（SHA256
+`752e278a17cbc14edd4a58c3243cdf59bb398219df36be1e21136cd1e845d29f`）。板端Betaflight聚焦测试
+79/79通过后，使用`accel_tilt_rate`、固定Vm PNG和完整RKNN+ByteTrack执行300 s LOG_ONLY：
+
+```bash
+python3 examples/run_betaflight_log_only.py \
+  --config config/betaflight.rk3588.noprop.vm.accel_tilt_rate.logonly.local.json \
+  --duration-s 300 --rate-hz 20 --control-mode log_only \
+  --detector-source rknn_bytetrack \
+  --log-prefix schema15_accel_tilt_logonly_online_20260830
+```
+
+日志共5986行、299.999 s。RC5保持DISARM、RC7保持人工侧，四路电机全程1000 us；
+`MSP_SET_RAW_RC`写入、ACK和错误计数均为0，MSP checksum/parser/discarded-byte与Web错误均为0。
+审计`passed=1`、0违规。RKNN最大14.952 ms，主循环最大59.718 ms，最高温度56.384 C。
+
+固定目标在5979/5986行中确认跟踪，全部为`track_id=1`，switch/fragment均为0；5948行导引有效。
+感知结果年龄P50/P95/max为175.393/216.699/225.032 ms，主要包含等待姿态时间对齐的约150 ms，
+虽不阻断本轮只读链路验证，但仍是装桨拦截前必须降低和重新测量的风险项。证据归档为
+`logs/deployment_archives/schema15_accel_tilt_logonly_online_20260830.tar.gz`，SHA256为
+`fbaf399ce6fc1baef0f077bd44e8e8703d15e653992e17192673e94cfbff2d2d`。
+
+由同一已审计配置派生主动无桨配置
+`config/betaflight.rk3588.noprop.vm.accel_tilt_rate.active.local.json`，只启用哈希授权并绑定
+`logs/betaflight_noprop_accel_tilt_rate_approval.json`。批准文件绑定10:57快照、当前配置、CLI导出、
+MSP OVERRIDE ID 50/AUX3及3 deg/s、1100 us、三秒截止和电机联锁，SHA256为
+`f6ca1738f616758b9525b4ec13c468c9c88be52dcf57ce282297261b57cdbd38`。截至记录时主动配置尚未运行，
+没有执行ARM或RC7切换；开始前仍须现场确认拆桨、固定、RC5=DISARM、RC7=人工侧和单目标稳定。
+
+## 2026-08-30 schema 15 主动无桨联锁触发
+
+在拆桨、固定、功率电、RC5=DISARM、RC7=人工侧和固定单目标均由现场确认后，使用独立RKNN进程、
+关闭MJPEG及CPU亲和性启动上述主动配置。DISARM预检为`READY/passthrough`，四电机1000 us；ARM后
+人工侧怠速为1056--1057 us、极差1 us。MSP预填充、ACK、目标跟踪和授权均有效。
+
+现场RC7先形成约0.4 s短接管并退出，随后第二次接管。0.8 s entry handoff把roll/pitch从0平滑到
+-3/+3 deg/s，AETR发送值最终约为1493/1507/1078/1500 us。固定机体不能响应姿态命令，且算法油门
+跨过Betaflight `min_check=1050 us`，电机输出依次从约1057增长到1093/1077/1076/1056、
+1191/1128/1125/1056，最终在接管约1.7 s时达到1282/1174/1172/1056 us。电机联锁检测到最大输出
+1282 us、极差226 us，超过1200/150 us门限，状态变为`FAILSAFE/motor_output_interlock`；下一主循环
+约50 ms后发布模式由algorithm改为passthrough，电机遥测约0.5 s后恢复到怠速。三秒持续时间联锁也
+随后锁存，DISARM后两项联锁复位，最终四电机1000 us。
+
+严格审计为`passed=0`、4类违规：10行armed motor output超限、10行motor spread超限、联锁触发首行
+仍记录上一条异步algorithm发布，以及SET_RAW_RC P99.9间隔40.250 ms略高于40 ms门限。全程10026次
+写入、10025个ACK，无写入、checksum、parser或Web错误；最大ACK年龄35.313 ms。该结果再次证明固定
+无桨机体在高于`min_check`的持续闭环命令下会产生PID积分，不能把“指令仅3 deg/s”当作电机输出
+安全保证；同时2 Hz电机轮询只能在输出已越限后发现问题。
+
+失败证据归档为`logs/deployment_archives/schema15_accel_tilt_active_failed_20260830.tar.gz`，SHA256
+`6eace586e37ba354084e97360bd6863e08621247913c3b56b75a25560c301ee2`。批准文件已在板端改名为
+`betaflight_noprop_accel_tilt_rate_approval.failed_20260830.json`，使主动配置失去预期批准路径；在提高
+电机观测频率、实现更快的紧急passthrough、解决40 ms调度尾延迟并重新设计低于`min_check`的固定台架
+验证前，不再运行该主动无桨配置。终态只读快照
+`logs/betaflight_snapshots/betaflight_snapshot_20260830_111945/manifest.json`采集15/15成功，确认
+`mode_flags=0`、RC5=2000 us、RC7=1000 us和电池21.9 V；runner已停止且串口释放。该失败不证明
+自由飞行PNG无效，但明确禁止据此放行装桨拦截。
+
+## 2026-08-30 实测延迟/FOV门控拦截能力复测
+
+为直接回答“当前PNG拦截能力是否足够”，停止继续使用固定无桨台架推断命中能力。原matrix15工具
+每10 ms向控制器提供当前真值LOS，目标出视场后仍继续制导，结果偏乐观。模拟器和CLI现增加
+`perception_latency_s`、`perception_rate_hz`、`perception_stale_timeout_s`和
+`perception_fov_gate_enabled`：LOS按曝光频率采样，经固定延迟队列到达；曝光时目标在120 deg视场外
+则拒绝测量，最后有效测量超过0.35 s后撤销制导输入。结果新增测量有效率、捕获/交付/视场拒绝计数、
+首次有效/过期时刻和明确失效原因。默认零延迟、逐步采样、无FOV门控仍可复现旧上界。
+
+在当前20 deg、60 deg/s候选包线、30 Hz和实测175/200/225 ms延迟下，当前悬停fixed-thrust路径
+始终为0/15。尚未在实机实现的理想速度保持+可变推力路径从悬停也只有8/15，初始可见工况为8/12、
+全程FOV命中7/15；零延迟对照为11/15，说明实测延迟会进一步降低成功率。预先精确建立拦截速度的
+fixed-thrust路径为12/15、10/15、10/15，但实机没有速度估计/保持来提供该初始条件，且结果对延迟
+敏感。200 ms理想路径中`M05/M10`为1.404/1.265 m近失，`M12/M13`因途中出视场后目标过期而只到
+2.357/2.076 m。
+
+新增延迟可用时刻、初始视场外拒绝和非法延迟配置测试，仿真聚焦测试10/10通过。该模型仍不包含
+YOLO框噪声、ByteTrack错配、随机漏检、风和Betaflight PID，属于乐观评估；即便如此也未达到15/15
+或初始可见工况的稳健命中，因此结论是当前方案拦截能力不足。下一研发门不是继续无桨电机脉冲，而是
+实现时间同步速度状态、三维LOS速度保持、可变推力/高度控制和视场保持，再按相同延迟门控矩阵复测。
+完整仓库单元测试314/314通过。0/175/200/225 ms结果包为
+`logs/deployment_archives/betaflight_png_matrix15_latency_fov_20260830.tar.gz`，SHA256
+`d48373794fe2d104cb8431769bc5d927d1d2584f52aec663df2fec9e22a7f639`。
+
+## 2026-08-30 随机扰动拦截放行评估实现
+
+新增可重复随机漏检、LOS角噪声、相对速度噪声和一阶相关风加速度。随机流按seed和case稳定派生，
+漏检、测量噪声和风相互独立；不同控制路径使用相同基础seed，便于配对比较。单工况结果记录实际
+漏检率、最大测量角误差、最大速度误差和最大风加速度。
+
+新增`vision_guidance/betaflight_intercept_eval.py`和
+`tools/run_betaflight_intercept_monte_carlo.py`。工具读取
+`config/betaflight.intercept_eval.example.json`，用进程池并行运行matrix15并输出逐trial CSV、
+Wilson 95%区间、失败原因和机器可读门限检查。该初始版本只有`current_hover_fixed_thrust`标为
+必选；本记录后续已改为速度建立型候选必选，旧路径均为诊断。门限为初始可见命中率95%、全程FOV命中率
+90%、目标过期失败率1%、测量有效率90%、最差最小距离1 m以及平均倾角/rate饱和10%。
+
+4场景、3路径、15工况、20 seeds/case共3600条结果。当前路径初始可见命中率为4.6%--8.3%，
+理想完整控制在100 ms为70.8%、实测P50为65.8%；全部场景`release_passed=false`。结果证明当前
+代码距离实机拦截放行门限很远，后续应实现状态源、三维速度保持、可变推力和视场保持，而不是继续
+固定无桨接管。新增测试后完整仓库318/318通过。结果包
+`logs/deployment_archives/betaflight_intercept_mc20_20260830.tar.gz`的SHA256为
+`d744335cf3a5a47292ecc9339ebd169277135d1b2f1c8186faf65f0f5e2a9365`，完整方案见
+`doc/BETAFLIGHT_INTERCEPTION_TEST_PLAN.md`。
+
+## 2026-08-30 只读运动状态与离线速度建立型 PNG
+
+本阶段不修改实机 RC 所有权，也不把新算法接入 `MSP_SET_RAW_RC`。实施内容如下：
+
+- `betaflight_msp.py`：增加 `MSP_RAW_GPS(106)`、`MSP_ALTITUDE(109)`、严格 payload 长度检查、
+  WGS84/厘米/角度单位转换、可选 HDOP，以及同步 adapter 读取接口。
+- `betaflight_runtime.py`：增加默认关闭的 GPS/高度分频轮询；同步和 `async_pipeline` 共用同一解析
+  合同，并记录独立 sample age 和每命令 RTT/错误。原有配置未启用时不增加 UART 负载。
+- `betaflight_kinematics.py`：稳定定位后锁定 WGS84 原点，换算局部 NED；GPS 地速/航向形成北东
+  速度，DPS310 高度/vario形成向下位置与速度；输出原始及 tau=0.25 s 滤波速度，fix 丢失、陈旧或
+  非有限输入全部 fail-closed。明确禁止 RAW_IMU 速度积分。
+- `run_betaflight_log_only.py` 与 `betaflight_web.py`：日志 schema 升至 v16、Web schema 升至 v13，
+  CSV/JSONL/API/页面均增加原始状态、NED 状态、原点、年龄、来源和命令诊断。
+- `betaflight_intercept_controller.py`：新增 `ACQUIRE -> ACCELERATE -> PNG_TRACK / ABORT` 离线
+  控制器，只输出 `a_speed/a_png/a_fov/a_total`，不输出 RC/PWM。
+- `betaflight_png_sim.py`：候选使用生产 `LOSKalmanFilter6D` 处理采样、噪声和延迟 LOS，并加入
+  5 Hz 延迟/噪声/丢包自机速度。测试证明改变旧“相对速度测量噪声”不会改变候选结果，即候选未
+  读取真值相对速度。
+
+专用硬件配置为 `config/betaflight.rk3588.kinematics_log_only.example.json`。它保持授权关闭，GPS/
+高度各5 Hz、姿态20 Hz、Web开启；只用于设备恢复上电后的 DISARM/人工侧日志采集。正式飞控链
+仍需第二UART或独立GNSS，并先以 `override_channels_mask=3` 保留人工 throttle/yaw。
+
+100 seeds/case、4场景、15工况共6000条候选评估仍为`release_passed=false`。初始可见命中率由
+`target_100ms`的49.67%降至P50的10.00%、P95的1.83%和压力场景的0.17%；FOV命中率分别为
+47.67%、9.33%、1.58%和0%。P50以后的主要失败是5 Hz状态在150--250 ms延迟及丢包下超过0.5 s
+门限后锁存ABORT，100 ms场景还存在23.73%平均倾角饱和。验收层现单独要求运动状态平均有效率
+不低于90%，并把候选`detection_stale/tracking_invalid`锁存失败计入目标陈旧率，防止
+`controller_abort`掩盖视觉陈旧。该结果只形成明确非放行证据，候选继续保持离线且不连接RC/PWM。
+正式报告/逐trial CSV SHA256分别为
+`eec27fc77d32c8385fac6b2a53b3da9c9fcc06282cd04816a1baef00e7779d5f`和
+`b2114e96d7f1f2ca32025324982c1b0173a8de77e4f48eaf0bdccc4b170340a2`；本阶段完整仓库335/335测试通过。
+
+## 2026-08-30 运动状态实机 LOG_ONLY 验证
+
+离线包部署到唯一允许访问的 `.42/orangepi5max`，部署前备份目录为
+`logs/deployment_backups/velocity_candidate_offline_20260830_141130`，包内38个文件哈希全部通过，
+板端聚焦测试74/74通过。首次运行在进入主循环前报错：
+`_write_run_meta() got an unexpected keyword argument 'kinematics'`。进程安全退出且串口释放，没有
+ARM、RC7接管或RC写入。随后为`_write_run_meta()`补充可选运动学参数并写入meta，增加回归测试；
+板端热修复前备份为`logs/deployment_backups/kinematics_meta_hotfix_20260830_141439`，日志测试
+22/22通过。
+
+修复后执行120 s正式`LOG_ONLY + RKNN/ByteTrack + GPS/高度`，日志
+`logs/betaflight_log_20260830_141522.csv`共2391行。所有行均为DISARM、override inactive、
+`LOG_ONLY/disabled`，所有`MSP_SET_RAW_RC` attempt/write/success/ACK计数均为0；MSP、parser、
+checksum和Web错误均为0，审计`passed=1`且违规为0。GPS请求549次、成功548次、错误0，高度
+1034/1034成功；GPS age P50/P95/max为114/215/262 ms，高度为61/119/200 ms，RKNN总耗时
+P50/P95/max为6.212/6.325/7.458 ms。相机、修改模型、ByteTrack和只读页面同时正常。
+
+GPS全程`fix=0`、卫星数0，运动学状态均为`gps_fix_invalid`；本轮只通过串口协议、采集、日志和
+展示链路，未验证原点、NED位置/速度或垂向符号。远端证据包
+`logs/deployment_archives/kinematics_logonly_online_20260830_141522.tar.gz`已取回PC并通过SHA256校验，
+哈希为`c73711476a91d297ba3a35eeba3785930f3a8eac54a34b24949b973a38b59e57`。
+
+再次上电后做30 s就绪检查，598行仍全部为`LOG_ONLY`，GPS/高度年龄最大约276/141 ms，但仍为
+`fix=0`、0颗卫星、未锁原点且状态无效。下一测试必须移至无遮挡天空下等待至少6颗卫星和
+`kinematics=VALID`，然后在DISARM状态手持缓慢做北、东、上/下移动；不得ARM、不得切RC7、不得
+传`--allow-control`，离线速度建立型候选继续与`MSP_SET_RAW_RC`隔离。
+
+热修复与上述记录合入后，本地完整单元测试335/335通过，`git diff --check`通过。重新生成的离线
+部署包为`logs/deployment_archives/betaflight_velocity_candidate_offline_hotfix_20260830.tar.gz`，
+SHA256为`afaec1838031d5f0c1bf577ee537de59b22905da2caeda30d52bf1267698cbe4`；包内38项
+`SHA256SUMS`全部通过。该包仍只提供LOG_ONLY状态源和离线候选，不增加实机控制授权。
+
+## 2026-08-30 室内飞前静止目标检查
+
+在拆桨、DISARM、RC7人工侧和Configurator关闭条件下启动600 s计划采集；因室内无风板温升至
+73.923 C，在191.947 s主动正常终止。日志共3821行，审计`passed=1`且0违规；全程
+`LOG_ONLY/disabled`，ARM和override均为0，`MSP_SET_RAW_RC` attempt/write/success/ACK全部为0，
+MSP请求、worker、checksum、parser和相机失败计数全部为0。
+
+3712/3713个新感知结果为confirmed，全部保持`track_id=1`，switch/fragment均为0；RKNN总耗时
+P50/P95/max为6.206/6.315/7.480 ms，tracker约29.8 FPS。目标中心横向仅覆盖133.8--161.2 px、
+纵向145.8--177.8 px，因此本轮只构成静止稳定性结果，不构成横移验收。感知结果年龄
+P50/P95/max为153.8/204.6/318.4 ms，姿态融合等待为100.9/151.2/285.8 ms，继续确认约150 ms
+融合等待是明天拦截数据采集的主要延迟风险。GPS仍为fix 0、0颗卫星。
+
+证据包`logs/deployment_archives/indoor_preflight_static_20260830_144236.tar.gz`已从板端取回并通过
+SHA256校验，哈希为`b0ca14eab63b1a4aaaec266cac2eda3f7084c6668c08beee1abbb9ff809168bd`。
+下一室内动态段必须先降温，缩短为120 s，并由操作者明确完成左右、前后和短时遮挡动作；仍保持
+LOG_ONLY，不进行电机或RC7测试。
+
+计划的120 s动态段实际没有发生可辨别动作：2391行日志中目标中心横向仅跨3.8 px、纵向5.2 px，
+2338个confirmed结果仍全部为`track_id=1`。审计通过且零RC写入、零MSP/相机/tracker错误，但最高
+温度74.846 C；该结果只能作为第二次静止复测，已明确归档为
+`logs/deployment_archives/indoor_dynamic_no_motion_20260830_144852.tar.gz`，SHA256为
+`fc4c57118ad4394cb1f0da883310015ee3c4554310e671333f19efba274771f2`，不得引用为动态验收。
+
+随后隔离出固定延迟来源：30 Hz感知由20 Hz主循环每拍只消费一个deferred-fusion条目，输入快于
+消费导致队列积压。保持姿态10 Hz、仅把主循环提到50 Hz后，结果年龄P50/P95从静止基线的
+153.8/204.6 ms降为96.0/132.4 ms，融合等待从100.9/151.2 ms降为60.2/100.3 ms。进一步在专用
+LOG_ONLY配置内把姿态计划频率提到20 Hz，并把status/高度/analog降到2/5/1 Hz，使总计划轮询负载
+为43 Hz；实测姿态15.24 Hz、GPS/高度各4.70 Hz。此时结果年龄P50/P95/max为
+59.4/82.3/118.6 ms，融合等待为20.1/40.6/80.8 ms，姿态年龄P95为73.2 ms；全程零RC写入、
+零MSP/parser/checksum/相机错误，审计通过。
+
+当前低延迟配置SHA256为`259f9793fb4c74750275595ced8a07ff33986de3b0044d0cce9158c9dec50a99`，
+板端旧配置备份在`logs/deployment_backups/kinematics_low_latency_20260830_1500`。完整A/B证据包
+`logs/deployment_archives/indoor_latency_ab_20260830.tar.gz`已取回并校验，SHA256为
+`c87457a23a295bcfca0a40c5350fb843d4c1d3bdfb86eae3cb64a604baa99062`。明天LOG_ONLY采集必须使用
+`--rate-hz 50`；这次优化只降低记录链路延迟，不批准主动控制。
+
+包含低延迟配置和上述A/B记录的最终38文件离线包为
+`logs/deployment_archives/betaflight_velocity_candidate_low_latency_20260830.tar.gz`，SHA256为
+`36c7c35ebee4655d3a6da1cef5ce9e220a8b8b4236015f0650975d80f5165c70`；外部包哈希及内部
+`SHA256SUMS`均通过。
+
+## 2026-08-31 手机热点连接验证
+
+在唯一允许访问的`orangepi5max`上增加NetworkManager连接`Xiaomi 14`，使用WPA-PSK，密钥仅保存
+在系统连接配置中，不写入仓库或文档；`autoconnect=yes`、优先级100，原`818FPV`配置保留作为
+回退。电脑与Orange Pi接入热点后分别获得`192.168.155.178`和`192.168.155.8`，热点网关为
+`192.168.155.205`；Orange Pi地址由DHCP分配，重启后必须重新确认。
+
+电脑到Orange Pi连续20次ping为0%丢包，RTT min/avg/max为10.34/16.19/20.85 ms，Wi-Fi信号约87%。
+网页根路径经热点返回HTTP 200，实测响应约49--61 ms；`/api/v1/telemetry`正常返回LOG_ONLY、
+DISARM、override inactive、publish disabled、camera OK、Web error 0和RC write attempt 0。120 s
+`wifi_hotspot_live_20260831`只读运行审计`passed=1`、0违规，结束后串口和相机均释放。室内GPS仍为
+fix 0、0颗卫星，本测试只证明热点、SSH、HTTP和只读遥测链路，不证明GPS/NED有效。
+两轮日志证据包`logs/deployment_archives/wifi_hotspot_validation_20260831.tar.gz`已取回PC并通过
+SHA256校验，哈希为`602b455e05ea38f28edc3af49835d2b2f822e6db77e7192504afd7b839301b66`；归档不包含热点密钥。
+
+## 2026-08-31 LQ 一对一数传配置与验证
+
+按照AMOV LQ官方一对一流程确认两台`csw2200`设备：`192.168.1.200`为AP，设备ID
+`LQ-2026-000050`；`192.168.1.201`为STA，设备ID`LQ-2026-000089`；两端固件均为`1.1.9`。
+原配置使用官方示例ESSID和密码，已改为项目专用ESSID和随机32字符密码。密码只保存在工作站
+`~/.config/png-betaflight/lq-network.env`，权限`0600`，不进入仓库、日志或文档。高带宽模式保持
+关闭，AP信道保持14，串口透传参数未修改；Betaflight MSP继续独占Orange Pi的`/dev/ttyS1`。
+
+为避免配置中途失联，先在STA和AP上依次保存但不重启，回读确认凭据一致后先重启STA、再从地面
+网线直连重启AP。AP约9 s恢复，Orange Pi有线链路约17 s恢复，STA约20 s恢复；重启后两端配置
+持久化且在线表均显示2台，RSSI约为-38/-22 dBm。Orange Pi的`enP3p49s0`固定为
+`192.168.1.10/24`且`ipv4.never-default=yes`；地面电脑有线口为`192.168.1.123/24`且无默认网关，
+互联网和回退SSH仍经`Xiaomi 14`热点。工作站到Orange Pi跨数传100包ping无丢包，RTT
+min/avg/max为2.610/2.983/3.634 ms，并通过该地址核对SSH主机名为唯一允许的`orangepi5max`。
+
+随后通过`http://192.168.1.10:8080/`执行60 s`LOG_ONLY + RKNN/ByteTrack + MSP`端到端验证。
+20次API请求耗时min/avg/max为12.74/23.83/34.94 ms，页面HTTP 200，相机、worker和Web正常；
+全程DISARM、override inactive、publish disabled，`MSP_SET_RAW_RC`计数为0。日志
+`lq_link_validation_20260831_20260831_110953`审计`passed=1`且0违规，退出后串口、相机和8080均
+释放。证据包`logs/deployment_archives/lq_link_validation_20260831.tar.gz`已通过数传取回并校验，
+SHA256为`8170fa79ce22aff59e3d1a84ade437565109a6cc5ee2b3e801d4a17d115b6ecb`。室内GPS仍为
+`fix=0`，本轮只通过通信与只读遥测链路，不证明室外GPS/NED或主动控制可用。
+脱敏的LQ重启前/后配置、在线表和操作摘要另存为
+`logs/deployment_archives/lq_p2p_configuration_20260831.tar.gz`，SHA256为
+`18b7f50eb3703fbb6525d50640787a8726e52431783c50e52785e392101ebc98`；该包不含任何密码。
+
+## 2026-08-31 带桨人工飞行测试卡更新
+
+`doc/BETAFLIGHT_FLIGHT_TEST_CARD_20260831.md`已改为带桨专用数据采集卡。测试仍限定为飞手人工
+主控和Orange Pi `LOG_ONLY`，禁止RC7接管、`--allow-control`、自主逼近及碰撞航线。卡片增加
+拆桨GPS/NED前置门禁、桨/动力/重心/线缆检查、LQ数传和进程独占检查、P00带桨地面怠速，以及
+F01单机悬停后再逐级进入NED、静止目标、横穿、尺度变化和重捕获科目。首日每个核心科目均要求
+独立日志、落地DISARM和复核后再继续；水平/垂直最小间距必须由飞手和观察员在起飞前填写。
+
+卡片明确8080和LQ不属于飞行安全链路。数传中断、页面状态离开`LOG_ONLY`、任何RC写入、RC7意外
+生效、GPS/运动学陈旧、感知冻结、动力或结构异常时均终止科目，由飞手人工降落，禁止在空中通过
+SSH重启或改配置。落地后按DISARM、继续记录10秒、正常停止程序、确认日志、断电、检查和导出
+原始`.BFL`的顺序归档。该卡只能形成带桨人工飞行下的数据质量证据，不能形成PNG主动控制或比例
+导引拦截能力放行。
+
+## 2026-08-31 转动台架阶段补充
+
+根据现场新增转动台架，部署流程在拆桨手持检查与带桨P00/F01之间增加R00-R04阶段，并新建
+`doc/BETAFLIGHT_ROTARY_RIG_TEST_PLAN.md`。方案要求先记录台架轴向、角度/角速度范围、承载、编码器
+精度/采样率、机械限位、急停和防护能力；默认拆桨、DISARM、RC7人工侧、`LOG_ONLY`。R00记录
+零位和静态零偏，R01以各轴正反3次检查MSP/RAW IMU/Blackbox符号和尺度，R02用世界固定目标检查
+`lambda_I=R_IB*R_BC*lambda_C`及惯性LOS残差，R03用低/中动态周期估计编码器、MSP、图像和姿态
+融合时延，并检查ByteTrack连续性、出框撤销和重捕获。
+
+只有台架制造方明确允许当前整机质量和推力，且锚固、防护、机械限位、遥控DISARM和物理急停
+独立有效时，才允许可选R04带桨怠速；仍禁止油门阶跃、RC7接管和主动PNG。无编码器测试只形成
+方向检查，不能形成动态时延标定。刚性台架无法复现平移、升力和自由飞行姿态响应，R00-R04均
+不能证明悬停油门、飞行PID、TTC或比例导引拦截能力，也不能替代带桨P00/F01。
