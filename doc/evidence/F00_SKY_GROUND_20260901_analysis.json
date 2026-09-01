@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-09-01",
+  "test_scope": "F00_SKY_GROUND outdoor upward-camera negative baseline",
+  "control_mode": "log_only",
+  "configuration": {
+    "config_sha256": "259f9793fb4c74750275595ced8a07ff33986de3b0044d0cce9158c9dec50a99",
+    "model": "drone_v8n_v21_kd_relu_lambda008_640_640-rk3588.rknn",
+    "model_sha256": "ad905c19e3e2b5386fa1a5d562285a02d89ce2f1d344810c60f59",
+    "image_size": [640, 512],
+    "detector_conf_threshold": 0.05,
+    "final_min_score": 0.25,
+    "tracker_minimum_confirmed_frames": 3,
+    "tracker_buffer_frames": 15,
+    "camera_extrinsic_verified": false,
+    "camera_optical_axis_error_deg": 90.0
+  },
+  "runs": [
+    {
+      "run_id": "F00_SKY_GROUND_20260901_141859",
+      "duration_s": 239.864388,
+      "rows": 11913,
+      "perception_new_results": 6708,
+      "raw_candidate_results": 340,
+      "raw_candidate_count_sum": 444,
+      "tracked_results": 272,
+      "confirmed_results": 256,
+      "confirmed_fraction": 0.038163387,
+      "unique_track_ids": [2],
+      "guidance_valid_results": 81,
+      "sp_valid_results": 81,
+      "result_age_p95_ms": 46.54665,
+      "result_age_max_ms": 119.155,
+      "score_range": [0.314467, 0.76296],
+      "area_ratio_range": [0.000222968, 0.000360274],
+      "operator_annotation": "unresolved moving airborne object; no video was recorded",
+      "safety_audit_passed": true
+    },
+    {
+      "run_id": "F00_SKY_REVIEW_20260901_143149",
+      "duration_s": 239.973528,
+      "rows": 11924,
+      "perception_new_results": 6447,
+      "raw_candidate_results": 6,
+      "raw_candidate_count_sum": 11,
+      "tracked_results": 0,
+      "confirmed_results": 0,
+      "confirmed_fraction": 0.0,
+      "unique_track_ids": [],
+      "guidance_valid_results": 0,
+      "sp_valid_results": 0,
+      "result_age_p95_ms": 47.121,
+      "result_age_max_ms": 60.861,
+      "operator_annotation": "single-frame small dark object; rejected by ByteTrack",
+      "safety_audit_passed": true
+    },
+    {
+      "run_id": "F00_SKY_CONTINUE_20260901_144608",
+      "duration_s": 174.456938,
+      "rows": 8628,
+      "perception_new_results": 4599,
+      "raw_candidate_results": 337,
+      "raw_candidate_count_sum": 423,
+      "tracked_results": 315,
+      "confirmed_results": 300,
+      "confirmed_fraction": 0.065231572,
+      "unique_track_ids": [1],
+      "guidance_valid_results": 73,
+      "sp_valid_results": 73,
+      "result_age_p95_ms": 50.5395,
+      "result_age_max_ms": 96.592,
+      "score_range": [0.5, 0.76296],
+      "area_ratio_range": [0.000175528, 0.000616648],
+      "confirmed_event": {
+        "start_s": 70.36093,
+        "end_s": 83.489029,
+        "span_s": 13.128099,
+        "brief_unconfirmed_gap_s": 0.252206,
+        "track_id": 1,
+        "bbox_first_xyxy": [149.719, 276.281, 163.007, 288.672],
+        "bbox_last_xyxy": [312.702, -0.05, 320.776, 7.074]
+      },
+      "operator_annotation": "real airplane in the sky",
+      "safety_audit_passed": true
+    }
+  ],
+  "aggregate": {
+    "duration_s": 654.294854,
+    "rows": 32465,
+    "perception_new_results": 17754,
+    "guidance_valid_results": 154,
+    "sp_valid_results": 154,
+    "armed_true_rows": 0,
+    "override_active_true_rows": 0,
+    "set_raw_rc_attempt_max": 0,
+    "set_raw_rc_write_max": 0,
+    "set_raw_rc_ack_max": 0,
+    "worker_errors": []
+  },
+  "verdict": {
+    "log_only_safety_gate_passed": true,
+    "static_background_subtest_passed": true,
+    "transient_object_temporal_rejection_passed": true,
+    "non_target_aircraft_rejection_passed": false,
+    "four_heading_coverage_complete": false,
+    "active_control_release_passed": false,
+    "operator_record": "F00-A static-background subtest accepted; strict F00 negative gate remains open"
+  },
+  "artifacts": [
+    {
+      "path": "logs/outdoor_g00/F00_SKY_GROUND_20260901_141859_bundle.tar.gz",
+      "sha256": "1a764131e5c8d2e0d76a02fcbe1735e719ef898390a6540a3a74bdb4f20dfb75"
+    },
+    {
+      "path": "logs/outdoor_f00_review/F00_SKY_REVIEW_20260901_143149_bundle.tar.gz",
+      "sha256": "b1185b687b7d0a03fdde0a1cfc26d9448fe8be8d0f4ab27945b9822321bc252f"
+    },
+    {
+      "path": "logs/outdoor_f00_continue/F00_SKY_CONTINUE_20260901_144608_bundle.tar.gz",
+      "sha256": "ed72fce39c0a899081c47ed1cd2284e220c7e7181698583a3bd0f57c107567b2"
+    }
+  ]
+}
