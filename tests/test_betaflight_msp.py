@@ -5,11 +5,13 @@ import numpy as np
 
 from vision_guidance.betaflight_msp import (
     MSP_ANALOG,
+    MSP_ALTITUDE,
     MSP_API_VERSION,
     MSP_ATTITUDE,
     MSP_BOXNAMES,
     MSP_MOTOR,
     MSP_RAW_IMU,
+    MSP_RAW_GPS,
     MSP_RC,
     MSP_SET_RAW_RC,
     MSP_STATUS,
@@ -19,6 +21,7 @@ from vision_guidance.betaflight_msp import (
     encode_msp_frame,
     pack_rc_channels,
     parse_analog,
+    parse_altitude,
     parse_api_version,
     parse_attitude,
     parse_box_ids,
@@ -26,6 +29,7 @@ from vision_guidance.betaflight_msp import (
     parse_motor_outputs,
     parse_rc_channels,
     parse_raw_imu,
+    parse_raw_gps,
     parse_status,
 )
 from vision_guidance.flight_control import RcCommand
@@ -68,6 +72,53 @@ class FakeTransport:
 
 
 class BetaflightMSPTest(unittest.TestCase):
+    def test_parses_raw_gps_units_signs_and_optional_hdop(self):
+        payload = struct.pack(
+            "<BBiiHHHH", 2, 17, 374221234, -1220845678, 40000, 456, 2712, 85
+        )
+
+        gps = parse_raw_gps(payload)
+
+        self.assertEqual(gps.fix, 2)
+        self.assertEqual(gps.satellites, 17)
+        self.assertAlmostEqual(gps.latitude_deg, 37.4221234)
+        self.assertAlmostEqual(gps.longitude_deg, -122.0845678)
+        self.assertEqual(gps.altitude_m, 40000.0)
+        self.assertAlmostEqual(gps.ground_speed_m_s, 4.56)
+        self.assertAlmostEqual(gps.ground_course_deg, 271.2)
+        self.assertEqual(gps.hdop, 85)
+        self.assertIsNone(parse_raw_gps(payload[:16]).hdop)
+        with self.assertRaisesRegex(MSPError, "RAW_GPS"):
+            parse_raw_gps(payload[:15])
+
+    def test_parses_altitude_units_and_vertical_sign_without_reinterpreting_it(self):
+        altitude = parse_altitude(struct.pack("<ih", -1234, -250))
+
+        self.assertAlmostEqual(altitude.altitude_m, -12.34)
+        self.assertAlmostEqual(altitude.vertical_speed_m_s, -2.5)
+        with self.assertRaisesRegex(MSPError, "ALTITUDE"):
+            parse_altitude(b"\x00" * 5)
+
+    def test_adapter_reads_raw_gps_and_altitude_commands(self):
+        transport = FakeTransport(
+            [
+                encode_msp_frame(
+                    MSP_RAW_GPS,
+                    struct.pack("<BBiiHHH", 1, 10, 100000000, 200000000, 20, 100, 900),
+                    direction=">",
+                ),
+                encode_msp_frame(MSP_ALTITUDE, struct.pack("<ih", 1234, 25), direction=">"),
+            ]
+        )
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+
+        self.assertAlmostEqual(adapter.read_raw_gps().ground_speed_m_s, 1.0)
+        self.assertAlmostEqual(adapter.read_altitude().altitude_m, 12.34)
+        self.assertEqual(
+            [decode_msp_frame(value).command for value in transport.writes],
+            [MSP_RAW_GPS, MSP_ALTITUDE],
+        )
+
     def test_encode_decode_round_trip(self):
         frame = encode_msp_frame(MSP_API_VERSION, b"\x01\x02\x03", direction="<")
 

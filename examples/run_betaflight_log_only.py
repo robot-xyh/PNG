@@ -15,7 +15,7 @@ import subprocess
 import sys
 import threading
 import time
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from pathlib import Path
 from typing import Any
 
@@ -28,14 +28,21 @@ from vision_guidance.airsim_adapter import AirSimDetectionConfig  # noqa: E402
 from vision_guidance.attitude_buffer import AttitudeHistoryBuffer  # noqa: E402
 from vision_guidance.betaflight_msp import (  # noqa: E402
     MSP_ANALOG,
+    MSP_ALTITUDE,
     MSP_ATTITUDE,
     MSP_MOTOR,
     MSP_RAW_IMU,
+    MSP_RAW_GPS,
     MSP_RC,
     MSP_SET_RAW_RC,
     MSP_STATUS,
     BetaflightMSPAdapter,
     BetaflightTelemetry,
+)
+from vision_guidance.betaflight_kinematics import (  # noqa: E402
+    BetaflightKinematicEstimator,
+    KinematicEstimatorConfig,
+    VehicleKinematicState,
 )
 from vision_guidance.betaflight_runtime import (  # noqa: E402
     MSP_OVERRIDE_PERMANENT_ID,
@@ -52,6 +59,7 @@ from vision_guidance.betaflight_web import (  # noqa: E402
     telemetry_payload_from_log_row,
 )
 from vision_guidance.flight_control import (  # noqa: E402
+    AccelerationTiltRateConfig,
     BetaflightSafetyStateMachine,
     CommandWatchdog,
     GuidanceCommandShaper,
@@ -90,17 +98,54 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 14
+LOG_SCHEMA_VERSION = 16
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
+    ("raw_gps", MSP_RAW_GPS),
+    ("altitude", MSP_ALTITUDE),
     ("motor", MSP_MOTOR),
     ("rc", MSP_RC),
     ("attitude", MSP_ATTITUDE),
     ("analog", MSP_ANALOG),
     ("set_raw_rc", MSP_SET_RAW_RC),
+)
+
+KINEMATICS_LOG_FIELDS = (
+    "kinematics_valid",
+    "kinematics_reason",
+    "kinematics_source",
+    "kinematics_horizontal_valid",
+    "kinematics_vertical_valid",
+    "kinematics_position_n_m",
+    "kinematics_position_e_m",
+    "kinematics_position_d_m",
+    "kinematics_velocity_raw_n_m_s",
+    "kinematics_velocity_raw_e_m_s",
+    "kinematics_velocity_raw_d_m_s",
+    "kinematics_velocity_filtered_n_m_s",
+    "kinematics_velocity_filtered_e_m_s",
+    "kinematics_velocity_filtered_d_m_s",
+    "gps_fix",
+    "gps_satellites",
+    "gps_hdop",
+    "gps_latitude_deg",
+    "gps_longitude_deg",
+    "gps_altitude_m",
+    "gps_ground_speed_m_s",
+    "gps_ground_course_deg",
+    "baro_altitude_m",
+    "baro_vertical_speed_up_m_s",
+    "gps_age_s",
+    "altitude_age_s",
+    "gps_sample_monotonic_s",
+    "altitude_sample_monotonic_s",
+    "kinematics_origin_locked",
+    "kinematics_origin_latitude_deg",
+    "kinematics_origin_longitude_deg",
+    "kinematics_origin_baro_altitude_m",
 )
 
 
@@ -1114,6 +1159,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     )
     takeover_duration_interlock = TakeoverDurationInterlock(takeover_duration_config)
     msp_runtime_config = MspRuntimeConfig.from_mapping(dict(config.get("msp_runtime", {})))
+    kinematics_config = KinematicEstimatorConfig.from_mapping(
+        dict(config.get("kinematics", {}))
+    )
+    kinematics_estimator = BetaflightKinematicEstimator(kinematics_config)
     bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
     if control_output_requested and bench_scope == "noprop_bench":
         if not motor_interlock_config.enabled or not motor_interlock_config.latch_until_disarm:
@@ -1201,6 +1250,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         },
         control_authorization=asdict(authorization),
         msp_runtime={"config": asdict(msp_runtime_config)},
+        kinematics={"config": asdict(kinematics_config), "control_connected": False},
         attitude_fusion={
             "max_wait_s": deferred_fusion.max_wait_s,
             "max_pending": deferred_fusion.max_pending,
@@ -1231,7 +1281,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     )
     print(
         "Guidance command mapping: "
-        f"input_frame={guidance_metadata['rate_gain_input_frame']}"
+        f"input_frame={guidance_metadata['rate_gain_input_frame']} "
+        f"mapping={guidance_metadata['command_mapping_type']}"
     )
     print(
         f"Authorization: approved={int(authorization.approved)} reason={authorization.reason} "
@@ -1293,6 +1344,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                             )
                             last_attitude_buffer_sample_s = attitude_sample_s
                         last_attitude_s = attitude_sample_s
+                kinematic_state = kinematics_estimator.update(telemetry, loop_start)
 
                 raw_detection, detector_stats = _read_detection(
                     detection_source,
@@ -1337,6 +1389,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 )
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
                 detector_stats.update(_guidance_log_stats(guidance_metadata))
+                detector_stats.update(_kinematics_log_stats(kinematic_state, telemetry))
                 result = fusion_state.result
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
@@ -1570,6 +1623,14 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "takeover_duration_interlock_latched": int(takeover_duration_state.latched),
                         "physical_rc_fresh": int(physical_rc_fresh),
                         "watchdog_ok": int(watchdog_ok),
+                        "kinematics_origin_locked": int(kinematic_state.origin_locked),
+                        "kinematics_valid": int(kinematic_state.valid),
+                        "kinematics_reason": kinematic_state.reason,
+                        "gps_fix": kinematic_state.fix,
+                        "gps_command_error": detector_stats.get("msp_cmd_raw_gps_last_error", ""),
+                        "altitude_command_error": detector_stats.get(
+                            "msp_cmd_altitude_last_error", ""
+                        ),
                         "msp_telemetry_error": telemetry_error,
                         "msp_worker_error": "" if worker_snapshot is None else worker_snapshot.worker_error,
                         "web_error": detector_stats.get("web_last_error", ""),
@@ -1740,10 +1801,11 @@ def _guidance_log_stats(metadata: dict[str, Any]) -> dict[str, Any]:
         "guidance_ttc_required": int(bool(metadata["ttc_required"])),
         "guidance_eval_frame": metadata["guidance_eval_frame"],
         "rate_gain_input_frame": metadata["rate_gain_input_frame"],
+        "command_mapping_type": metadata["command_mapping_type"],
     }
 
 
-def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, str]:
+def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, Any]:
     values = dict(config.get("guidance_command", {}))
     guidance_eval_frame = str(values.get("guidance_eval_frame", "")).strip().lower()
     rate_gain_input_frame = str(values.get("rate_gain_input_frame", "")).strip().lower()
@@ -1755,10 +1817,45 @@ def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, str]:
         raise RuntimeError(
             f"guidance_command.rate_gain_input_frame must be {RATE_GAIN_INPUT_FRAME!r}"
         )
-    return {
+    mapping_type = str(values.get("mapping_type", "direct_rate_matrix")).strip().lower()
+    if mapping_type not in {"direct_rate_matrix", "accel_tilt_rate"}:
+        raise RuntimeError(
+            "guidance_command.mapping_type must be 'direct_rate_matrix' or 'accel_tilt_rate'"
+        )
+    metadata: dict[str, Any] = {
         "guidance_eval_frame": guidance_eval_frame,
         "rate_gain_input_frame": rate_gain_input_frame,
+        "command_mapping_type": mapping_type,
     }
+    if mapping_type == "accel_tilt_rate":
+        accel_values = values.get("accel_tilt_rate", {})
+        if not isinstance(accel_values, dict):
+            raise RuntimeError("guidance_command.accel_tilt_rate must be a mapping")
+        required_fields = {
+            "gravity_mps2",
+            "roll_attitude_kp_s_inv",
+            "pitch_attitude_kp_s_inv",
+            "max_roll_tilt_deg",
+            "max_pitch_tilt_deg",
+            "max_roll_rate_deg_s",
+            "max_pitch_rate_deg_s",
+            "roll_rate_sign",
+            "pitch_rate_sign",
+            "min_vertical_specific_force_mps2",
+        }
+        missing_fields = sorted(required_fields.difference(accel_values))
+        if missing_fields:
+            raise RuntimeError(
+                "guidance_command.accel_tilt_rate requires explicit fields: "
+                + ", ".join(missing_fields)
+            )
+        try:
+            metadata["accel_tilt_rate"] = asdict(
+                AccelerationTiltRateConfig.from_mapping(accel_values)
+            )
+        except ValueError as exc:
+            raise RuntimeError(f"invalid guidance_command.accel_tilt_rate: {exc}") from exc
+    return metadata
 
 
 def _rc_mapping_config(config: dict[str, Any]) -> RcMappingConfig:
@@ -2073,6 +2170,8 @@ def _msp_log_stats(
         "msp_attitude_age_s": "",
         "msp_analog_age_s": "",
         "msp_raw_imu_age_s": "",
+        "msp_raw_gps_age_s": "",
+        "msp_altitude_age_s": "",
         "msp_motor_age_s": "",
         "msp_publish_tick_interval_s": "",
         "msp_publish_tick_max_interval_s": "",
@@ -2148,6 +2247,8 @@ def _msp_log_stats(
             msp_attitude_age_s=worker_snapshot.attitude_age_s,
             msp_analog_age_s=worker_snapshot.analog_age_s,
             msp_raw_imu_age_s=worker_snapshot.raw_imu_age_s,
+            msp_raw_gps_age_s=worker_snapshot.raw_gps_age_s,
+            msp_altitude_age_s=worker_snapshot.altitude_age_s,
             msp_motor_age_s=worker_snapshot.motor_age_s,
             msp_publish_tick_interval_s=worker_snapshot.publish_tick_interval_s,
             msp_publish_tick_max_interval_s=worker_snapshot.publish_tick_max_interval_s,
@@ -2163,6 +2264,53 @@ def _msp_log_stats(
             throttle_handover_active=int(handover.active),
         )
     return values
+
+
+def _kinematics_log_stats(
+    state: VehicleKinematicState,
+    telemetry: BetaflightTelemetry | None,
+) -> dict[str, Any]:
+    position = state.position_ned_m
+    velocity_raw = state.velocity_ned_raw_m_s
+    velocity_filtered = state.velocity_ned_filtered_m_s
+    return {
+        "kinematics_valid": int(state.valid),
+        "kinematics_reason": state.reason,
+        "kinematics_source": state.source,
+        "kinematics_horizontal_valid": int(state.horizontal_valid),
+        "kinematics_vertical_valid": int(state.vertical_valid),
+        "kinematics_position_n_m": position[0],
+        "kinematics_position_e_m": position[1],
+        "kinematics_position_d_m": position[2],
+        "kinematics_velocity_raw_n_m_s": velocity_raw[0],
+        "kinematics_velocity_raw_e_m_s": velocity_raw[1],
+        "kinematics_velocity_raw_d_m_s": velocity_raw[2],
+        "kinematics_velocity_filtered_n_m_s": velocity_filtered[0],
+        "kinematics_velocity_filtered_e_m_s": velocity_filtered[1],
+        "kinematics_velocity_filtered_d_m_s": velocity_filtered[2],
+        "gps_fix": state.fix,
+        "gps_satellites": state.satellites,
+        "gps_hdop": state.hdop,
+        "gps_latitude_deg": state.latitude_deg,
+        "gps_longitude_deg": state.longitude_deg,
+        "gps_altitude_m": state.gps_altitude_m,
+        "gps_ground_speed_m_s": state.ground_speed_m_s,
+        "gps_ground_course_deg": state.ground_course_deg,
+        "baro_altitude_m": state.baro_altitude_m,
+        "baro_vertical_speed_up_m_s": state.vertical_speed_up_m_s,
+        "gps_age_s": state.gps_age_s,
+        "altitude_age_s": state.altitude_age_s,
+        "gps_sample_monotonic_s": (
+            None if telemetry is None else telemetry.raw_gps_timestamp_s
+        ),
+        "altitude_sample_monotonic_s": (
+            None if telemetry is None else telemetry.altitude_timestamp_s
+        ),
+        "kinematics_origin_locked": int(state.origin_locked),
+        "kinematics_origin_latitude_deg": state.origin_latitude_deg,
+        "kinematics_origin_longitude_deg": state.origin_longitude_deg,
+        "kinematics_origin_baro_altitude_m": state.origin_baro_altitude_m,
+    }
 
 
 def _platform_health_log_stats(snapshot, timestamp: float) -> dict[str, Any]:
@@ -2228,6 +2376,8 @@ def _guidance_setpoint(
         rate_gain_matrix=command_cfg.get("rate_gain_matrix", [[0.0, 0.0, 0.0], [0.0, 0.0, 0.0], [0.0, 0.0, 0.0]]),
         hover_thrust=float(command_cfg.get("hover_thrust", config.get("rc_mapping", {}).get("thrust_hover", 0.5))),
         yaw_rate_deg_s=float(command_cfg.get("yaw_rate_bias_deg_s", 0.0)),
+        mapping_type=str(command_cfg.get("mapping_type", "direct_rate_matrix")),
+        accel_tilt_rate=command_cfg.get("accel_tilt_rate", {}),
     )
     body_vector = None
     if guidance.valid and result is not None and result.R_IB is not None:
@@ -2236,12 +2386,7 @@ def _guidance_setpoint(
         except ValueError:
             body_vector = None
     if setpoint.timestamp == 0.0:
-        setpoint = GuidanceSetpoint(
-            timestamp=timestamp,
-            valid=setpoint.valid,
-            source=setpoint.source,
-            reject_reason=setpoint.reject_reason,
-        )
+        setpoint = replace(setpoint, timestamp=timestamp)
     return setpoint, body_vector
 
 
@@ -2316,6 +2461,7 @@ def _write_run_meta(
     fc_configuration: dict[str, Any] | None = None,
     control_authorization: dict[str, Any] | None = None,
     msp_runtime: dict[str, Any] | None = None,
+    kinematics: dict[str, Any] | None = None,
     attitude_fusion: dict[str, Any] | None = None,
     guidance: dict[str, Any] | None = None,
     camera_calibration: dict[str, Any] | None = None,
@@ -2352,6 +2498,7 @@ def _write_run_meta(
         "fc_configuration": fc_configuration or {},
         "control_authorization": control_authorization or {},
         "msp_runtime": msp_runtime or {},
+        "kinematics": kinematics or {},
         "attitude_fusion": attitude_fusion or {},
         "guidance": guidance or {},
         "camera_calibration": camera_calibration or {},
@@ -2460,6 +2607,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_attitude_age_s",
         "msp_analog_age_s",
         "msp_raw_imu_age_s",
+        "msp_raw_gps_age_s",
+        "msp_altitude_age_s",
         "msp_motor_age_s",
         "msp_publish_tick_interval_s",
         "msp_publish_tick_max_interval_s",
@@ -2508,6 +2657,7 @@ def _log_fields(channel_count: int) -> list[str]:
         "mag_raw_x",
         "mag_raw_y",
         "mag_raw_z",
+        *KINEMATICS_LOG_FIELDS,
         "motor_output_count",
         "motor_output_all",
         "motor_interlock_ok",
@@ -2614,6 +2764,7 @@ def _log_fields(channel_count: int) -> list[str]:
         "guidance_ttc_required",
         "guidance_eval_frame",
         "rate_gain_input_frame",
+        "command_mapping_type",
         "ttc_valid",
         "ttc_reject_reason",
         "ttc_quality",
@@ -2629,6 +2780,12 @@ def _log_fields(channel_count: int) -> list[str]:
         "g_eval_body_frd_x",
         "g_eval_body_frd_y",
         "g_eval_body_frd_z",
+        "command_desired_roll_angle_deg",
+        "command_desired_pitch_angle_deg",
+        "command_current_roll_angle_deg",
+        "command_current_pitch_angle_deg",
+        "command_roll_attitude_error_deg",
+        "command_pitch_attitude_error_deg",
         "pre_shape_sp_valid",
         "pre_shape_sp_source",
         "pre_shape_sp_reject_reason",
@@ -2887,6 +3044,8 @@ def _log_row(
         "msp_attitude_age_s": _stats_float(detector_stats, "msp_attitude_age_s", precision=6),
         "msp_analog_age_s": _stats_float(detector_stats, "msp_analog_age_s", precision=6),
         "msp_raw_imu_age_s": _stats_float(detector_stats, "msp_raw_imu_age_s", precision=6),
+        "msp_raw_gps_age_s": _stats_float(detector_stats, "msp_raw_gps_age_s", precision=6),
+        "msp_altitude_age_s": _stats_float(detector_stats, "msp_altitude_age_s", precision=6),
         "msp_motor_age_s": _stats_float(detector_stats, "msp_motor_age_s", precision=6),
         "msp_publish_tick_interval_s": _stats_float(
             detector_stats, "msp_publish_tick_interval_s", precision=6
@@ -3075,6 +3234,8 @@ def _log_row(
         "guidance_ttc_required": detector_stats.get("guidance_ttc_required", ""),
         "guidance_eval_frame": detector_stats.get("guidance_eval_frame", ""),
         "rate_gain_input_frame": detector_stats.get("rate_gain_input_frame", ""),
+        "command_mapping_type": pre_shape_setpoint.mapping_type
+        or detector_stats.get("command_mapping_type", ""),
         "ttc_valid": "" if ttc is None else int(ttc.valid),
         "ttc_reject_reason": "" if ttc is None else ttc.reject_reason or "",
         "ttc_quality": "" if ttc is None else f"{ttc.quality:.6f}",
@@ -3090,6 +3251,24 @@ def _log_row(
         "g_eval_body_frd_x": _vector_field(guidance_body_frd, 0),
         "g_eval_body_frd_y": _vector_field(guidance_body_frd, 1),
         "g_eval_body_frd_z": _vector_field(guidance_body_frd, 2),
+        "command_desired_roll_angle_deg": _format_optional_float(
+            pre_shape_setpoint.desired_roll_angle_deg, precision=6
+        ),
+        "command_desired_pitch_angle_deg": _format_optional_float(
+            pre_shape_setpoint.desired_pitch_angle_deg, precision=6
+        ),
+        "command_current_roll_angle_deg": _format_optional_float(
+            pre_shape_setpoint.current_roll_angle_deg, precision=6
+        ),
+        "command_current_pitch_angle_deg": _format_optional_float(
+            pre_shape_setpoint.current_pitch_angle_deg, precision=6
+        ),
+        "command_roll_attitude_error_deg": _format_optional_float(
+            pre_shape_setpoint.roll_attitude_error_deg, precision=6
+        ),
+        "command_pitch_attitude_error_deg": _format_optional_float(
+            pre_shape_setpoint.pitch_attitude_error_deg, precision=6
+        ),
         "pre_shape_sp_valid": int(pre_shape_setpoint.valid),
         "pre_shape_sp_source": pre_shape_setpoint.source,
         "pre_shape_sp_reject_reason": pre_shape_setpoint.reject_reason,
@@ -3172,6 +3351,7 @@ def _log_row(
         "web_error_count": detector_stats.get("web_error_count", ""),
         "web_last_error": detector_stats.get("web_last_error", ""),
     }
+    row.update({field: detector_stats.get(field, "") for field in KINEMATICS_LOG_FIELDS})
     for label, _command in MSP_COMMAND_LOG_SPECS:
         prefix = f"msp_cmd_{label}"
         row[f"{prefix}_attempt_count"] = detector_stats.get(f"{prefix}_attempt_count", "")

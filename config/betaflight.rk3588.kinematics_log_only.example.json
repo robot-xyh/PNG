@@ -1,10 +1,4 @@
 {
-  "bench_profile": {
-    "scope": "noprop_bench",
-    "description": "Restricted PNG-to-MSP bench profile; all propellers must be physically removed.",
-    "rate_limit_deg_s": 3.0,
-    "throttle_pwm_range": [1000, 1100]
-  },
   "serial": {
     "port": "/dev/ttyS1",
     "baud": 115200,
@@ -14,42 +8,52 @@
     "manifest": "config/betaflight.src-reference.json",
     "runtime_loadable": false
   },
+  "read_only_kinematics_profile": {
+    "scope": "msp_gps_altitude_log_only",
+    "control_connected": false,
+    "set_raw_rc_authorized": false,
+    "note": "Single-UART GPS/altitude acquisition only; move formal control to a second UART or independent GNSS link."
+  },
   "msp_runtime": {
     "io_worker_enabled": true,
     "transport_mode": "async_pipeline",
     "telemetry_poll_hz": 5.0,
-    "status_poll_hz": 5.0,
-    "attitude_poll_hz": 10.0,
+    "status_poll_hz": 2.0,
+    "attitude_poll_hz": 20.0,
     "raw_imu_poll_hz": 5.0,
-    "motor_poll_hz": 2.0,
-    "rc_poll_hz": 10.0,
-    "analog_poll_hz": 2.0,
+    "raw_gps_poll_hz": 5.0,
+    "altitude_poll_hz": 5.0,
+    "motor_poll_hz": 0.0,
+    "rc_poll_hz": 5.0,
+    "analog_poll_hz": 1.0,
     "control_publish_hz": 50.0,
     "physical_rc_timeout_s": 0.25,
     "override_grace_hold_s": 0.35,
     "override_channels_mask": 15,
-    "override_mode_cli_id": 50,
     "aux_arm_channel_zero_based": 4,
     "throttle_channel_zero_based": 2,
     "set_raw_rc_channel_map": "AETR1234",
     "throttle_handover_s": 0.4,
-    "prefill_enabled": true,
-    "prefill_min_frames": 10,
-    "prefill_valid_min_us": 900,
-    "prefill_valid_max_us": 2100,
-    "staged_command_timeout_s": 0.15,
-    "shutdown_passthrough_frames": 3,
     "response_drain_budget_ms": 3.0,
     "response_stale_s": 0.25
+  },
+  "kinematics": {
+    "gps_timeout_s": 0.5,
+    "altitude_timeout_s": 0.5,
+    "velocity_filter_tau_s": 0.25,
+    "minimum_fix": 1,
+    "minimum_satellites": 6,
+    "origin_lock_samples": 3,
+    "origin_stability_radius_m": 5.0
   },
   "logging": {
     "platform_health_hz": 1.0
   },
   "telemetry_web": {
-    "enabled": false,
-    "bind": "127.0.0.1",
+    "enabled": true,
+    "bind": "0.0.0.0",
     "port": 8080,
-    "allowed_subnets": ["127.0.0.0/8"],
+    "allowed_subnets": ["127.0.0.0/8", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"],
     "sample_hz": 5.0,
     "history_s": 60.0,
     "stale_after_s": 1.0,
@@ -62,9 +66,8 @@
     }
   },
   "control_authorization": {
-    "enabled": true,
-    "required_scope": "noprop_bench",
-    "approval_manifest": "logs/betaflight_noprop_approval.json"
+    "enabled": false,
+    "approval_manifest": ""
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -142,30 +145,22 @@
   },
   "guidance": {
     "law": "ttc_png",
-    "max_guidance_accel_mps2": 1.0
+    "max_guidance_accel_mps2": 10.0
   },
   "rc_mapping": {
     "channel_map": "AETR1234",
     "channel_count": 8,
-    "rate_mapping_type": "betaflight",
-    "betaflight_rc_rate": [1.0, 1.0, 1.0],
-    "betaflight_super_rate": [0.7, 0.7, 0.7],
-    "betaflight_expo": [0.0, 0.0, 0.0],
-    "betaflight_rate_profile_index": 0,
-    "roll_rate_limit_deg_s": 666.666667,
-    "pitch_rate_limit_deg_s": 666.666667,
-    "yaw_rate_limit_deg_s": 666.666667,
-    "roll_command_limit_deg_s": 3.0,
-    "pitch_command_limit_deg_s": 3.0,
-    "yaw_command_limit_deg_s": 0.0,
+    "roll_rate_limit_deg_s": 120.0,
+    "pitch_rate_limit_deg_s": 120.0,
+    "yaw_rate_limit_deg_s": 90.0,
     "thrust_min": 0.0,
-    "thrust_hover": 0.078,
-    "thrust_max": 0.1,
+    "thrust_hover": 0.5,
+    "thrust_max": 1.0,
     "throttle_min_us": 1000,
-    "throttle_hover_us": 1078,
-    "throttle_max_us": 1100,
+    "throttle_hover_us": 1500,
+    "throttle_max_us": 2000,
     "neutral_throttle_us": 1000,
-    "max_delta_us_per_s": 100.0,
+    "max_delta_us_per_s": 600.0,
     "aux_values_us": {}
   },
   "guidance_command": {
@@ -173,53 +168,50 @@
     "rate_gain_input_frame": "body_frd",
     "mapping_type": "direct_rate_matrix",
     "rate_gain_matrix": [
-      [0.0, 1.0, 0.0],
-      [1.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0],
+      [0.0, 0.0, 0.0],
       [0.0, 0.0, 0.0]
     ],
-    "hover_thrust": 0.078,
+    "accel_tilt_rate": {
+      "gravity_mps2": 9.80665,
+      "roll_attitude_kp_s_inv": 4.0,
+      "pitch_attitude_kp_s_inv": 4.0,
+      "max_roll_tilt_deg": 20.0,
+      "max_pitch_tilt_deg": 20.0,
+      "max_roll_rate_deg_s": 60.0,
+      "max_pitch_rate_deg_s": 60.0,
+      "roll_rate_sign": 1.0,
+      "pitch_rate_sign": 1.0,
+      "min_vertical_specific_force_mps2": 0.5
+    },
+    "hover_thrust": 0.5,
     "yaw_rate_bias_deg_s": 0.0,
     "entry_handoff": {
-      "enabled": true,
+      "enabled": false,
       "duration_s": 0.8,
       "gyro_max_age_s": 0.25,
       "rate_source": "zero"
     },
     "tilt_envelope": {
-      "enabled": true,
+      "enabled": false,
       "max_roll_angle_deg": 35.0,
       "max_pitch_angle_deg": 35.0,
       "softcap_band_deg": 10.0,
       "hardcap_margin_deg": 5.0,
       "hardcap_level_kp": 3.0,
-      "hardcap_max_level_rate_deg_s": 3.0
-    },
-    "bench_axis_mapping_status": "candidate_requires_noprop_sign_check"
+      "hardcap_max_level_rate_deg_s": 60.0
+    }
   },
   "safety": {
     "telemetry_timeout_s": 0.5,
     "attitude_timeout_s": 0.5,
     "watchdog_timeout_s": 0.25,
     "min_vbat_v": 0.0,
-    "motor_output_interlock": {
-      "enabled": true,
-      "channel_count": 4,
-      "max_output_us": 1200,
-      "max_spread_us": 150,
-      "telemetry_timeout_s": 0.75,
-      "latch_until_disarm": true
-    },
-    "takeover_duration_interlock": {
-      "enabled": true,
-      "max_duration_s": 3.0,
-      "latch_until_disarm": true
-    },
     "require_aux_enable": true,
     "aux_enable": {
       "channel_index": 7,
       "min_us": 1700,
-      "max_us": 2100,
-      "satisfied_by_override_mode": true
+      "max_us": 2100
     },
     "send_neutral_when_inactive": false
   }

@@ -76,6 +76,10 @@ class BetaflightWebTest(unittest.TestCase):
             "mspParserErrors",
             "shaperInputRates",
             "shaperOutputRates",
+            "commandMapping",
+            "targetAttitude",
+            "currentAttitude",
+            "attitudeError",
             "entryHandoff",
             "tiltSoftcap",
             "tiltLevelWeights",
@@ -151,6 +155,13 @@ class BetaflightWebTest(unittest.TestCase):
             "g_eval_body_frd_y": "0.5",
             "g_eval_body_frd_z": "0.6",
             "sp_valid": "1",
+            "command_mapping_type": "accel_tilt_rate",
+            "command_desired_roll_angle_deg": "5.0",
+            "command_desired_pitch_angle_deg": "-3.0",
+            "command_current_roll_angle_deg": "1.0",
+            "command_current_pitch_angle_deg": "-1.0",
+            "command_roll_attitude_error_deg": "4.0",
+            "command_pitch_attitude_error_deg": "-2.0",
             "pre_shape_sp_roll_rate_deg_s": "3.0",
             "pre_shape_sp_pitch_rate_deg_s": "-2.0",
             "sp_roll_rate_deg_s": "1.5",
@@ -226,6 +237,36 @@ class BetaflightWebTest(unittest.TestCase):
             "python_gc_last_pause_ms": "1.25",
             "python_gc_max_pause_ms": "3.5",
             "python_gc_total_pause_ms": "7.75",
+            "kinematics_valid": "1",
+            "kinematics_reason": "valid",
+            "kinematics_source": "msp_raw_gps+msp_altitude",
+            "kinematics_horizontal_valid": "1",
+            "kinematics_vertical_valid": "1",
+            "kinematics_position_n_m": "1.2",
+            "kinematics_position_e_m": "-2.3",
+            "kinematics_position_d_m": "-0.4",
+            "kinematics_velocity_raw_n_m_s": "4.0",
+            "kinematics_velocity_raw_e_m_s": "5.0",
+            "kinematics_velocity_raw_d_m_s": "-0.2",
+            "kinematics_velocity_filtered_n_m_s": "3.8",
+            "kinematics_velocity_filtered_e_m_s": "4.9",
+            "kinematics_velocity_filtered_d_m_s": "-0.1",
+            "gps_fix": "1",
+            "gps_satellites": "12",
+            "gps_hdop": "85",
+            "gps_latitude_deg": "37.1",
+            "gps_longitude_deg": "-122.2",
+            "gps_altitude_m": "20",
+            "gps_ground_speed_m_s": "6.4",
+            "gps_ground_course_deg": "51.3",
+            "gps_age_s": "0.1",
+            "baro_altitude_m": "2.5",
+            "baro_vertical_speed_up_m_s": "0.2",
+            "altitude_age_s": "0.05",
+            "kinematics_origin_locked": "1",
+            "kinematics_origin_latitude_deg": "37.0",
+            "kinematics_origin_longitude_deg": "-122.0",
+            "kinematics_origin_baro_altitude_m": "2.1",
         }
 
         payload = telemetry_payload_from_log_row(row, channel_count=8)
@@ -241,6 +282,13 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["flight_controller"]["attitude_deg"], [2.5, -1.0, 90.0])
         self.assertEqual(payload["flight_controller"]["gyro_msp_raw"], [10.0, -20.0, 30.0])
         self.assertEqual(payload["flight_controller"]["motor_outputs"][:4], [1000, 1010, 1020, 1030])
+        self.assertTrue(payload["kinematics"]["valid"])
+        self.assertEqual(payload["kinematics"]["position_ned_m"], [1.2, -2.3, -0.4])
+        self.assertEqual(
+            payload["kinematics"]["velocity_ned_filtered_m_s"], [3.8, 4.9, -0.1]
+        )
+        self.assertEqual(payload["kinematics"]["gps"]["satellites"], 12)
+        self.assertTrue(payload["kinematics"]["origin"]["locked"])
         self.assertEqual(payload["msp"]["motor_age_s"], 0.12)
         self.assertTrue(payload["msp"]["parser"]["override_release_hold_active"])
         self.assertTrue(payload["msp"]["last_publish_gates"]["command_active"])
@@ -282,6 +330,10 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["guidance"]["g_eval"], [0.1, 0.2, 0.3])
         self.assertEqual(payload["guidance"]["g_eval_body_frd"], [0.4, 0.5, 0.6])
         shaping = payload["command"]["shaping"]
+        self.assertEqual(payload["command"]["mapping_type"], "accel_tilt_rate")
+        self.assertEqual(payload["command"]["attitude_mapping"]["desired_deg"], [5.0, -3.0])
+        self.assertEqual(payload["command"]["attitude_mapping"]["current_deg"], [1.0, -1.0])
+        self.assertEqual(payload["command"]["attitude_mapping"]["error_deg"], [4.0, -2.0])
         self.assertTrue(shaping["valid"])
         self.assertEqual(shaping["input_rate_deg_s"], [3.0, -2.0])
         self.assertEqual(shaping["output_rate_deg_s"], [1.5, -1.0])

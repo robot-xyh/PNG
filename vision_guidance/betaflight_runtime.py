@@ -10,9 +10,11 @@ from typing import Any, Sequence
 
 from .betaflight_msp import (
     MSP_ANALOG,
+    MSP_ALTITUDE,
     MSP_ATTITUDE,
     MSP_MOTOR,
     MSP_RAW_IMU,
+    MSP_RAW_GPS,
     MSP_RC,
     MSP_SET_RAW_RC,
     MSP_STATUS,
@@ -21,9 +23,11 @@ from .betaflight_msp import (
     BetaflightTelemetry,
     MspAdapterStats,
     parse_analog,
+    parse_altitude,
     parse_attitude,
     parse_motor_outputs,
     parse_raw_imu,
+    parse_raw_gps,
     parse_rc_channels,
     parse_status,
 )
@@ -54,6 +58,8 @@ class MspRuntimeConfig:
     status_poll_hz: float = 5.0
     attitude_poll_hz: float = 5.0
     raw_imu_poll_hz: float = 0.0
+    raw_gps_poll_hz: float = 0.0
+    altitude_poll_hz: float = 0.0
     motor_poll_hz: float = 0.0
     rc_poll_hz: float = 5.0
     analog_poll_hz: float = 5.0
@@ -85,6 +91,8 @@ class MspRuntimeConfig:
             status_poll_hz=float(values.get("status_poll_hz", legacy_poll_hz)),
             attitude_poll_hz=float(values.get("attitude_poll_hz", legacy_poll_hz)),
             raw_imu_poll_hz=float(values.get("raw_imu_poll_hz", 0.0)),
+            raw_gps_poll_hz=float(values.get("raw_gps_poll_hz", 0.0)),
+            altitude_poll_hz=float(values.get("altitude_poll_hz", 0.0)),
             motor_poll_hz=float(values.get("motor_poll_hz", 0.0)),
             rc_poll_hz=float(values.get("rc_poll_hz", legacy_poll_hz)),
             analog_poll_hz=float(values.get("analog_poll_hz", legacy_poll_hz)),
@@ -116,6 +124,8 @@ class MspRuntimeConfig:
                 config.status_poll_hz,
                 config.attitude_poll_hz,
                 config.raw_imu_poll_hz,
+                config.raw_gps_poll_hz,
+                config.altitude_poll_hz,
                 config.motor_poll_hz,
                 config.rc_poll_hz,
                 config.analog_poll_hz,
@@ -156,6 +166,8 @@ class MspWorkerSnapshot:
     attitude_age_s: float | None
     analog_age_s: float | None
     raw_imu_age_s: float | None
+    raw_gps_age_s: float | None
+    altitude_age_s: float | None
     motor_age_s: float | None
     physical_rc_age_s: float | None
     physical_rc_fresh: bool
@@ -490,6 +502,8 @@ class BetaflightMspIoWorker:
             "status": config.status_poll_hz,
             "attitude": config.attitude_poll_hz,
             "raw_imu": config.raw_imu_poll_hz,
+            "raw_gps": config.raw_gps_poll_hz,
+            "altitude": config.altitude_poll_hz,
             "motor": config.motor_poll_hz,
             "rc": config.rc_poll_hz,
             "analog": config.analog_poll_hz,
@@ -554,6 +568,8 @@ class BetaflightMspIoWorker:
             attitude_timestamp = None if telemetry is None else telemetry.attitude_timestamp_s
             analog_timestamp = None if telemetry is None else telemetry.analog_timestamp_s
             raw_imu_timestamp = None if telemetry is None else telemetry.raw_imu_timestamp_s
+            raw_gps_timestamp = None if telemetry is None else telemetry.raw_gps_timestamp_s
+            altitude_timestamp = None if telemetry is None else telemetry.altitude_timestamp_s
             motor_timestamp = None if telemetry is None else telemetry.motor_timestamp_s
             if telemetry is not None:
                 if status_timestamp is None and telemetry.status is not None:
@@ -564,12 +580,18 @@ class BetaflightMspIoWorker:
                     analog_timestamp = telemetry.timestamp
                 if raw_imu_timestamp is None and telemetry.raw_imu is not None:
                     raw_imu_timestamp = telemetry.timestamp
+                if raw_gps_timestamp is None and telemetry.raw_gps is not None:
+                    raw_gps_timestamp = telemetry.timestamp
+                if altitude_timestamp is None and telemetry.altitude is not None:
+                    altitude_timestamp = telemetry.timestamp
                 if motor_timestamp is None and telemetry.motor_outputs:
                     motor_timestamp = telemetry.timestamp
             status_age = None if status_timestamp is None else max(0.0, now - status_timestamp)
             attitude_age = None if attitude_timestamp is None else max(0.0, now - attitude_timestamp)
             analog_age = None if analog_timestamp is None else max(0.0, now - analog_timestamp)
             raw_imu_age = None if raw_imu_timestamp is None else max(0.0, now - raw_imu_timestamp)
+            raw_gps_age = None if raw_gps_timestamp is None else max(0.0, now - raw_gps_timestamp)
+            altitude_age = None if altitude_timestamp is None else max(0.0, now - altitude_timestamp)
             motor_age = None if motor_timestamp is None else max(0.0, now - motor_timestamp)
             telemetry_age = status_age
             rc_age = None if self._physical_rc_received_s is None else max(0.0, now - self._physical_rc_received_s)
@@ -596,6 +618,8 @@ class BetaflightMspIoWorker:
                 attitude_age_s=attitude_age,
                 analog_age_s=analog_age,
                 raw_imu_age_s=raw_imu_age,
+                raw_gps_age_s=raw_gps_age,
+                altitude_age_s=altitude_age,
                 motor_age_s=motor_age,
                 physical_rc_age_s=rc_age,
                 physical_rc_fresh=bool(
@@ -713,6 +737,8 @@ class BetaflightMspIoWorker:
             "status": MSP_STATUS,
             "attitude": MSP_ATTITUDE,
             "raw_imu": MSP_RAW_IMU,
+            "raw_gps": MSP_RAW_GPS,
+            "altitude": MSP_ALTITUDE,
             "motor": MSP_MOTOR,
             "rc": MSP_RC,
             "analog": MSP_ANALOG,
@@ -740,6 +766,8 @@ class BetaflightMspIoWorker:
             MSP_STATUS: "status",
             MSP_ATTITUDE: "attitude",
             MSP_RAW_IMU: "raw_imu",
+            MSP_RAW_GPS: "raw_gps",
+            MSP_ALTITUDE: "altitude",
             MSP_MOTOR: "motor",
             MSP_RC: "rc",
             MSP_ANALOG: "analog",
@@ -748,6 +776,8 @@ class BetaflightMspIoWorker:
             MSP_STATUS: parse_status,
             MSP_ATTITUDE: parse_attitude,
             MSP_RAW_IMU: parse_raw_imu,
+            MSP_RAW_GPS: parse_raw_gps,
+            MSP_ALTITUDE: parse_altitude,
             MSP_MOTOR: parse_motor_outputs,
             MSP_RC: parse_rc_channels,
             MSP_ANALOG: parse_analog,
@@ -802,6 +832,10 @@ class BetaflightMspIoWorker:
                 value = self.adapter.read_attitude()
             elif name == "raw_imu":
                 value = self.adapter.read_raw_imu()
+            elif name == "raw_gps":
+                value = self.adapter.read_raw_gps()
+            elif name == "altitude":
+                value = self.adapter.read_altitude()
             elif name == "motor":
                 value = self.adapter.read_motor_outputs()
             elif name == "rc":
@@ -846,6 +880,20 @@ class BetaflightMspIoWorker:
                     timestamp=received_s,
                     raw_imu=value,
                     raw_imu_timestamp_s=received_s,
+                )
+            elif name == "raw_gps":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    raw_gps=value,
+                    raw_gps_timestamp_s=received_s,
+                )
+            elif name == "altitude":
+                telemetry = replace(
+                    telemetry,
+                    timestamp=received_s,
+                    altitude=value,
+                    altitude_timestamp_s=received_s,
                 )
             elif name == "motor":
                 telemetry = replace(
@@ -940,6 +988,16 @@ class BetaflightMspIoWorker:
                     telemetry.raw_imu_timestamp_s
                     if telemetry.raw_imu_timestamp_s is not None
                     else received_s if telemetry.raw_imu is not None else None
+                ),
+                raw_gps_timestamp_s=(
+                    telemetry.raw_gps_timestamp_s
+                    if telemetry.raw_gps_timestamp_s is not None
+                    else received_s if telemetry.raw_gps is not None else None
+                ),
+                altitude_timestamp_s=(
+                    telemetry.altitude_timestamp_s
+                    if telemetry.altitude_timestamp_s is not None
+                    else received_s if telemetry.altitude is not None else None
                 ),
             )
             with self._lock:

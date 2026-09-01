@@ -33,6 +33,13 @@ class GuidanceSetpoint:
     valid: bool = True
     source: str = ""
     reject_reason: str = ""
+    mapping_type: str = ""
+    desired_roll_angle_deg: float | None = None
+    desired_pitch_angle_deg: float | None = None
+    current_roll_angle_deg: float | None = None
+    current_pitch_angle_deg: float | None = None
+    roll_attitude_error_deg: float | None = None
+    pitch_attitude_error_deg: float | None = None
 
     @classmethod
     def from_body_rates_rad_s(
@@ -203,6 +210,61 @@ class GuidanceCommandShapingDiagnostics:
     roll_level_weight: float = 0.0
     pitch_level_weight: float = 0.0
     hardcap_active: bool = False
+
+
+@dataclass(frozen=True)
+class AccelerationTiltRateConfig:
+    """Map an inertial acceleration demand through an attitude outer loop."""
+
+    gravity_mps2: float = 9.80665
+    roll_attitude_kp_s_inv: float = 4.0
+    pitch_attitude_kp_s_inv: float = 4.0
+    max_roll_tilt_deg: float = 20.0
+    max_pitch_tilt_deg: float = 20.0
+    max_roll_rate_deg_s: float = 60.0
+    max_pitch_rate_deg_s: float = 60.0
+    roll_rate_sign: float = 1.0
+    pitch_rate_sign: float = 1.0
+    min_vertical_specific_force_mps2: float = 0.5
+
+    def __post_init__(self) -> None:
+        positive_fields = (
+            "gravity_mps2",
+            "roll_attitude_kp_s_inv",
+            "pitch_attitude_kp_s_inv",
+            "max_roll_tilt_deg",
+            "max_pitch_tilt_deg",
+            "max_roll_rate_deg_s",
+            "max_pitch_rate_deg_s",
+            "min_vertical_specific_force_mps2",
+        )
+        for name in positive_fields:
+            value = float(getattr(self, name))
+            if not np.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and positive")
+        if self.max_roll_tilt_deg >= 90.0 or self.max_pitch_tilt_deg >= 90.0:
+            raise ValueError("acceleration tilt limits must be below 90 degrees")
+        for name in ("roll_rate_sign", "pitch_rate_sign"):
+            value = float(getattr(self, name))
+            if value not in (-1.0, 1.0):
+                raise ValueError(f"{name} must be -1 or 1")
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "AccelerationTiltRateConfig":
+        return cls(
+            gravity_mps2=float(values.get("gravity_mps2", 9.80665)),
+            roll_attitude_kp_s_inv=float(values.get("roll_attitude_kp_s_inv", 4.0)),
+            pitch_attitude_kp_s_inv=float(values.get("pitch_attitude_kp_s_inv", 4.0)),
+            max_roll_tilt_deg=float(values.get("max_roll_tilt_deg", 20.0)),
+            max_pitch_tilt_deg=float(values.get("max_pitch_tilt_deg", 20.0)),
+            max_roll_rate_deg_s=float(values.get("max_roll_rate_deg_s", 60.0)),
+            max_pitch_rate_deg_s=float(values.get("max_pitch_rate_deg_s", 60.0)),
+            roll_rate_sign=float(values.get("roll_rate_sign", 1.0)),
+            pitch_rate_sign=float(values.get("pitch_rate_sign", 1.0)),
+            min_vertical_specific_force_mps2=float(
+                values.get("min_vertical_specific_force_mps2", 0.5)
+            ),
+        )
 
 
 class GuidanceCommandShaper:
@@ -1127,23 +1189,33 @@ def guidance_eval_to_setpoint(
     rate_gain_matrix: Sequence[Sequence[float]],
     hover_thrust: float,
     yaw_rate_deg_s: float = 0.0,
+    mapping_type: str = "direct_rate_matrix",
+    accel_tilt_rate: Mapping[str, object] | AccelerationTiltRateConfig | None = None,
 ) -> GuidanceSetpoint:
+    mapping = str(mapping_type).strip().lower()
     if guidance is None:
-        return GuidanceSetpoint(timestamp=0.0, valid=False, reject_reason="guidance_missing", source="guidance_eval")
+        return GuidanceSetpoint(
+            timestamp=0.0,
+            valid=False,
+            reject_reason="guidance_missing",
+            source="guidance_eval",
+            mapping_type=mapping,
+        )
     if not guidance.valid:
         return GuidanceSetpoint(
             timestamp=float(guidance.timestamp),
             valid=False,
             reject_reason=guidance.reject_reason or "guidance_invalid",
             source="guidance_eval",
+            mapping_type=mapping,
         )
-    gain = np.asarray(rate_gain_matrix, dtype=float)
-    if gain.shape != (3, 3) or not np.all(np.isfinite(gain)):
+    if mapping not in {"direct_rate_matrix", "accel_tilt_rate"}:
         return GuidanceSetpoint(
             timestamp=float(guidance.timestamp),
             valid=False,
-            reject_reason="invalid_guidance_rate_mapping",
+            reject_reason="unsupported_guidance_command_mapping",
             source="guidance_eval",
+            mapping_type=mapping,
         )
     if R_IB is None:
         return GuidanceSetpoint(
@@ -1151,16 +1223,51 @@ def guidance_eval_to_setpoint(
             valid=False,
             reject_reason="guidance_attitude_missing",
             source="guidance_eval",
+            mapping_type=mapping,
         )
     try:
-        vector_body_frd = inertial_vector_to_body_frd(guidance.g_eval, R_IB)
+        rotation = validated_rotation_matrix(np.asarray(R_IB, dtype=float), name="guidance R_IB")
     except ValueError:
         return GuidanceSetpoint(
             timestamp=float(guidance.timestamp),
             valid=False,
             reject_reason="invalid_guidance_frame_transform",
             source="guidance_eval",
+            mapping_type=mapping,
         )
+    guidance_vector = np.asarray(guidance.g_eval, dtype=float)
+    if guidance_vector.shape != (3,) or not np.all(np.isfinite(guidance_vector)):
+        return GuidanceSetpoint(
+            timestamp=float(guidance.timestamp),
+            valid=False,
+            reject_reason="invalid_guidance_vector",
+            source="guidance_eval",
+            mapping_type=mapping,
+        )
+
+    if mapping == "accel_tilt_rate":
+        if isinstance(accel_tilt_rate, AccelerationTiltRateConfig):
+            config = accel_tilt_rate
+        else:
+            config = AccelerationTiltRateConfig.from_mapping(accel_tilt_rate or {})
+        return _acceleration_tilt_rate_setpoint(
+            guidance,
+            rotation,
+            config,
+            hover_thrust=float(hover_thrust),
+            yaw_rate_deg_s=float(yaw_rate_deg_s),
+        )
+
+    gain = np.asarray(rate_gain_matrix, dtype=float)
+    if gain.shape != (3, 3) or not np.all(np.isfinite(gain)):
+        return GuidanceSetpoint(
+            timestamp=float(guidance.timestamp),
+            valid=False,
+            reject_reason="invalid_guidance_rate_mapping",
+            source="guidance_eval",
+            mapping_type=mapping,
+        )
+    vector_body_frd = rotation.T @ guidance_vector
     rates = gain @ vector_body_frd
     return GuidanceSetpoint(
         timestamp=float(guidance.timestamp),
@@ -1170,7 +1277,85 @@ def guidance_eval_to_setpoint(
         thrust=float(hover_thrust),
         valid=True,
         source="guidance_eval",
+        mapping_type=mapping,
     )
+
+
+def _acceleration_tilt_rate_setpoint(
+    guidance: GuidanceEval,
+    R_IB: np.ndarray,
+    config: AccelerationTiltRateConfig,
+    *,
+    hover_thrust: float,
+    yaw_rate_deg_s: float,
+) -> GuidanceSetpoint:
+    roll_rad, pitch_rad, yaw_rad = _rotation_matrix_to_euler_frd(R_IB)
+    cos_yaw = float(np.cos(yaw_rad))
+    sin_yaw = float(np.sin(yaw_rad))
+    yaw_rotation = np.array(
+        [[cos_yaw, -sin_yaw, 0.0], [sin_yaw, cos_yaw, 0.0], [0.0, 0.0, 1.0]],
+        dtype=float,
+    )
+    accel_yaw_frd = yaw_rotation.T @ np.asarray(guidance.g_eval, dtype=float)
+    vertical_force = max(
+        config.min_vertical_specific_force_mps2,
+        config.gravity_mps2 - float(accel_yaw_frd[2]),
+    )
+    desired_roll_deg = float(
+        np.clip(
+            np.rad2deg(np.arctan2(float(accel_yaw_frd[1]), vertical_force)),
+            -config.max_roll_tilt_deg,
+            config.max_roll_tilt_deg,
+        )
+    )
+    desired_pitch_deg = float(
+        np.clip(
+            np.rad2deg(np.arctan2(-float(accel_yaw_frd[0]), vertical_force)),
+            -config.max_pitch_tilt_deg,
+            config.max_pitch_tilt_deg,
+        )
+    )
+    current_roll_deg = float(np.rad2deg(roll_rad))
+    current_pitch_deg = float(np.rad2deg(pitch_rad))
+    roll_error_deg = desired_roll_deg - current_roll_deg
+    pitch_error_deg = desired_pitch_deg - current_pitch_deg
+    roll_rate = float(
+        np.clip(
+            config.roll_rate_sign * config.roll_attitude_kp_s_inv * roll_error_deg,
+            -config.max_roll_rate_deg_s,
+            config.max_roll_rate_deg_s,
+        )
+    )
+    pitch_rate = float(
+        np.clip(
+            config.pitch_rate_sign * config.pitch_attitude_kp_s_inv * pitch_error_deg,
+            -config.max_pitch_rate_deg_s,
+            config.max_pitch_rate_deg_s,
+        )
+    )
+    return GuidanceSetpoint(
+        timestamp=float(guidance.timestamp),
+        roll_rate_deg_s=roll_rate,
+        pitch_rate_deg_s=pitch_rate,
+        yaw_rate_deg_s=float(yaw_rate_deg_s),
+        thrust=float(hover_thrust),
+        valid=True,
+        source="guidance_eval",
+        mapping_type="accel_tilt_rate",
+        desired_roll_angle_deg=desired_roll_deg,
+        desired_pitch_angle_deg=desired_pitch_deg,
+        current_roll_angle_deg=current_roll_deg,
+        current_pitch_angle_deg=current_pitch_deg,
+        roll_attitude_error_deg=roll_error_deg,
+        pitch_attitude_error_deg=pitch_error_deg,
+    )
+
+
+def _rotation_matrix_to_euler_frd(R_IB: np.ndarray) -> tuple[float, float, float]:
+    pitch = float(np.arcsin(np.clip(-float(R_IB[2, 0]), -1.0, 1.0)))
+    roll = float(np.arctan2(float(R_IB[2, 1]), float(R_IB[2, 2])))
+    yaw = float(np.arctan2(float(R_IB[1, 0]), float(R_IB[0, 0])))
+    return roll, pitch, yaw
 
 
 def inertial_vector_to_body_frd(

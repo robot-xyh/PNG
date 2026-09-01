@@ -1,5 +1,6 @@
 import hashlib
 import json
+import struct
 import tempfile
 import time
 import unittest
@@ -7,14 +8,18 @@ from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
     MSP_MOTOR,
+    MSP_ALTITUDE,
+    MSP_RAW_GPS,
     MSP_RC,
     MSP_SET_RAW_RC,
     AnalogTelemetry,
+    AltitudeTelemetry,
     AttitudeTelemetry,
     BetaflightMSPAdapter,
     BetaflightTelemetry,
     MspAdapterStats,
     RawImuTelemetry,
+    RawGpsTelemetry,
     StatusTelemetry,
     decode_msp_frame,
     encode_msp_frame,
@@ -63,6 +68,14 @@ class _Adapter:
     def read_raw_imu(self):
         self.operations.append("raw_imu")
         return RawImuTelemetry((1, 2, 3), (4.0, 5.0, 6.0), (7, 8, 9))
+
+    def read_raw_gps(self):
+        self.operations.append("raw_gps")
+        return RawGpsTelemetry(1, 12, 37.0, -122.0, 20.0, 3.0, 90.0, 80)
+
+    def read_altitude(self):
+        self.operations.append("altitude")
+        return AltitudeTelemetry(2.0, -0.5)
 
     def read_motor_outputs(self):
         self.operations.append("motor")
@@ -143,6 +156,45 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertIsNotNone(snapshot.status_age_s)
         self.assertIsNotNone(snapshot.raw_imu_age_s)
         self.assertIsNotNone(snapshot.motor_age_s)
+
+    def test_opt_in_gps_altitude_polling_merges_and_tracks_age(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(raw_gps_poll_hz=5.0, altitude_poll_hz=10.0),
+        )
+
+        worker._poll_one("raw_gps")
+        worker._poll_one("altitude")
+        snapshot = worker.snapshot()
+
+        self.assertEqual(snapshot.telemetry.raw_gps.satellites, 12)
+        self.assertEqual(snapshot.telemetry.altitude.vertical_speed_m_s, -0.5)
+        self.assertIsNotNone(snapshot.raw_gps_age_s)
+        self.assertIsNotNone(snapshot.altitude_age_s)
+
+    def test_async_gps_response_is_merged_into_telemetry(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(transport_mode="async_pipeline", raw_gps_poll_hz=5.0),
+        )
+        adapter.begin_async_pipeline()
+        request_id = adapter.queue_async_request(MSP_RAW_GPS)
+        transport.inject(
+            encode_msp_frame(
+                MSP_RAW_GPS,
+                struct.pack("<BBiiHHH", 1, 9, 100000000, 200000000, 20, 100, 900),
+                direction=">",
+            )
+        )
+
+        worker._handle_async_responses(adapter.drain_async_responses(10.0))
+
+        self.assertIsNotNone(request_id)
+        self.assertEqual(worker.snapshot().telemetry.raw_gps.satellites, 9)
+        adapter.end_async_pipeline()
 
     def test_worker_publish_tick_precedes_telemetry_poll(self):
         adapter = _Adapter()

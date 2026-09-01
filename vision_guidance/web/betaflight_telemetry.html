@@ -195,6 +195,10 @@
           <div class="metric"><label>Sent AETR</label><output id="sentFrame">--</output></div>
           <div class="metric"><label>Command R/P/Y</label><output id="commandRates">--</output></div>
           <div class="metric"><label>Command thrust</label><output id="commandThrust">--</output></div>
+          <div class="metric"><label>Command mapping</label><output id="commandMapping">--</output></div>
+          <div class="metric"><label>Target attitude R/P</label><output id="targetAttitude">--</output></div>
+          <div class="metric"><label>Current attitude R/P</label><output id="currentAttitude">--</output></div>
+          <div class="metric"><label>Attitude error R/P</label><output id="attitudeError">--</output></div>
           <div class="metric"><label>Shaper input R/P</label><output id="shaperInputRates">--</output></div>
           <div class="metric"><label>Shaper output R/P</label><output id="shaperOutputRates">--</output></div>
           <div class="metric"><label>Entry source / progress</label><output id="entryHandoff">--</output></div>
@@ -236,6 +240,23 @@
           <div class="metric"><label>Tracker</label><output id="trackerFps">--</output></div>
           <div class="metric"><label>MSP age</label><output id="mspAge">--</output></div>
           <div class="metric"><label>Loop</label><output id="loopPeriod">--</output></div>
+        </div>
+      </section>
+      <section class="section">
+        <h2 class="section-title">Read-Only Kinematics</h2>
+        <div class="metric-grid">
+          <div class="metric"><label>State</label><output id="kinematicsState">--</output></div>
+          <div class="metric"><label>Source</label><output id="kinematicsSource">--</output></div>
+          <div class="metric"><label>GPS fix / sats</label><output id="gpsFix">--</output></div>
+          <div class="metric"><label>GPS age</label><output id="gpsAge">--</output></div>
+          <div class="metric"><label>Position N/E/D</label><output id="positionNed">--</output></div>
+          <div class="metric"><label>Velocity N/E/D</label><output id="velocityNed">--</output></div>
+          <div class="metric"><label>Ground speed / course</label><output id="groundTrack">--</output></div>
+          <div class="metric"><label>Baro altitude / vario</label><output id="baroState">--</output></div>
+          <div class="metric"><label>Origin</label><output id="originState">--</output></div>
+          <div class="metric"><label>HDOP</label><output id="gpsHdop">--</output></div>
+          <div class="metric"><label>GPS command</label><output id="gpsCommand">--</output></div>
+          <div class="metric"><label>Altitude command</label><output id="altitudeCommand">--</output></div>
         </div>
       </section>
       <section class="section">
@@ -366,6 +387,7 @@
       const guidance = data.guidance || {};
       const command = data.command || {};
       const shaping = command.shaping || {};
+      const attitudeMapping = command.attitude_mapping || {};
       const entryHandoff = shaping.entry_handoff || {};
       const tiltEnvelope = shaping.tilt_envelope || {};
       const msp = data.msp || {};
@@ -414,6 +436,10 @@
       setMetric("sentFrame", formatChannels(rc.sent_us, rc.wire_order));
       setMetric("commandRates", formatVector(command.rate_deg_s));
       setMetric("commandThrust", number(command.thrust, 3));
+      setMetric("commandMapping", text(command.mapping_type));
+      setMetric("targetAttitude", formatVector(attitudeMapping.desired_deg, 2));
+      setMetric("currentAttitude", formatVector(attitudeMapping.current_deg, 2));
+      setMetric("attitudeError", formatVector(attitudeMapping.error_deg, 2));
       setMetric("shaperInputRates", formatVector(shaping.input_rate_deg_s, 2));
       setMetric("shaperOutputRates", formatVector(shaping.output_rate_deg_s, 2));
       const entryProgress = Number.isFinite(entryHandoff.progress)
@@ -505,6 +531,24 @@
       setMetric("targetSelectorReason", text(path(data, ["vision", "target_selector_reason"])));
       setMetric("mspAge", number(path(data, ["msp", "telemetry_age_s"]), 3, " s"));
       setMetric("loopPeriod", number(path(data, ["run", "loop_period_s"]), 3, " s"));
+      const kinematics = data.kinematics || {};
+      const gps = kinematics.gps || {};
+      const barometer = kinematics.barometer || {};
+      const origin = kinematics.origin || {};
+      setMetric("kinematicsState", `${boolText(kinematics.valid, "VALID", "INVALID")} / ${text(kinematics.reason)}`);
+      setMetric("kinematicsSource", text(kinematics.source));
+      setMetric("gpsFix", `${text(gps.fix)} / ${text(gps.satellites)}`);
+      setMetric("gpsAge", number(gps.age_s, 3, " s"));
+      setMetric("positionNed", formatVector(kinematics.position_ned_m, 2));
+      setMetric("velocityNed", formatVector(kinematics.velocity_ned_filtered_m_s, 2));
+      setMetric("groundTrack", `${number(gps.ground_speed_m_s, 2, " m/s")} / ${number(gps.ground_course_deg, 1, " deg")}`);
+      setMetric("baroState", `${number(barometer.altitude_m, 2, " m")} / ${number(barometer.vertical_speed_up_m_s, 2, " m/s")}`);
+      setMetric("originState", boolText(origin.locked, "LOCKED", "PENDING"));
+      setMetric("gpsHdop", text(gps.hdop));
+      const gpsCommand = path(data, ["msp", "commands", "raw_gps"], {});
+      const altitudeCommand = path(data, ["msp", "commands", "altitude"], {});
+      setMetric("gpsCommand", `${text(gpsCommand.success_count)} ok / ${text(gpsCommand.error_count)} err`);
+      setMetric("altitudeCommand", `${text(altitudeCommand.success_count)} ok / ${text(altitudeCommand.error_count)} err`);
       setMetric("safetyReason", text(safety.reason));
       setMetric("publishMode", text(safety.publish_mode));
       setMetric("detectorReason", text(path(data, ["vision", "detector_reason"])));

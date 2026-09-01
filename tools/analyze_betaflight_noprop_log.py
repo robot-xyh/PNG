@@ -102,7 +102,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14):
+    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -118,6 +118,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     hardcap_flag_rows = []
     invalid_guidance_frame_rows = []
     missing_body_guidance_rows = []
+    invalid_command_mapping_rows = []
+    accel_tilt_rate_nonfinite_rows = []
     armed_motor_output_rows: list[dict[str, str]] = []
     armed_motor_spread_rows: list[dict[str, str]] = []
     algorithm_motor_interlock_rows: list[dict[str, str]] = []
@@ -276,6 +278,26 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                 )
             ):
                 missing_body_guidance_rows.append(row)
+        if schema_version is not None and schema_version >= 15:
+            command_mapping = row.get("command_mapping_type")
+            if command_mapping not in {"direct_rate_matrix", "accel_tilt_rate"}:
+                invalid_command_mapping_rows.append(row)
+            if command_mapping == "accel_tilt_rate" and _integer(
+                row.get("pre_shape_sp_valid")
+            ) == 1:
+                required_accel_mapping_fields = (
+                    "command_desired_roll_angle_deg",
+                    "command_desired_pitch_angle_deg",
+                    "command_current_roll_angle_deg",
+                    "command_current_pitch_angle_deg",
+                    "command_roll_attitude_error_deg",
+                    "command_pitch_attitude_error_deg",
+                )
+                if any(
+                    _number(row.get(field)) is None
+                    for field in required_accel_mapping_fields
+                ):
+                    accel_tilt_rate_nonfinite_rows.append(row)
 
     _append_violation(violations, "invalid_sent_rc", invalid_rc_rows)
     _append_violation(violations, "sent_885_us", exact_885_rows)
@@ -302,6 +324,12 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     _append_violation(violations, "tilt_hardcap_flag_missing", hardcap_flag_rows)
     _append_violation(violations, "invalid_guidance_command_frames", invalid_guidance_frame_rows)
     _append_violation(violations, "guidance_body_vector_missing", missing_body_guidance_rows)
+    _append_violation(violations, "invalid_guidance_command_mapping", invalid_command_mapping_rows)
+    _append_violation(
+        violations,
+        "accel_tilt_rate_diagnostics_nonfinite",
+        accel_tilt_rate_nonfinite_rows,
+    )
     _append_violation(
         violations,
         "algorithm_without_motor_interlock",

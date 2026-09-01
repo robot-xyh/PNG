@@ -21,7 +21,9 @@ MSP_STATUS = 101
 MSP_RAW_IMU = 102
 MSP_MOTOR = 104
 MSP_RC = 105
+MSP_RAW_GPS = 106
 MSP_ATTITUDE = 108
+MSP_ALTITUDE = 109
 MSP_ANALOG = 110
 MSP_BOXNAMES = 116
 MSP_BOXIDS = 119
@@ -101,6 +103,24 @@ class RawImuTelemetry:
 
 
 @dataclass(frozen=True)
+class RawGpsTelemetry:
+    fix: int
+    satellites: int
+    latitude_deg: float
+    longitude_deg: float
+    altitude_m: float
+    ground_speed_m_s: float
+    ground_course_deg: float
+    hdop: int | None = None
+
+
+@dataclass(frozen=True)
+class AltitudeTelemetry:
+    altitude_m: float
+    vertical_speed_m_s: float
+
+
+@dataclass(frozen=True)
 class BetaflightTelemetry:
     timestamp: float
     status: StatusTelemetry | None = None
@@ -109,12 +129,16 @@ class BetaflightTelemetry:
     rc_channels: tuple[int, ...] = ()
     motor_outputs: tuple[int, ...] = ()
     raw_imu: RawImuTelemetry | None = None
+    raw_gps: RawGpsTelemetry | None = None
+    altitude: AltitudeTelemetry | None = None
     status_timestamp_s: float | None = None
     attitude_timestamp_s: float | None = None
     analog_timestamp_s: float | None = None
     rc_timestamp_s: float | None = None
     motor_timestamp_s: float | None = None
     raw_imu_timestamp_s: float | None = None
+    raw_gps_timestamp_s: float | None = None
+    altitude_timestamp_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -294,6 +318,37 @@ def parse_raw_imu(payload: bytes | bytearray) -> RawImuTelemetry:
         acc_raw=tuple(int(value) for value in values[0:3]),
         gyro_msp_raw=tuple(int(value) for value in values[3:6]),
         mag_raw=tuple(int(value) for value in values[6:9]),
+    )
+
+
+def parse_raw_gps(payload: bytes | bytearray) -> RawGpsTelemetry:
+    data = bytes(payload)
+    if len(data) < 16:
+        raise MSPError("MSP_RAW_GPS payload too short")
+    fix, satellites, latitude, longitude, altitude, speed, course = struct.unpack_from(
+        "<BBiiHHH", data, 0
+    )
+    hdop = struct.unpack_from("<H", data, 16)[0] if len(data) >= 18 else None
+    return RawGpsTelemetry(
+        fix=int(fix),
+        satellites=int(satellites),
+        latitude_deg=float(latitude) * 1.0e-7,
+        longitude_deg=float(longitude) * 1.0e-7,
+        altitude_m=float(altitude),
+        ground_speed_m_s=float(speed) * 0.01,
+        ground_course_deg=float(course) * 0.1,
+        hdop=None if hdop is None else int(hdop),
+    )
+
+
+def parse_altitude(payload: bytes | bytearray) -> AltitudeTelemetry:
+    data = bytes(payload)
+    if len(data) < 6:
+        raise MSPError("MSP_ALTITUDE payload too short")
+    altitude_cm, vertical_speed_cm_s = struct.unpack_from("<ih", data, 0)
+    return AltitudeTelemetry(
+        altitude_m=float(altitude_cm) * 0.01,
+        vertical_speed_m_s=float(vertical_speed_cm_s) * 0.01,
     )
 
 
@@ -571,6 +626,12 @@ class BetaflightMSPAdapter:
     def read_attitude(self) -> AttitudeTelemetry:
         return parse_attitude(self.request(MSP_ATTITUDE).payload)
 
+    def read_raw_gps(self) -> RawGpsTelemetry:
+        return parse_raw_gps(self.request(MSP_RAW_GPS).payload)
+
+    def read_altitude(self) -> AltitudeTelemetry:
+        return parse_altitude(self.request(MSP_ALTITUDE).payload)
+
     def read_analog(self) -> AnalogTelemetry:
         return parse_analog(self.request(MSP_ANALOG).payload)
 
@@ -592,6 +653,8 @@ class BetaflightMSPAdapter:
         include_rc: bool = True,
         include_motor: bool = False,
         include_raw_imu: bool = False,
+        include_raw_gps: bool = False,
+        include_altitude: bool = False,
     ) -> BetaflightTelemetry:
         status = self.read_status() if include_status else None
         attitude = self.read_attitude() if include_attitude else None
@@ -599,6 +662,8 @@ class BetaflightMSPAdapter:
         rc = self.read_rc() if include_rc else ()
         motor_outputs = self.read_motor_outputs() if include_motor else ()
         raw_imu = self.read_raw_imu() if include_raw_imu else None
+        raw_gps = self.read_raw_gps() if include_raw_gps else None
+        altitude = self.read_altitude() if include_altitude else None
         timestamp = time.monotonic()
         return BetaflightTelemetry(
             timestamp=timestamp,
@@ -608,12 +673,16 @@ class BetaflightMSPAdapter:
             rc_channels=tuple(rc),
             motor_outputs=tuple(motor_outputs),
             raw_imu=raw_imu,
+            raw_gps=raw_gps,
+            altitude=altitude,
             status_timestamp_s=timestamp if status is not None else None,
             attitude_timestamp_s=timestamp if attitude is not None else None,
             analog_timestamp_s=timestamp if analog is not None else None,
             rc_timestamp_s=timestamp if rc else None,
             motor_timestamp_s=timestamp if motor_outputs else None,
             raw_imu_timestamp_s=timestamp if raw_imu is not None else None,
+            raw_gps_timestamp_s=timestamp if raw_gps is not None else None,
+            altitude_timestamp_s=timestamp if altitude is not None else None,
         )
 
     def send_raw_rc(self, command: RcCommand | Sequence[int]) -> None:

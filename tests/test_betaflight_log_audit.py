@@ -342,6 +342,39 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertNotIn("command_shaping_nonfinite", codes)
             self.assertNotIn("algorithm_with_invalid_command_shaping", codes)
 
+    def test_schema_v15_requires_finite_accel_tilt_rate_diagnostics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            row = self._safe_row()
+            row.update(
+                command_mapping_type="accel_tilt_rate",
+                pre_shape_sp_valid="1",
+                command_desired_roll_angle_deg="5.0",
+                command_desired_pitch_angle_deg="-3.0",
+                command_current_roll_angle_deg="1.0",
+                command_current_pitch_angle_deg="-1.0",
+                command_roll_attitude_error_deg="4.0",
+                command_pitch_attitude_error_deg="",
+            )
+            csv_path = self._write_log(Path(directory), row, schema_version=15)
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertIn("accel_tilt_rate_diagnostics_nonfinite", codes)
+            self.assertNotIn("invalid_guidance_command_mapping", codes)
+
+    def test_schema_v16_is_supported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            csv_path = self._write_log(
+                Path(directory),
+                self._safe_row(),
+                schema_version=16,
+            )
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertNotIn("unsupported_log_schema_version:16", result["warnings"])
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
@@ -423,6 +456,7 @@ class BetaflightLogAuditTest(unittest.TestCase):
             "gyro_yaw_deg_s": "",
             "guidance_eval_frame": "inertial_ned",
             "rate_gain_input_frame": "body_frd",
+            "command_mapping_type": "direct_rate_matrix",
             "guidance_valid": "1",
             "g_eval_body_frd_x": "0.1",
             "g_eval_body_frd_y": "0.2",

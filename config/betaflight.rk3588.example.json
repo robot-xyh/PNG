@@ -149,11 +149,24 @@
   "guidance_command": {
     "guidance_eval_frame": "inertial_ned",
     "rate_gain_input_frame": "body_frd",
+    "mapping_type": "direct_rate_matrix",
     "rate_gain_matrix": [
       [0.0, 0.0, 0.0],
       [0.0, 0.0, 0.0],
       [0.0, 0.0, 0.0]
     ],
+    "accel_tilt_rate": {
+      "gravity_mps2": 9.80665,
+      "roll_attitude_kp_s_inv": 4.0,
+      "pitch_attitude_kp_s_inv": 4.0,
+      "max_roll_tilt_deg": 20.0,
+      "max_pitch_tilt_deg": 20.0,
+      "max_roll_rate_deg_s": 60.0,
+      "max_pitch_rate_deg_s": 60.0,
+      "roll_rate_sign": 1.0,
+      "pitch_rate_sign": 1.0,
+      "min_vertical_specific_force_mps2": 0.5
+    },
     "hover_thrust": 0.5,
     "yaw_rate_bias_deg_s": 0.0,
     "entry_handoff": {

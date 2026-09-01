@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from vision_guidance.flight_control import (
+    AccelerationTiltRateConfig,
     BetaflightSafetyStateMachine,
     CommandWatchdog,
     EntryHandoffConfig,
@@ -675,6 +676,99 @@ class FlightControlTest(unittest.TestCase):
         self.assertEqual(setpoint.pitch_rate_deg_s, -10.0)
         self.assertEqual(setpoint.yaw_rate_deg_s, 6.0)
         self.assertEqual(setpoint.thrust, 0.55)
+        self.assertEqual(setpoint.mapping_type, "direct_rate_matrix")
+
+    def test_accel_tilt_rate_maps_acceleration_through_attitude_error(self):
+        guidance = GuidanceEval(
+            timestamp=2.0,
+            g_eval=np.array([0.0, 1.0, 0.0]),
+            valid=True,
+            quality=1.0,
+        )
+
+        setpoint = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=np.eye(3),
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.4,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate={
+                "roll_attitude_kp_s_inv": 4.0,
+                "pitch_attitude_kp_s_inv": 4.0,
+                "max_roll_tilt_deg": 20.0,
+                "max_pitch_tilt_deg": 20.0,
+                "max_roll_rate_deg_s": 60.0,
+                "max_pitch_rate_deg_s": 60.0,
+            },
+        )
+
+        desired_roll = np.rad2deg(np.arctan2(1.0, 9.80665))
+        self.assertTrue(setpoint.valid)
+        self.assertEqual(setpoint.mapping_type, "accel_tilt_rate")
+        self.assertAlmostEqual(setpoint.desired_roll_angle_deg, desired_roll)
+        self.assertAlmostEqual(setpoint.desired_pitch_angle_deg, 0.0)
+        self.assertAlmostEqual(setpoint.roll_rate_deg_s, 4.0 * desired_roll)
+        self.assertAlmostEqual(setpoint.pitch_rate_deg_s, 0.0)
+        self.assertEqual(setpoint.thrust, 0.4)
+
+    def test_accel_tilt_rate_uses_current_attitude_and_explicit_output_sign(self):
+        pitch_rad = np.deg2rad(-3.0)
+        R_IB = np.array(
+            [
+                [np.cos(pitch_rad), 0.0, np.sin(pitch_rad)],
+                [0.0, 1.0, 0.0],
+                [-np.sin(pitch_rad), 0.0, np.cos(pitch_rad)],
+            ]
+        )
+        guidance = GuidanceEval(
+            timestamp=2.0,
+            g_eval=np.array([1.0, 0.0, 0.0]),
+            valid=True,
+            quality=1.0,
+        )
+
+        setpoint = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=R_IB,
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.4,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate={"pitch_rate_sign": -1.0},
+        )
+
+        desired_pitch = -np.rad2deg(np.arctan2(1.0, 9.80665))
+        pitch_error = desired_pitch - (-3.0)
+        self.assertAlmostEqual(setpoint.current_pitch_angle_deg, -3.0)
+        self.assertAlmostEqual(setpoint.pitch_attitude_error_deg, pitch_error)
+        self.assertAlmostEqual(setpoint.pitch_rate_deg_s, -4.0 * pitch_error)
+
+    def test_accel_tilt_rate_limits_tilt_and_rate(self):
+        guidance = GuidanceEval(
+            timestamp=2.0,
+            g_eval=np.array([0.0, 100.0, 0.0]),
+            valid=True,
+            quality=1.0,
+        )
+
+        setpoint = guidance_eval_to_setpoint(
+            guidance,
+            R_IB=np.eye(3),
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.4,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate={
+                "roll_attitude_kp_s_inv": 10.0,
+                "max_roll_tilt_deg": 10.0,
+                "max_roll_rate_deg_s": 30.0,
+            },
+        )
+
+        self.assertEqual(setpoint.desired_roll_angle_deg, 10.0)
+        self.assertEqual(setpoint.roll_rate_deg_s, 30.0)
+
+    def test_accel_tilt_rate_config_rejects_invalid_axis_sign(self):
+        with self.assertRaisesRegex(ValueError, "roll_rate_sign must be -1 or 1"):
+            AccelerationTiltRateConfig(roll_rate_sign=0.0)
 
     def test_guidance_eval_to_setpoint_rotates_inertial_vector_into_body_frd(self):
         guidance = GuidanceEval(

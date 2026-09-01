@@ -434,6 +434,43 @@ class BetaflightLoggingTest(unittest.TestCase):
         )
         self.assertEqual(metadata["guidance_eval_frame"], "inertial_ned")
         self.assertEqual(metadata["rate_gain_input_frame"], "body_frd")
+        self.assertEqual(metadata["command_mapping_type"], "direct_rate_matrix")
+
+        accel_metadata = runner._guidance_command_frame_metadata(
+            {
+                "guidance_command": {
+                    "guidance_eval_frame": "inertial_ned",
+                    "rate_gain_input_frame": "body_frd",
+                    "mapping_type": "accel_tilt_rate",
+                    "accel_tilt_rate": {
+                        "gravity_mps2": 9.80665,
+                        "roll_attitude_kp_s_inv": 4.0,
+                        "pitch_attitude_kp_s_inv": 4.0,
+                        "max_roll_tilt_deg": 15.0,
+                        "max_pitch_tilt_deg": 15.0,
+                        "max_roll_rate_deg_s": 60.0,
+                        "max_pitch_rate_deg_s": 60.0,
+                        "roll_rate_sign": 1.0,
+                        "pitch_rate_sign": 1.0,
+                        "min_vertical_specific_force_mps2": 0.5,
+                    },
+                }
+            }
+        )
+        self.assertEqual(accel_metadata["command_mapping_type"], "accel_tilt_rate")
+        self.assertEqual(accel_metadata["accel_tilt_rate"]["max_roll_tilt_deg"], 15.0)
+
+        with self.assertRaisesRegex(RuntimeError, "requires explicit fields"):
+            runner._guidance_command_frame_metadata(
+                {
+                    "guidance_command": {
+                        "guidance_eval_frame": "inertial_ned",
+                        "rate_gain_input_frame": "body_frd",
+                        "mapping_type": "accel_tilt_rate",
+                        "accel_tilt_rate": {"max_roll_tilt_deg": 15.0},
+                    }
+                }
+            )
 
         with self.assertRaisesRegex(RuntimeError, "guidance_eval_frame"):
             runner._guidance_command_frame_metadata({"guidance_command": {}})
@@ -443,6 +480,16 @@ class BetaflightLoggingTest(unittest.TestCase):
                     "guidance_command": {
                         "guidance_eval_frame": "inertial_ned",
                         "rate_gain_input_frame": "inertial_ned",
+                    }
+                }
+            )
+        with self.assertRaisesRegex(RuntimeError, "mapping_type"):
+            runner._guidance_command_frame_metadata(
+                {
+                    "guidance_command": {
+                        "guidance_eval_frame": "inertial_ned",
+                        "rate_gain_input_frame": "body_frd",
+                        "mapping_type": "acceleration",
                     }
                 }
             )
@@ -510,6 +557,13 @@ class BetaflightLoggingTest(unittest.TestCase):
             yaw_rate_deg_s=3.0,
             thrust=0.5,
             source="guidance_eval",
+            mapping_type="accel_tilt_rate",
+            desired_roll_angle_deg=5.0,
+            desired_pitch_angle_deg=-4.0,
+            current_roll_angle_deg=1.0,
+            current_pitch_angle_deg=-2.0,
+            roll_attitude_error_deg=4.0,
+            pitch_attitude_error_deg=-2.0,
         )
         shaping = GuidanceCommandShapingDiagnostics(
             input_roll_rate_deg_s=4.0,
@@ -582,6 +636,7 @@ class BetaflightLoggingTest(unittest.TestCase):
                 "guidance_ttc_required": 0,
                 "guidance_eval_frame": "inertial_ned",
                 "rate_gain_input_frame": "body_frd",
+                "command_mapping_type": "accel_tilt_rate",
                 "msp_last_sent_channels": tuple(range(1000, 1016)),
                 "python_gc_collection_count": 4,
                 "python_gc_last_generation": 2,
@@ -643,7 +698,11 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["guidance_ttc_required"], 0)
         self.assertEqual(row["guidance_eval_frame"], "inertial_ned")
         self.assertEqual(row["rate_gain_input_frame"], "body_frd")
+        self.assertEqual(row["command_mapping_type"], "accel_tilt_rate")
         self.assertEqual(row["g_eval_body_frd_y"], "0.200000000")
+        self.assertEqual(row["command_desired_roll_angle_deg"], "5.000000")
+        self.assertEqual(row["command_current_pitch_angle_deg"], "-2.000000")
+        self.assertEqual(row["command_roll_attitude_error_deg"], "4.000000")
         self.assertEqual(row["sp_source"], "guidance_eval")
         self.assertEqual(row["pre_shape_sp_roll_rate_deg_s"], "4.000000")
         self.assertEqual(row["sp_roll_rate_deg_s"], "1.000000")
@@ -700,6 +759,7 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["los_valid"], "")
         self.assertEqual(row["ttc_s"], "")
         self.assertEqual(row["rc_raw_ch1"], "")
+        self.assertEqual(row["command_desired_roll_angle_deg"], "")
 
     def test_write_run_meta_records_config_args_fields_and_identity(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -714,6 +774,7 @@ class BetaflightLoggingTest(unittest.TestCase):
                 log_path=log_path,
                 fields=["timestamp", "mode_flags"],
                 fc_identity={"fc_variant": "BTFL"},
+                kinematics={"control_connected": False},
                 runtime_diagnostics={"python_gc_pause_monitor": True},
             )
 
@@ -723,7 +784,8 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 14)
+            self.assertEqual(data["log_schema_version"], 16)
+            self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):

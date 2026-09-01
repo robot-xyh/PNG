@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 11
+WEB_SCHEMA_VERSION = 13
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -133,7 +133,17 @@ def telemetry_payload_from_log_row(
     physical_channels = _reorder_rc_input(input_channels, channel_map=channel_map)
 
     commands: dict[str, Any] = {}
-    for name in ("status", "raw_imu", "motor", "rc", "attitude", "analog", "set_raw_rc"):
+    for name in (
+        "status",
+        "raw_imu",
+        "raw_gps",
+        "altitude",
+        "motor",
+        "rc",
+        "attitude",
+        "analog",
+        "set_raw_rc",
+    ):
         prefix = f"msp_cmd_{name}"
         commands[name] = {
             "attempt_count": _integer(row.get(f"{prefix}_attempt_count")),
@@ -207,10 +217,73 @@ def telemetry_payload_from_log_row(
             "mode_flags": _integer(row.get("mode_flags")),
             "profile": _integer(row.get("profile")),
         },
+        "kinematics": {
+            "valid": _boolean(row.get("kinematics_valid")),
+            "reason": _text(row.get("kinematics_reason")),
+            "source": _text(row.get("kinematics_source")),
+            "horizontal_valid": _boolean(row.get("kinematics_horizontal_valid")),
+            "vertical_valid": _boolean(row.get("kinematics_vertical_valid")),
+            "position_ned_m": _vector(
+                row,
+                (
+                    "kinematics_position_n_m",
+                    "kinematics_position_e_m",
+                    "kinematics_position_d_m",
+                ),
+            ),
+            "velocity_ned_raw_m_s": _vector(
+                row,
+                (
+                    "kinematics_velocity_raw_n_m_s",
+                    "kinematics_velocity_raw_e_m_s",
+                    "kinematics_velocity_raw_d_m_s",
+                ),
+            ),
+            "velocity_ned_filtered_m_s": _vector(
+                row,
+                (
+                    "kinematics_velocity_filtered_n_m_s",
+                    "kinematics_velocity_filtered_e_m_s",
+                    "kinematics_velocity_filtered_d_m_s",
+                ),
+            ),
+            "gps": {
+                "fix": _integer(row.get("gps_fix")),
+                "satellites": _integer(row.get("gps_satellites")),
+                "hdop": _integer(row.get("gps_hdop")),
+                "latitude_deg": _number(row.get("gps_latitude_deg")),
+                "longitude_deg": _number(row.get("gps_longitude_deg")),
+                "altitude_m": _number(row.get("gps_altitude_m")),
+                "ground_speed_m_s": _number(row.get("gps_ground_speed_m_s")),
+                "ground_course_deg": _number(row.get("gps_ground_course_deg")),
+                "age_s": _number(row.get("gps_age_s")),
+                "sample_monotonic_s": _number(row.get("gps_sample_monotonic_s")),
+            },
+            "barometer": {
+                "altitude_m": _number(row.get("baro_altitude_m")),
+                "vertical_speed_up_m_s": _number(
+                    row.get("baro_vertical_speed_up_m_s")
+                ),
+                "age_s": _number(row.get("altitude_age_s")),
+                "sample_monotonic_s": _number(
+                    row.get("altitude_sample_monotonic_s")
+                ),
+            },
+            "origin": {
+                "locked": _boolean(row.get("kinematics_origin_locked")),
+                "latitude_deg": _number(row.get("kinematics_origin_latitude_deg")),
+                "longitude_deg": _number(row.get("kinematics_origin_longitude_deg")),
+                "baro_altitude_m": _number(
+                    row.get("kinematics_origin_baro_altitude_m")
+                ),
+            },
+        },
         "msp": {
             "telemetry_age_s": _number(row.get("telemetry_age_s")),
             "attitude_age_s": _number(row.get("attitude_age_s")),
             "motor_age_s": _number(row.get("msp_motor_age_s")),
+            "raw_gps_age_s": _number(row.get("msp_raw_gps_age_s")),
+            "altitude_age_s": _number(row.get("msp_altitude_age_s")),
             "physical_rc_age_s": _number(row.get("physical_rc_age_s")),
             "request_count": _integer(row.get("msp_request_count")),
             "request_error_count": _integer(row.get("msp_request_error_count")),
@@ -391,6 +464,30 @@ def telemetry_payload_from_log_row(
             "valid": _boolean(row.get("sp_valid")),
             "source": _text(row.get("sp_source")),
             "reason": _text(row.get("sp_reject_reason")),
+            "mapping_type": _text(row.get("command_mapping_type")),
+            "attitude_mapping": {
+                "desired_deg": _vector(
+                    row,
+                    (
+                        "command_desired_roll_angle_deg",
+                        "command_desired_pitch_angle_deg",
+                    ),
+                ),
+                "current_deg": _vector(
+                    row,
+                    (
+                        "command_current_roll_angle_deg",
+                        "command_current_pitch_angle_deg",
+                    ),
+                ),
+                "error_deg": _vector(
+                    row,
+                    (
+                        "command_roll_attitude_error_deg",
+                        "command_pitch_attitude_error_deg",
+                    ),
+                ),
+            },
             "rate_deg_s": _vector(
                 row,
                 ("sp_roll_rate_deg_s", "sp_pitch_rate_deg_s", "sp_yaw_rate_deg_s"),
