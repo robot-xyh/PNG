@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "base_seed": 20260830,
+  "trials_per_case": 20,
+  "simulation": {
+    "dt_s": 0.01,
+    "duration_s": 40.0,
+    "navigation_constant": 3.0,
+    "guidance_accel_limit_m_s2": 20.0,
+    "max_roll_tilt_deg": 20.0,
+    "max_pitch_tilt_deg": 20.0,
+    "attitude_kp_s_inv": 4.0,
+    "max_roll_rate_deg_s": 60.0,
+    "max_pitch_rate_deg_s": 60.0,
+    "body_rate_response_tau_s": 0.04,
+    "perception_rate_hz": 30.0,
+    "perception_stale_timeout_s": 0.35,
+    "perception_fov_gate_enabled": true
+    ,"kinematic_rate_hz": 5.0
+    ,"kinematic_stale_timeout_s": 0.5
+  },
+  "acceptance": {
+    "initially_visible_hit_rate_min": 0.95,
+    "initially_visible_fov_hit_rate_min": 0.90,
+    "target_stale_failure_rate_max": 0.01,
+    "mean_measurement_valid_fraction_min": 0.90,
+    "mean_kinematic_valid_fraction_min": 0.90,
+    "worst_minimum_range_m_max": 1.0,
+    "mean_tilt_saturation_fraction_max": 0.10,
+    "mean_rate_saturation_fraction_max": 0.10
+  },
+  "scenarios": [
+    {
+      "name": "target_100ms",
+      "perception_latency_s": 0.1,
+      "measurement_dropout_probability": 0.05,
+      "los_angle_noise_std_deg": 0.25,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25
+      ,"kinematic_latency_s": 0.10
+      ,"kinematic_velocity_noise_std_m_s": 0.25
+      ,"kinematic_dropout_probability": 0.05
+    },
+    {
+      "name": "measured_p50",
+      "perception_latency_s": 0.175,
+      "measurement_dropout_probability": 0.05,
+      "los_angle_noise_std_deg": 0.25,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25
+      ,"kinematic_latency_s": 0.15
+      ,"kinematic_velocity_noise_std_m_s": 0.25
+      ,"kinematic_dropout_probability": 0.05
+    },
+    {
+      "name": "measured_p95",
+      "perception_latency_s": 0.217,
+      "measurement_dropout_probability": 0.1,
+      "los_angle_noise_std_deg": 0.5,
+      "relative_velocity_noise_std_m_s": 0.5,
+      "wind_accel_std_m_s2": 0.5
+      ,"kinematic_latency_s": 0.20
+      ,"kinematic_velocity_noise_std_m_s": 0.5
+      ,"kinematic_dropout_probability": 0.10
+    },
+    {
+      "name": "stress_225ms",
+      "perception_latency_s": 0.225,
+      "measurement_dropout_probability": 0.2,
+      "los_angle_noise_std_deg": 1.0,
+      "relative_velocity_noise_std_m_s": 1.0,
+      "wind_accel_std_m_s2": 1.0
+      ,"kinematic_latency_s": 0.25
+      ,"kinematic_velocity_noise_std_m_s": 1.0
+      ,"kinematic_dropout_probability": 0.20
+    }
+  ],
+  "evaluations": [
+    {
+      "name": "current_hover_fixed_thrust",
+      "controller_mode": "fixed_thrust",
+      "start_profile": "hover",
+      "required_for_release": false
+    },
+    {
+      "name": "candidate_velocity_hold_variable_thrust",
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "start_profile": "hover",
+      "required_for_release": true
+    },
+    {
+      "name": "ideal_hover_speed_variable_thrust",
+      "controller_mode": "speed_hold_variable_thrust",
+      "start_profile": "hover",
+      "required_for_release": false
+    },
+    {
+      "name": "diagnostic_established_speed_fixed_thrust",
+      "controller_mode": "fixed_thrust",
+      "start_profile": "established_speed",
+      "required_for_release": false
+    }
+  ]
+}

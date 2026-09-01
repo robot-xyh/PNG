@@ -1,0 +1,120 @@
+{
+  "profile": {
+    "scope": "flight_candidate_parameter_worksheet",
+    "runnable": false,
+    "control_authorized": false,
+    "propeller_flight_authorized": false,
+    "reason": "Formal 6000-row candidate evaluation failed every scenario, and required aircraft, throttle, rate, sign, state-source, and safety values remain unset. This file is not accepted as a runner config or approval manifest."
+  },
+  "evidence": {
+    "vision_archive": "logs/deployment_archives/fixed_vm_online_20260829_104631.tar.gz",
+    "vision_archive_sha256": "d29b27f838e895716f55fedeb8d7c2cc55ad4ff294f517e3c80d0cb121941981",
+    "noprop_exit_archive": "logs/deployment_archives/schema14_noprop_exit_matrix_20260829.tar.gz",
+    "noprop_exit_archive_sha256": "cd60b0934917353fface6a38e711d05b534292f2fe6d2d28c4f148321242864c",
+    "authority_tool": "tools/evaluate_betaflight_png_authority.py",
+    "intercept_evaluation_config": "config/betaflight.intercept_eval.example.json",
+    "intercept_evaluation_report": "logs/betaflight_intercept_candidate_mc100_20260830.json",
+    "intercept_evaluation_report_sha256": "eec27fc77d32c8385fac6b2a53b3da9c9fcc06282cd04816a1baef00e7779d5f",
+    "intercept_evaluation_csv": "logs/betaflight_intercept_candidate_mc100_20260830.csv",
+    "intercept_evaluation_csv_sha256": "b2114e96d7f1f2ca32025324982c1b0173a8de77e4f48eaf0bdccc4b170340a2",
+    "intercept_evaluation_rows": 6000,
+    "intercept_evaluation_trials_per_case": 100,
+    "intercept_evaluation_release_passed": false
+  },
+  "guidance": {
+    "law": "candidate_velocity_hold_variable_thrust",
+    "navigation_constant_candidate_values": [3.0],
+    "selected_navigation_constant": null,
+    "fixed_vm_m_s": null,
+    "fixed_vm_basis": null,
+    "max_guidance_accel_mps2": null
+  },
+  "kinematic_state": {
+    "log_only_source": "msp_raw_gps+msp_altitude",
+    "log_only_config": "config/betaflight.rk3588.kinematics_log_only.example.json",
+    "gps_poll_hz": 5.0,
+    "altitude_poll_hz": 5.0,
+    "velocity_filter_tau_s": 0.25,
+    "formal_control_source": null,
+    "formal_control_requires_second_uart_or_independent_gnss": true,
+    "state_noise_model_fitted_from_flight_log": false,
+    "control_input_authorized": false
+  },
+  "offline_velocity_establishing_png": {
+    "implementation": "vision_guidance/betaflight_intercept_controller.py",
+    "fixed_vm_m_s": null,
+    "navigation_constant": 3.0,
+    "speed_gain_s_inv": 1.2,
+    "speed_accel_limit_m_s2": 8.0,
+    "png_accel_limit_m_s2": 20.0,
+    "fov_centering_gain_s2": 8.0,
+    "fov_centering_accel_limit_m_s2": 4.0,
+    "total_accel_limit_m_s2": 28.0,
+    "vertical_speed_reference_limit_m_s": 6.0,
+    "acquire_consecutive_frames": 5,
+    "detection_timeout_s": 0.35,
+    "velocity_timeout_s": 0.5,
+    "offline_only": true,
+    "msp_set_raw_rc_connected": false
+  },
+  "guidance_command": {
+    "mapping_type": "accel_tilt_rate",
+    "gravity_mps2": 9.80665,
+    "roll_attitude_kp_s_inv": null,
+    "pitch_attitude_kp_s_inv": null,
+    "max_roll_tilt_deg": null,
+    "max_pitch_tilt_deg": null,
+    "max_roll_rate_deg_s": null,
+    "max_pitch_rate_deg_s": null,
+    "roll_rate_sign": null,
+    "pitch_rate_sign": null,
+    "min_vertical_specific_force_mps2": null
+  },
+  "rc_ownership": {
+    "current_noprop_override_channels_mask": 15,
+    "roll_pitch_only_candidate_mask": 3,
+    "selected_override_channels_mask": null,
+    "manual_throttle_required_for_first_flight_candidate": true,
+    "manual_yaw_required_for_first_flight_candidate": true,
+    "expert_review_complete": false
+  },
+  "throttle": {
+    "aircraft_mass_kg": null,
+    "battery_cell_count": null,
+    "hover_throttle_us": null,
+    "hover_thrust_normalized": null,
+    "minimum_flight_throttle_us": null,
+    "maximum_flight_throttle_us": null,
+    "calibration_method": null
+  },
+  "betaflight_rates": {
+    "profile_index": null,
+    "rates_type": null,
+    "roll_rc_rate": null,
+    "roll_super_rate": null,
+    "roll_expo": null,
+    "pitch_rc_rate": null,
+    "pitch_super_rate": null,
+    "pitch_expo": null,
+    "measured_roll_rate_lut": null,
+    "measured_pitch_rate_lut": null
+  },
+  "safety_release": {
+    "offline_candidate_evaluation_passed": false,
+    "offline_candidate_blockers": [
+      "initially_visible_hit_rate",
+      "initially_visible_fov_hit_rate",
+      "target_stale_failure_rate",
+      "mean_measurement_valid_fraction",
+      "worst_minimum_range_m",
+      "mean_kinematic_valid_fraction_in_stress",
+      "mean_tilt_saturation_fraction_at_100ms"
+    ],
+    "independent_manual_takeover_verified": false,
+    "process_loss_behavior_verified_while_armed": false,
+    "receiver_loss_behavior_verified": false,
+    "tethered_hover_completed": false,
+    "moving_target_noncollision_completed": false,
+    "flight_approval_manifest": null
+  }
+}
