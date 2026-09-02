@@ -102,7 +102,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in (2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16):
+    if schema_version is not None and schema_version not in range(2, 18):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -490,6 +490,53 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
             }
         )
 
+    post_disarm_tail_configured_s = _number(
+        dict(meta.get("args", {})).get("stop_after_disarm_s")
+    )
+    post_disarm_tail_logged_s: float | None = None
+    post_disarm_edge_elapsed_s: float | None = None
+    armed_seen = False
+    previous_armed: int | None = None
+    for row in rows:
+        current_armed = _integer(row.get("armed"))
+        if current_armed not in (0, 1):
+            continue
+        armed_seen = armed_seen or current_armed == 1
+        if previous_armed == 1 and current_armed == 0:
+            post_disarm_edge_elapsed_s = _number(row.get("elapsed_s"))
+        previous_armed = current_armed
+    if post_disarm_edge_elapsed_s is not None and rows:
+        final_elapsed_s = _number(rows[-1].get("elapsed_s"))
+        if final_elapsed_s is not None:
+            post_disarm_tail_logged_s = max(0.0, final_elapsed_s - post_disarm_edge_elapsed_s)
+    completion = dict(meta.get("completion", {}))
+    if (
+        schema_version is not None
+        and schema_version >= 17
+        and post_disarm_tail_configured_s is not None
+        and post_disarm_tail_configured_s > 0.0
+        and armed_seen
+    ):
+        tail_complete = (
+            completion.get("complete") is True
+            and completion.get("stop_reason") == "post_disarm_tail_complete"
+            and completion.get("post_disarm_tail_completed") is True
+            and post_disarm_tail_logged_s is not None
+            and post_disarm_tail_logged_s + 1.0e-6 >= post_disarm_tail_configured_s
+            and previous_armed == 0
+        )
+        if not tail_complete:
+            violations.append(
+                {
+                    "code": "post_disarm_log_tail_incomplete",
+                    "count": 1,
+                    "first_elapsed_s": post_disarm_edge_elapsed_s,
+                    "observed": post_disarm_tail_logged_s,
+                    "limit": post_disarm_tail_configured_s,
+                    "stop_reason": completion.get("stop_reason"),
+                }
+            )
+
     metrics = {
         "rows": len(rows),
         "duration_s": _maximum(rows, "elapsed_s"),
@@ -554,6 +601,10 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "max_loop_period_s": _maximum(rows, "loop_period_s"),
         "max_python_gc_pause_ms": _maximum(rows, "python_gc_max_pause_ms"),
         "log_schema_version": schema_version,
+        "post_disarm_tail_configured_s": post_disarm_tail_configured_s,
+        "post_disarm_tail_logged_s": post_disarm_tail_logged_s,
+        "post_disarm_tail_completed": completion.get("post_disarm_tail_completed"),
+        "run_stop_reason": completion.get("stop_reason"),
         "web_enabled": web_enabled,
         "web_publish_count": web_publish_count,
         "web_preview_encode_count": _integer(final.get("web_preview_encode_count")) or 0,

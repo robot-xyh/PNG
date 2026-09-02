@@ -49,6 +49,7 @@ from vision_guidance.betaflight_runtime import (  # noqa: E402
     BetaflightMspIoWorker,
     MspRuntimeConfig,
     armed_from_telemetry,
+    bind_msp_raw_imu_gyro,
     box_mode_active,
     box_mode_index,
     resolve_control_authorization,
@@ -98,7 +99,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 16
+LOG_SCHEMA_VERSION = 17
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -153,6 +154,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run Betaflight MSP telemetry logging with supervised PNG RC candidates.")
     parser.add_argument("--config", default="config/betaflight.example.json")
     parser.add_argument("--duration-s", type=float, default=30.0)
+    parser.add_argument(
+        "--stop-after-disarm-s",
+        type=float,
+        default=0.0,
+        help="After an observed ARM-to-DISARM edge, record this tail duration then stop; 0 disables.",
+    )
     parser.add_argument("--rate-hz", type=float, default=20.0)
     parser.add_argument("--log-dir", default="logs")
     parser.add_argument("--log-prefix", default="betaflight_log")
@@ -241,6 +248,47 @@ class EdgeEventLogger:
 
     def close(self) -> None:
         self._stream.close()
+
+
+class PostDisarmTail:
+    """Track a valid ARM-to-DISARM edge and retain a fixed logging tail."""
+
+    def __init__(self, duration_s: float):
+        self.duration_s = float(duration_s)
+        if not np.isfinite(self.duration_s) or self.duration_s < 0.0:
+            raise ValueError("stop_after_disarm_s must be finite and non-negative")
+        self.armed_seen = False
+        self.last_valid_armed: bool | None = None
+        self.started_s: float | None = None
+        self.deadline_s: float | None = None
+
+    def update(self, timestamp_s: float, armed: bool | None) -> bool:
+        if armed is None:
+            return False
+        now = float(timestamp_s)
+        started = False
+        if armed:
+            self.armed_seen = True
+            self.started_s = None
+            self.deadline_s = None
+        elif (
+            self.duration_s > 0.0
+            and self.armed_seen
+            and self.last_valid_armed is True
+        ):
+            self.started_s = now
+            self.deadline_s = now + self.duration_s
+            started = True
+        self.last_valid_armed = bool(armed)
+        return started
+
+    def remaining_s(self, timestamp_s: float) -> float | None:
+        if self.deadline_s is None:
+            return None
+        return max(0.0, self.deadline_s - float(timestamp_s))
+
+    def complete(self, timestamp_s: float) -> bool:
+        return self.deadline_s is not None and float(timestamp_s) >= self.deadline_s
 
 
 class PythonGcPauseMonitor:
@@ -1126,6 +1174,7 @@ def main() -> None:
 
 
 def _run(args: argparse.Namespace, config: dict[str, Any], web_service: TelemetryWebService) -> None:
+    post_disarm_tail = PostDisarmTail(args.stop_after_disarm_s)
     serial_cfg = dict(config.get("serial", {}))
     port = args.serial_port or str(serial_cfg.get("port", ""))
     if not port:
@@ -1142,12 +1191,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         dict(config.get("guidance_command", {}))
     )
     entry_handoff_values = dict(dict(config.get("guidance_command", {})).get("entry_handoff", {}))
-    if control_output_requested and entry_handoff_values.get("rate_source") != "zero":
-        raise RuntimeError("control requires explicit guidance_command.entry_handoff.rate_source=zero")
-    if command_shaper_config.entry_handoff.rate_source != "zero":
-        raise RuntimeError(
-            "Betaflight entry_handoff.rate_source must remain zero until MSP_RAW_IMU units are verified"
-        )
+    if control_output_requested and "rate_source" not in entry_handoff_values:
+        raise RuntimeError("control requires explicit guidance_command.entry_handoff.rate_source")
     command_shaper = GuidanceCommandShaper(command_shaper_config)
     safety_cfg = dict(config.get("safety", {}))
     motor_interlock_config = MotorOutputInterlockConfig.from_mapping(
@@ -1182,6 +1227,18 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     adapter = BetaflightMSPAdapter(port, baudrate, timeout_s=timeout_s)
     adapter.open()
     fc_identity = _read_fc_identity(adapter)
+    gyro_converter = bind_msp_raw_imu_gyro(msp_runtime_config.raw_imu_gyro, fc_identity)
+    if (
+        control_output_requested
+        and command_shaper_config.entry_handoff.enabled
+        and command_shaper_config.entry_handoff.rate_source == "gyro"
+        and not gyro_converter.available
+    ):
+        adapter.close()
+        raise RuntimeError(
+            "gyro entry handoff requires a matching msp_runtime.raw_imu_gyro firmware binding: "
+            f"{gyro_converter.reason}"
+        )
     box_ids, box_ids_error = _read_box_ids(adapter)
     authorization = resolve_control_authorization(
         dict(config.get("control_authorization", {})),
@@ -1249,7 +1306,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "msp_override_mode_index": box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID),
         },
         control_authorization=asdict(authorization),
-        msp_runtime={"config": asdict(msp_runtime_config)},
+        msp_runtime={
+            "config": asdict(msp_runtime_config),
+            "raw_imu_gyro_conversion": gyro_converter.metadata(),
+        },
         kinematics={"config": asdict(kinematics_config), "control_connected": False},
         attitude_fusion={
             "max_wait_s": deferred_fusion.max_wait_s,
@@ -1267,6 +1327,9 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     last_attitude_buffer_sample_s: float | None = None
     last_loop_start_s: float | None = None
     last_runtime_status: tuple[Any, ...] | None = None
+    rows_written = 0
+    stop_reason = "unknown"
+    stop_exception = ""
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
@@ -1300,6 +1363,13 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         f"source={camera_calibration['timestamp']['source']} "
         f"hardware_exposure={int(camera_calibration['timestamp']['hardware_exposure'])}"
     )
+    print(
+        "MSP RAW_IMU gyro: "
+        f"available={int(gyro_converter.available)} reason={gyro_converter.reason} "
+        f"scale={gyro_converter.config.scale_deg_s_per_lsb:.8g} "
+        f"axes={','.join(gyro_converter.config.axis_order)} "
+        f"signs={','.join(f'{value:+.0f}' for value in gyro_converter.config.axis_sign)}"
+    )
     event_logger = EdgeEventLogger(events_path, start_s=start)
     event_logger.write(
         "run_start",
@@ -1317,8 +1387,15 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         with log_path.open("w", newline="") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
-            while float(args.duration_s) <= 0.0 or time.monotonic() - start < float(args.duration_s):
+            while True:
                 loop_start = time.monotonic()
+                if (
+                    float(args.duration_s) > 0.0
+                    and loop_start - start >= float(args.duration_s)
+                    and post_disarm_tail.deadline_s is None
+                ):
+                    stop_reason = "duration_complete"
+                    break
                 elapsed = loop_start - start
                 loop_period_s = None if last_loop_start_s is None else max(0.0, loop_start - last_loop_start_s)
                 last_loop_start_s = loop_start
@@ -1427,6 +1504,24 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and physical_rc_age_s <= msp_runtime_config.physical_rc_timeout_s
                 )
                 armed = armed_from_telemetry(telemetry, box_ids)
+                tail_started = post_disarm_tail.update(
+                    loop_start,
+                    armed if telemetry_fresh else None,
+                )
+                if tail_started:
+                    event_logger.write(
+                        "post_disarm_tail_started",
+                        timestamp_s=loop_start,
+                        new={"duration_s": post_disarm_tail.duration_s},
+                    )
+                detector_stats.update(
+                    post_disarm_tail_active=int(post_disarm_tail.deadline_s is not None),
+                    post_disarm_tail_remaining_s=(
+                        ""
+                        if post_disarm_tail.deadline_s is None
+                        else post_disarm_tail.remaining_s(loop_start)
+                    ),
+                )
                 motor_age_s = (
                     worker_snapshot.motor_age_s
                     if worker_snapshot is not None
@@ -1528,6 +1623,25 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     if telemetry is None or telemetry.raw_imu_timestamp_s is None
                     else max(0.0, loop_start - telemetry.raw_imu_timestamp_s)
                 )
+                gyro_deg_s = gyro_converter.convert(
+                    None
+                    if telemetry is None or telemetry.raw_imu is None
+                    else telemetry.raw_imu.gyro_msp_raw
+                )
+                detector_stats.update(
+                    gyro_conversion_available=int(gyro_converter.available),
+                    gyro_conversion_reason=gyro_converter.reason,
+                    gyro_conversion_source="MSP_RAW_IMU",
+                    gyro_scale_deg_s_per_lsb=gyro_converter.config.scale_deg_s_per_lsb,
+                    gyro_axis_order=",".join(gyro_converter.config.axis_order),
+                    gyro_axis_sign=",".join(
+                        f"{value:+.0f}" for value in gyro_converter.config.axis_sign
+                    ),
+                    gyro_output_frame=gyro_converter.config.output_frame,
+                    gyro_roll_deg_s="" if gyro_deg_s is None else gyro_deg_s[0],
+                    gyro_pitch_deg_s="" if gyro_deg_s is None else gyro_deg_s[1],
+                    gyro_yaw_deg_s="" if gyro_deg_s is None else gyro_deg_s[2],
+                )
                 setpoint, shaping = command_shaper.update(
                     held_setpoint,
                     timestamp=loop_start,
@@ -1537,7 +1651,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         if telemetry is None or telemetry.attitude is None
                         else telemetry.attitude.euler_frd_deg[:2]
                     ),
-                    gyro_deg_s=None,
+                    gyro_deg_s=gyro_deg_s,
                     gyro_age_s=gyro_age_s,
                 )
                 target_valid = bool(setpoint.valid)
@@ -1691,6 +1805,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     guidance_body_frd=guidance_body_frd,
                 )
                 writer.writerow(row)
+                rows_written += 1
                 web_service.publish(
                     telemetry_payload_from_log_row(
                         row,
@@ -1700,8 +1815,19 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     timestamp_s=loop_start,
                 )
 
+                if post_disarm_tail.complete(loop_start):
+                    stop_reason = "post_disarm_tail_complete"
+                    break
+
                 sleep_s = max(0.0, (1.0 / max(1.0, float(args.rate_hz))) - (time.monotonic() - loop_start))
                 time.sleep(sleep_s)
+    except KeyboardInterrupt:
+        stop_reason = "keyboard_interrupt"
+        raise
+    except BaseException as exc:
+        stop_reason = "exception"
+        stop_exception = f"{type(exc).__name__}: {exc}"
+        raise
     finally:
         try:
             if msp_worker is not None:
@@ -1721,8 +1847,27 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     finally:
                         gc_pause_monitor.close()
                         stopped_s = time.monotonic()
-                        event_logger.write("run_stop", timestamp_s=stopped_s, new="normal_or_exception")
+                        completion = {
+                            "complete": stop_reason
+                            in {"duration_complete", "post_disarm_tail_complete"},
+                            "stop_reason": stop_reason,
+                            "exception": stop_exception,
+                            "rows_written": rows_written,
+                            "elapsed_s": max(0.0, stopped_s - start),
+                            "armed_seen": post_disarm_tail.armed_seen,
+                            "post_disarm_tail_s": post_disarm_tail.duration_s,
+                            "post_disarm_tail_started_monotonic_s": post_disarm_tail.started_s,
+                            "post_disarm_tail_completed": stop_reason
+                            == "post_disarm_tail_complete",
+                        }
+                        event_logger.write(
+                            "run_stop",
+                            timestamp_s=stopped_s,
+                            new=stop_reason,
+                            context=completion,
+                        )
                         event_logger.close()
+                        _update_run_completion(meta_path, completion)
 
 
 def _load_config(path: str) -> dict[str, Any]:
@@ -2512,6 +2657,17 @@ def _write_run_meta(
         stream.write("\n")
 
 
+def _update_run_completion(path: Path, completion: dict[str, Any]) -> None:
+    meta = json.loads(path.read_text(encoding="utf-8"))
+    meta["completion"] = dict(completion)
+    temporary_path = path.with_name(f".{path.name}.tmp")
+    temporary_path.write_text(
+        json.dumps(meta, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    os.replace(temporary_path, path)
+
+
 def _sha256_path(path: Path) -> str:
     if not path.is_file():
         return ""
@@ -2540,6 +2696,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "control_requested",
         "allow_control",
         "armed",
+        "post_disarm_tail_active",
+        "post_disarm_tail_remaining_s",
         "msp_override_available",
         "msp_override_active",
         "msp_override_mode_index",
@@ -2651,6 +2809,13 @@ def _log_fields(channel_count: int) -> list[str]:
         "gyro_msp_raw_x",
         "gyro_msp_raw_y",
         "gyro_msp_raw_z",
+        "gyro_conversion_available",
+        "gyro_conversion_reason",
+        "gyro_conversion_source",
+        "gyro_scale_deg_s_per_lsb",
+        "gyro_axis_order",
+        "gyro_axis_sign",
+        "gyro_output_frame",
         "gyro_roll_deg_s",
         "gyro_pitch_deg_s",
         "gyro_yaw_deg_s",
@@ -2929,6 +3094,10 @@ def _log_row(
         "control_requested": int(control_requested),
         "allow_control": int(allow_control),
         "armed": detector_stats.get("armed", ""),
+        "post_disarm_tail_active": detector_stats.get("post_disarm_tail_active", ""),
+        "post_disarm_tail_remaining_s": _stats_float(
+            detector_stats, "post_disarm_tail_remaining_s", precision=6
+        ),
         "msp_override_available": detector_stats.get("msp_override_available", ""),
         "msp_override_active": detector_stats.get("msp_override_active", ""),
         "msp_override_mode_index": detector_stats.get("msp_override_mode_index", ""),
@@ -3098,9 +3267,18 @@ def _log_row(
         "gyro_msp_raw_x": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 0),
         "gyro_msp_raw_y": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 1),
         "gyro_msp_raw_z": _sequence_field(None if raw_imu is None else raw_imu.gyro_msp_raw, 2),
-        "gyro_roll_deg_s": "",
-        "gyro_pitch_deg_s": "",
-        "gyro_yaw_deg_s": "",
+        "gyro_conversion_available": detector_stats.get("gyro_conversion_available", ""),
+        "gyro_conversion_reason": detector_stats.get("gyro_conversion_reason", ""),
+        "gyro_conversion_source": detector_stats.get("gyro_conversion_source", ""),
+        "gyro_scale_deg_s_per_lsb": _stats_float(
+            detector_stats, "gyro_scale_deg_s_per_lsb", precision=8
+        ),
+        "gyro_axis_order": detector_stats.get("gyro_axis_order", ""),
+        "gyro_axis_sign": detector_stats.get("gyro_axis_sign", ""),
+        "gyro_output_frame": detector_stats.get("gyro_output_frame", ""),
+        "gyro_roll_deg_s": _stats_float(detector_stats, "gyro_roll_deg_s", precision=6),
+        "gyro_pitch_deg_s": _stats_float(detector_stats, "gyro_pitch_deg_s", precision=6),
+        "gyro_yaw_deg_s": _stats_float(detector_stats, "gyro_yaw_deg_s", precision=6),
         "mag_raw_x": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 0),
         "mag_raw_y": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 1),
         "mag_raw_z": _sequence_field(None if raw_imu is None else raw_imu.mag_raw, 2),

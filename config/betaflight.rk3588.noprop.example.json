@@ -40,7 +40,17 @@
     "staged_command_timeout_s": 0.15,
     "shutdown_passthrough_frames": 3,
     "response_drain_budget_ms": 3.0,
-    "response_stale_s": 0.25
+    "response_stale_s": 0.25,
+    "raw_imu_gyro": {
+      "enabled": true,
+      "scale_deg_s_per_lsb": 0.0625,
+      "axis_order": ["x", "y", "z"],
+      "axis_sign": [1.0, 1.0, 1.0],
+      "output_frame": "body_frd",
+      "expected_fc_variant": "BTFL",
+      "expected_fc_version": [25, 12, 2],
+      "expected_api_version": [1, 47]
+    }
   },
   "logging": {
     "platform_health_hz": 1.0
@@ -183,7 +193,7 @@
       "enabled": true,
       "duration_s": 0.8,
       "gyro_max_age_s": 0.25,
-      "rate_source": "zero"
+      "rate_source": "gyro"
     },
     "tilt_envelope": {
       "enabled": true,

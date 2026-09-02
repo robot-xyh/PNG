@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import threading
 import time
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Sequence
 
@@ -35,6 +36,117 @@ from .flight_control import RcCommand
 
 
 MSP_OVERRIDE_PERMANENT_ID = 50
+MSP_GYRO_AXIS_NAMES = ("x", "y", "z")
+
+
+@dataclass(frozen=True)
+class MspRawImuGyroConfig:
+    """Convert MSP_RAW_IMU gyro values only for an explicitly bound FC build."""
+
+    enabled: bool = False
+    scale_deg_s_per_lsb: float = 0.0625
+    axis_order: tuple[str, str, str] = MSP_GYRO_AXIS_NAMES
+    axis_sign: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    output_frame: str = "body_frd"
+    expected_fc_variant: str = ""
+    expected_fc_version: tuple[int, int, int] = (0, 0, 0)
+    expected_api_version: tuple[int, int] = (0, 0)
+
+    @classmethod
+    def from_mapping(cls, values: dict[str, Any]) -> "MspRawImuGyroConfig":
+        axis_order = tuple(str(value).strip().lower() for value in values.get("axis_order", MSP_GYRO_AXIS_NAMES))
+        axis_sign = tuple(float(value) for value in values.get("axis_sign", (1.0, 1.0, 1.0)))
+        expected_fc_version = tuple(int(value) for value in values.get("expected_fc_version", (0, 0, 0)))
+        expected_api_version = tuple(int(value) for value in values.get("expected_api_version", (0, 0)))
+        config = cls(
+            enabled=bool(values.get("enabled", False)),
+            scale_deg_s_per_lsb=float(values.get("scale_deg_s_per_lsb", 0.0625)),
+            axis_order=axis_order,
+            axis_sign=axis_sign,
+            output_frame=str(values.get("output_frame", "body_frd")).strip().lower(),
+            expected_fc_variant=str(values.get("expected_fc_variant", "")).strip(),
+            expected_fc_version=expected_fc_version,
+            expected_api_version=expected_api_version,
+        )
+        if not math.isfinite(config.scale_deg_s_per_lsb) or config.scale_deg_s_per_lsb <= 0.0:
+            raise ValueError("raw_imu_gyro.scale_deg_s_per_lsb must be finite and positive")
+        if len(config.axis_order) != 3 or set(config.axis_order) != set(MSP_GYRO_AXIS_NAMES):
+            raise ValueError("raw_imu_gyro.axis_order must be a permutation of x,y,z")
+        if len(config.axis_sign) != 3 or any(value not in (-1.0, 1.0) for value in config.axis_sign):
+            raise ValueError("raw_imu_gyro.axis_sign must contain three values in {-1,1}")
+        if config.output_frame != "body_frd":
+            raise ValueError("raw_imu_gyro.output_frame must be body_frd")
+        if len(config.expected_fc_version) != 3 or len(config.expected_api_version) != 2:
+            raise ValueError("raw_imu_gyro firmware/API versions have invalid lengths")
+        if config.enabled and (
+            not config.expected_fc_variant
+            or any(value < 0 for value in config.expected_fc_version)
+            or config.expected_fc_version == (0, 0, 0)
+            or any(value < 0 for value in config.expected_api_version)
+            or config.expected_api_version == (0, 0)
+        ):
+            raise ValueError("enabled raw_imu_gyro requires explicit FC variant, FC version, and API version")
+        return config
+
+
+@dataclass(frozen=True)
+class BoundMspRawImuGyroConverter:
+    config: MspRawImuGyroConfig
+    available: bool
+    reason: str
+
+    def convert(self, gyro_msp_raw: Sequence[float] | None) -> tuple[float, float, float] | None:
+        if not self.available or gyro_msp_raw is None or len(gyro_msp_raw) < 3:
+            return None
+        source = {name: float(gyro_msp_raw[index]) for index, name in enumerate(MSP_GYRO_AXIS_NAMES)}
+        converted = tuple(
+            source[axis] * sign * self.config.scale_deg_s_per_lsb
+            for axis, sign in zip(self.config.axis_order, self.config.axis_sign)
+        )
+        return converted if all(math.isfinite(value) for value in converted) else None
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "available": self.available,
+            "reason": self.reason,
+            "source": "MSP_RAW_IMU",
+            "scale_deg_s_per_lsb": self.config.scale_deg_s_per_lsb,
+            "axis_order": list(self.config.axis_order),
+            "axis_sign": list(self.config.axis_sign),
+            "output_frame": self.config.output_frame,
+            "firmware_binding": {
+                "fc_variant": self.config.expected_fc_variant,
+                "fc_version": list(self.config.expected_fc_version),
+                "api_version": list(self.config.expected_api_version),
+            },
+        }
+
+
+def bind_msp_raw_imu_gyro(
+    config: MspRawImuGyroConfig,
+    fc_identity: dict[str, Any],
+) -> BoundMspRawImuGyroConverter:
+    if not config.enabled:
+        return BoundMspRawImuGyroConverter(config, False, "conversion_disabled")
+    if "fc_identity_error" in fc_identity:
+        return BoundMspRawImuGyroConverter(config, False, "fc_identity_unavailable")
+    actual = (
+        str(fc_identity.get("fc_variant", "")),
+        (
+            int(fc_identity.get("fc_version_major", -1)),
+            int(fc_identity.get("fc_version_minor", -1)),
+            int(fc_identity.get("fc_version_patch", -1)),
+        ),
+        (int(fc_identity.get("api_major", -1)), int(fc_identity.get("api_minor", -1))),
+    )
+    expected = (
+        config.expected_fc_variant,
+        config.expected_fc_version,
+        config.expected_api_version,
+    )
+    if actual != expected:
+        return BoundMspRawImuGyroConverter(config, False, "firmware_binding_mismatch")
+    return BoundMspRawImuGyroConverter(config, True, "firmware_binding_match")
 
 
 @dataclass(frozen=True)
@@ -80,6 +192,7 @@ class MspRuntimeConfig:
     shutdown_passthrough_frames: int = 3
     response_drain_budget_ms: float = 3.0
     response_stale_s: float = 0.25
+    raw_imu_gyro: MspRawImuGyroConfig = field(default_factory=MspRawImuGyroConfig)
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "MspRuntimeConfig":
@@ -113,6 +226,7 @@ class MspRuntimeConfig:
             shutdown_passthrough_frames=int(values.get("shutdown_passthrough_frames", 3)),
             response_drain_budget_ms=float(values.get("response_drain_budget_ms", 3.0)),
             response_stale_s=float(values.get("response_stale_s", 0.25)),
+            raw_imu_gyro=MspRawImuGyroConfig.from_mapping(dict(values.get("raw_imu_gyro", {}))),
         )
         if config.transport_mode not in {"synchronous", "async_pipeline"}:
             raise ValueError("msp_runtime.transport_mode must be synchronous or async_pipeline")
@@ -154,6 +268,8 @@ class MspRuntimeConfig:
             raise ValueError("shutdown_passthrough_frames must be non-negative")
         if config.response_drain_budget_ms < 0.0 or config.response_stale_s <= 0.0:
             raise ValueError("MSP async response budget/stale timeout values are invalid")
+        if config.raw_imu_gyro.enabled and config.raw_imu_poll_hz <= 0.0:
+            raise ValueError("enabled raw_imu_gyro requires raw_imu_poll_hz > 0")
         return config
 
 

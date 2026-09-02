@@ -159,6 +159,10 @@ def telemetry_payload_from_log_row(
         "run": {
             "elapsed_s": _number(row.get("elapsed_s")),
             "loop_period_s": _number(row.get("loop_period_s")),
+            "post_disarm_tail_active": _boolean(row.get("post_disarm_tail_active")),
+            "post_disarm_tail_remaining_s": _number(
+                row.get("post_disarm_tail_remaining_s")
+            ),
         },
         "safety": {
             "state": _text(row.get("safety_state")),
@@ -205,6 +209,15 @@ def telemetry_payload_from_log_row(
                 row,
                 ("gyro_msp_raw_x", "gyro_msp_raw_y", "gyro_msp_raw_z"),
             ),
+            "gyro_conversion": {
+                "available": _boolean(row.get("gyro_conversion_available")),
+                "reason": _text(row.get("gyro_conversion_reason")),
+                "source": _text(row.get("gyro_conversion_source")),
+                "scale_deg_s_per_lsb": _number(row.get("gyro_scale_deg_s_per_lsb")),
+                "axis_order": _text(row.get("gyro_axis_order")),
+                "axis_sign": _text(row.get("gyro_axis_sign")),
+                "output_frame": _text(row.get("gyro_output_frame")),
+            },
             "motor_outputs": _channels(row, "motor_output_ch", 8),
             "motor_output_count": _integer(row.get("motor_output_count")),
             "vbat_v": _number(row.get("vbat_v")),

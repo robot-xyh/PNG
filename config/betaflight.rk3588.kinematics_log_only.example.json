@@ -35,7 +35,17 @@
     "set_raw_rc_channel_map": "AETR1234",
     "throttle_handover_s": 0.4,
     "response_drain_budget_ms": 3.0,
-    "response_stale_s": 0.25
+    "response_stale_s": 0.25,
+    "raw_imu_gyro": {
+      "enabled": true,
+      "scale_deg_s_per_lsb": 0.0625,
+      "axis_order": ["x", "y", "z"],
+      "axis_sign": [1.0, 1.0, 1.0],
+      "output_frame": "body_frd",
+      "expected_fc_variant": "BTFL",
+      "expected_fc_version": [25, 12, 2],
+      "expected_api_version": [1, 47]
+    }
   },
   "kinematics": {
     "gps_timeout_s": 0.5,
@@ -150,14 +160,22 @@
   "rc_mapping": {
     "channel_map": "AETR1234",
     "channel_count": 8,
-    "roll_rate_limit_deg_s": 120.0,
-    "pitch_rate_limit_deg_s": 120.0,
-    "yaw_rate_limit_deg_s": 90.0,
+    "rate_mapping_type": "betaflight",
+    "betaflight_rc_rate": [1.0, 1.0, 1.0],
+    "betaflight_super_rate": [0.7, 0.7, 0.7],
+    "betaflight_expo": [0.0, 0.0, 0.0],
+    "betaflight_rate_profile_index": 0,
+    "roll_rate_limit_deg_s": 666.666667,
+    "pitch_rate_limit_deg_s": 666.666667,
+    "yaw_rate_limit_deg_s": 666.666667,
+    "roll_command_limit_deg_s": 60.0,
+    "pitch_command_limit_deg_s": 60.0,
+    "yaw_command_limit_deg_s": 0.0,
     "thrust_min": 0.0,
     "thrust_hover": 0.5,
     "thrust_max": 1.0,
     "throttle_min_us": 1000,
-    "throttle_hover_us": 1500,
+    "throttle_hover_us": 1275,
     "throttle_max_us": 2000,
     "neutral_throttle_us": 1000,
     "max_delta_us_per_s": 600.0,
@@ -190,7 +208,7 @@
       "enabled": false,
       "duration_s": 0.8,
       "gyro_max_age_s": 0.25,
-      "rate_source": "zero"
+      "rate_source": "gyro"
     },
     "tilt_envelope": {
       "enabled": false,

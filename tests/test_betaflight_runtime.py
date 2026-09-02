@@ -26,9 +26,11 @@ from vision_guidance.betaflight_msp import (
 )
 from vision_guidance.betaflight_runtime import (
     BetaflightMspIoWorker,
+    MspRawImuGyroConfig,
     MspRuntimeConfig,
     ThrottleHandover,
     armed_from_telemetry,
+    bind_msp_raw_imu_gyro,
     box_mode_active,
     merge_physical_rc,
     reorder_msp_rc_to_set_raw_rc,
@@ -133,6 +135,69 @@ class _AsyncTransport:
 
 
 class BetaflightRuntimeTest(unittest.TestCase):
+    @staticmethod
+    def _fc_identity():
+        return {
+            "fc_variant": "BTFL",
+            "fc_version_major": 25,
+            "fc_version_minor": 12,
+            "fc_version_patch": 2,
+            "api_major": 1,
+            "api_minor": 47,
+        }
+
+    def test_raw_imu_gyro_conversion_requires_exact_firmware_binding(self):
+        config = MspRawImuGyroConfig.from_mapping(
+            {
+                "enabled": True,
+                "scale_deg_s_per_lsb": 0.0625,
+                "axis_order": ["x", "y", "z"],
+                "axis_sign": [1, 1, 1],
+                "output_frame": "body_frd",
+                "expected_fc_variant": "BTFL",
+                "expected_fc_version": [25, 12, 2],
+                "expected_api_version": [1, 47],
+            }
+        )
+        converter = bind_msp_raw_imu_gyro(config, self._fc_identity())
+
+        self.assertTrue(converter.available)
+        self.assertEqual(converter.reason, "firmware_binding_match")
+        self.assertEqual(converter.convert((16, -32, 8)), (1.0, -2.0, 0.5))
+
+        mismatched = dict(self._fc_identity(), fc_version_patch=3)
+        rejected = bind_msp_raw_imu_gyro(config, mismatched)
+        self.assertFalse(rejected.available)
+        self.assertEqual(rejected.reason, "firmware_binding_mismatch")
+        self.assertIsNone(rejected.convert((16, -32, 8)))
+
+    def test_raw_imu_gyro_conversion_applies_configured_axis_order_and_sign(self):
+        config = MspRawImuGyroConfig.from_mapping(
+            {
+                "enabled": True,
+                "axis_order": ["y", "x", "z"],
+                "axis_sign": [-1, 1, -1],
+                "expected_fc_variant": "BTFL",
+                "expected_fc_version": [25, 12, 2],
+                "expected_api_version": [1, 47],
+            }
+        )
+        converter = bind_msp_raw_imu_gyro(config, self._fc_identity())
+
+        self.assertEqual(converter.convert((16, 32, -8)), (-2.0, 1.0, 0.5))
+
+    def test_enabled_raw_imu_gyro_requires_polling_and_identity(self):
+        values = {
+            "enabled": True,
+            "expected_fc_variant": "BTFL",
+            "expected_fc_version": [25, 12, 2],
+            "expected_api_version": [1, 47],
+        }
+        with self.assertRaisesRegex(ValueError, "explicit FC variant"):
+            MspRawImuGyroConfig.from_mapping({"enabled": True})
+        with self.assertRaisesRegex(ValueError, "raw_imu_poll_hz"):
+            MspRuntimeConfig.from_mapping({"raw_imu_gyro": values})
+
     def test_runtime_config_records_cli_override_mode_id(self):
         config = MspRuntimeConfig.from_mapping({"override_mode_cli_id": 50})
         self.assertEqual(config.override_mode_cli_id, 50)

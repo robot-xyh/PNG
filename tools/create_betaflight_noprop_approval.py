@@ -18,6 +18,10 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vision_guidance.geometry import camera_mount_diagnostics, validated_rotation_matrix  # noqa: E402
+from vision_guidance.betaflight_runtime import (  # noqa: E402
+    MspRawImuGyroConfig,
+    bind_msp_raw_imu_gyro,
+)
 
 
 MSP_OVERRIDE_PERMANENT_ID = 50
@@ -61,7 +65,12 @@ def main() -> None:
         snapshot_path,
         expected_override_mode_cli_id=override_mode_cli_id,
     )
-    camera_extrinsic = _validate_noprop_config(config, output_path, parsed_cli=parsed_cli)
+    camera_extrinsic = _validate_noprop_config(
+        config,
+        output_path,
+        parsed_cli=parsed_cli,
+        fc_identity=dict(snapshot["fc_identity"]),
+    )
     guidance = _validate_guidance_config(config)
     guidance_command_frames = _validate_guidance_command_frames(config)
 
@@ -98,6 +107,7 @@ def main() -> None:
         "camera_extrinsic": camera_extrinsic,
         "guidance": guidance,
         "guidance_command_frames": guidance_command_frames,
+        "msp_raw_imu_gyro": dict(config.get("msp_runtime", {}).get("raw_imu_gyro", {})),
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(approval, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -161,6 +171,7 @@ def _validate_noprop_config(
     output_path: Path,
     *,
     parsed_cli: dict[str, Any] | None = None,
+    fc_identity: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     authorization = dict(config.get("control_authorization", {}))
     if authorization.get("enabled") is not True or authorization.get("required_scope") != "noprop_bench":
@@ -258,8 +269,11 @@ def _validate_noprop_config(
     entry = dict(guidance_command.get("entry_handoff", {}))
     if entry.get("enabled") is not True:
         raise RuntimeError("no-prop entry_handoff must be enabled")
-    if entry.get("rate_source") != "zero":
-        raise RuntimeError("no-prop entry_handoff rate_source must be zero")
+    rate_source = str(entry.get("rate_source", ""))
+    if rate_source not in {"zero", "gyro"}:
+        raise RuntimeError("no-prop entry_handoff rate_source must be zero or gyro")
+    if rate_source == "gyro":
+        _validate_raw_imu_gyro_binding(runtime, fc_identity=fc_identity)
     entry_duration_s = _finite_float(entry, "duration_s")
     if entry_duration_s < MIN_ENTRY_HANDOFF_DURATION_S:
         raise RuntimeError(
@@ -297,6 +311,32 @@ def _validate_noprop_config(
     if int(aux.get("channel_index", 0)) != 7 or int(aux.get("min_us", 0)) != 1700:
         raise RuntimeError("no-prop takeover gate must use RC7/AUX3 high")
     return camera_extrinsic
+
+
+def _validate_raw_imu_gyro_binding(
+    runtime: dict[str, Any],
+    *,
+    fc_identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    try:
+        config = MspRawImuGyroConfig.from_mapping(dict(runtime.get("raw_imu_gyro", {})))
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"invalid no-prop raw_imu_gyro configuration: {exc}") from exc
+    if not config.enabled:
+        raise RuntimeError("gyro entry handoff requires raw_imu_gyro.enabled=true")
+    if float(runtime.get("raw_imu_poll_hz", 0.0)) <= 0.0:
+        raise RuntimeError("gyro entry handoff requires raw_imu_poll_hz > 0")
+    if not math.isclose(config.scale_deg_s_per_lsb, 0.0625, abs_tol=1.0e-12):
+        raise RuntimeError("no-prop raw_imu_gyro scale must be 0.0625 deg/s/LSB")
+    if config.axis_order != ("x", "y", "z") or config.axis_sign != (1.0, 1.0, 1.0):
+        raise RuntimeError("no-prop raw_imu_gyro must use direct x,y,z FRD axes")
+    converter = bind_msp_raw_imu_gyro(config, dict(fc_identity or {}))
+    if fc_identity is not None and not converter.available:
+        raise RuntimeError(
+            "no-prop raw_imu_gyro firmware binding does not match the fresh snapshot: "
+            f"{converter.reason}"
+        )
+    return converter.metadata()
 
 
 def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:

@@ -284,6 +284,7 @@
           <tr><th>Perception</th><td id="perceptionState">--</td><th>Vision / attitude</th><td id="attitudeOffset">--</td></tr>
           <tr><th>Orange Pi</th><td id="hostState">--</td><th>Web</th><td id="webState">--</td></tr>
           <tr><th>Python GC</th><td id="gcState">--</td><th>Loop period</th><td id="runtimeLoopPeriod">--</td></tr>
+          <tr><th>Gyro conversion</th><td id="gyroState">--</td><th>Log tail</th><td id="logTailState">--</td></tr>
         </table>
         <div id="errorLine" class="error-line">No active errors</div>
       </section>
@@ -295,7 +296,7 @@
           <canvas id="attitudeChart"></canvas>
         </section>
         <section class="chart-panel">
-          <div class="chart-head"><h2>MSP Gyro Raw</h2><div class="legend"><span><i style="background:#69d38b"></i>raw X</span><span><i style="background:#ed9952"></i>raw Y</span><span><i style="background:#ee6a63"></i>command</span></div></div>
+          <div class="chart-head"><h2>Body Rates (deg/s)</h2><div class="legend"><span><i style="background:#69d38b"></i>roll</span><span><i style="background:#ed9952"></i>pitch</span><span><i style="background:#ee6a63"></i>command</span></div></div>
           <canvas id="ratesChart"></canvas>
         </section>
         <section class="chart-panel">
@@ -562,6 +563,11 @@
       const pythonGc = path(data, ["host", "python_gc"], {});
       setMetric("gcState", `${number(pythonGc.max_pause_ms, 3, " ms max")} / ${text(pythonGc.collection_count)} runs`);
       setMetric("runtimeLoopPeriod", number(path(data, ["run", "loop_period_s"]), 3, " s"));
+      const gyroConversion = path(data, ["flight_controller", "gyro_conversion"], {});
+      setMetric("gyroState", `${boolText(gyroConversion.available, "READY", "BLOCKED")} / ${text(gyroConversion.reason)}`);
+      const tailActive = path(data, ["run", "post_disarm_tail_active"]);
+      const tailRemaining = path(data, ["run", "post_disarm_tail_remaining_s"]);
+      setMetric("logTailState", tailActive ? number(tailRemaining, 1, " s") : "IDLE");
       updateChannels(data);
       updateControlReadiness(data);
 
@@ -581,8 +587,8 @@
         { color: "#d98ad6", get: d => path(d, ["flight_controller", "attitude_deg", 2]) }
       ],
       ratesChart: [
-        { color: "#69d38b", get: d => path(d, ["flight_controller", "gyro_msp_raw", 0]) },
-        { color: "#ed9952", get: d => path(d, ["flight_controller", "gyro_msp_raw", 1]) },
+        { color: "#69d38b", get: d => path(d, ["flight_controller", "gyro_deg_s", 0]) },
+        { color: "#ed9952", get: d => path(d, ["flight_controller", "gyro_deg_s", 1]) },
         { color: "#ee6a63", get: d => path(d, ["command", "rate_deg_s", 0]) }
       ],
       guidanceChart: [

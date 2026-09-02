@@ -39,6 +39,28 @@ def _load_runner_module():
 runner = _load_runner_module()
 
 
+class PostDisarmTailTest(unittest.TestCase):
+    def test_starts_only_after_valid_arm_to_disarm_edge(self):
+        tail = runner.PostDisarmTail(10.0)
+
+        self.assertFalse(tail.update(1.0, False))
+        self.assertFalse(tail.update(2.0, True))
+        self.assertFalse(tail.update(3.0, None))
+        self.assertTrue(tail.update(4.0, False))
+        self.assertAlmostEqual(tail.remaining_s(9.0), 5.0)
+        self.assertFalse(tail.complete(13.999))
+        self.assertTrue(tail.complete(14.0))
+
+    def test_rearm_cancels_active_tail(self):
+        tail = runner.PostDisarmTail(10.0)
+        tail.update(1.0, True)
+        tail.update(2.0, False)
+
+        self.assertFalse(tail.update(3.0, True))
+        self.assertIsNone(tail.deadline_s)
+        self.assertFalse(tail.complete(20.0))
+
+
 class _FakeCapture:
     def __init__(self, image, *, accept_settings=True):
         self.image = image
@@ -784,9 +806,18 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 16)
+            self.assertEqual(data["log_schema_version"], 17)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
+
+            completion = {
+                "complete": True,
+                "stop_reason": "post_disarm_tail_complete",
+                "rows_written": 123,
+            }
+            runner._update_run_completion(path, completion)
+            updated = json.loads(path.read_text())
+            self.assertEqual(updated["completion"], completion)
 
     def test_camera_mount_requires_explicit_verified_upward_extrinsic_for_control(self):
         legacy = {"camera": {"pitch_up_deg": 90.0}}

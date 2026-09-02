@@ -77,14 +77,18 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "entry_handoff must be enabled"):
             tool._validate_noprop_config(no_entry, output)
 
-        gyro_entry = copy.deepcopy(config)
-        gyro_entry["guidance_command"]["entry_handoff"]["rate_source"] = "gyro"
-        with self.assertRaisesRegex(RuntimeError, "rate_source must be zero"):
-            tool._validate_noprop_config(gyro_entry, output)
+        zero_entry = copy.deepcopy(config)
+        zero_entry["guidance_command"]["entry_handoff"]["rate_source"] = "zero"
+        tool._validate_noprop_config(zero_entry, output)
+
+        invalid_gyro_entry = copy.deepcopy(config)
+        invalid_gyro_entry["msp_runtime"]["raw_imu_gyro"]["scale_deg_s_per_lsb"] = 0.1
+        with self.assertRaisesRegex(RuntimeError, "scale must be 0.0625"):
+            tool._validate_noprop_config(invalid_gyro_entry, output)
 
         missing_rate_source = copy.deepcopy(config)
         missing_rate_source["guidance_command"]["entry_handoff"].pop("rate_source")
-        with self.assertRaisesRegex(RuntimeError, "rate_source must be zero"):
+        with self.assertRaisesRegex(RuntimeError, "rate_source must be zero or gyro"):
             tool._validate_noprop_config(missing_rate_source, output)
 
         short_entry = copy.deepcopy(config)

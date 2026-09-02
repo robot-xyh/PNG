@@ -375,6 +375,60 @@ class BetaflightLogAuditTest(unittest.TestCase):
 
             self.assertNotIn("unsupported_log_schema_version:16", result["warnings"])
 
+    def test_schema_v17_validates_complete_post_disarm_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = []
+            for elapsed_s, armed in ((0.0, "1"), (1.0, "0"), (11.0, "0")):
+                row = self._safe_row()
+                row["elapsed_s"] = str(elapsed_s)
+                row["armed"] = armed
+                rows.append(row)
+            csv_path = self._write_log(Path(directory), rows, schema_version=17)
+            meta_path = csv_path.with_name("bench_meta.json")
+            meta = json.loads(meta_path.read_text())
+            meta["args"] = {"stop_after_disarm_s": 10.0}
+            meta["completion"] = {
+                "complete": True,
+                "stop_reason": "post_disarm_tail_complete",
+                "post_disarm_tail_completed": True,
+            }
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertNotIn("unsupported_log_schema_version:17", result["warnings"])
+            self.assertNotIn(
+                "post_disarm_log_tail_incomplete",
+                {item["code"] for item in result["violations"]},
+            )
+            self.assertEqual(result["metrics"]["post_disarm_tail_logged_s"], 10.0)
+
+    def test_schema_v17_rejects_truncated_post_disarm_tail(self):
+        with tempfile.TemporaryDirectory() as directory:
+            rows = []
+            for elapsed_s, armed in ((0.0, "1"), (1.0, "0"), (4.0, "0")):
+                row = self._safe_row()
+                row["elapsed_s"] = str(elapsed_s)
+                row["armed"] = armed
+                rows.append(row)
+            csv_path = self._write_log(Path(directory), rows, schema_version=17)
+            meta_path = csv_path.with_name("bench_meta.json")
+            meta = json.loads(meta_path.read_text())
+            meta["args"] = {"stop_after_disarm_s": 10.0}
+            meta["completion"] = {
+                "complete": False,
+                "stop_reason": "keyboard_interrupt",
+                "post_disarm_tail_completed": False,
+            }
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            result = tool.analyze_log(csv_path)
+
+            self.assertIn(
+                "post_disarm_log_tail_incomplete",
+                {item["code"] for item in result["violations"]},
+            )
+
     def test_schema_v3_cannot_prove_publish_time_gates(self):
         with tempfile.TemporaryDirectory() as directory:
             csv_path = self._write_log(Path(directory), self._safe_row(), schema_version=3)
