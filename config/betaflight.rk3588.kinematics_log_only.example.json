@@ -40,7 +40,7 @@
       "enabled": true,
       "scale_deg_s_per_lsb": 0.0625,
       "axis_order": ["x", "y", "z"],
-      "axis_sign": [1.0, 1.0, 1.0],
+      "axis_sign": [1.0, -1.0, 1.0],
       "output_frame": "body_frd",
       "expected_fc_variant": "BTFL",
       "expected_fc_version": [25, 12, 2],
@@ -99,11 +99,15 @@
       -0.00021461333729847564,
       1.4612166830713538
     ],
-    "pitch_up_deg": 90.0,
+    "R_BC": [
+      [0.0, 1.0, 0.0],
+      [1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0]
+    ],
     "timestamp_source": "capture_return_monotonic",
     "intrinsic_calibration_id": "unarchived_candidate_640x512",
     "extrinsic_validation": {
-      "verified": false,
+      "verified": true,
       "body_frame": "FRD",
       "camera_frame": "opencv_x_right_y_down_z_forward",
       "expected_optical_axis_body": [0.0, 0.0, -1.0],

@@ -328,8 +328,10 @@ def _validate_raw_imu_gyro_binding(
         raise RuntimeError("gyro entry handoff requires raw_imu_poll_hz > 0")
     if not math.isclose(config.scale_deg_s_per_lsb, 0.0625, abs_tol=1.0e-12):
         raise RuntimeError("no-prop raw_imu_gyro scale must be 0.0625 deg/s/LSB")
-    if config.axis_order != ("x", "y", "z") or config.axis_sign != (1.0, 1.0, 1.0):
-        raise RuntimeError("no-prop raw_imu_gyro must use direct x,y,z FRD axes")
+    if config.axis_order != ("x", "y", "z") or config.axis_sign != (1.0, -1.0, 1.0):
+        raise RuntimeError(
+            "no-prop raw_imu_gyro must use the measured x,y,z to FRD sign mapping +1,-1,+1"
+        )
     converter = bind_msp_raw_imu_gyro(config, dict(fc_identity or {}))
     if fc_identity is not None and not converter.available:
         raise RuntimeError(

@@ -191,10 +191,10 @@ class BetaflightWebTest(unittest.TestCase):
             "gyro_conversion_source": "MSP_RAW_IMU",
             "gyro_scale_deg_s_per_lsb": "0.0625",
             "gyro_axis_order": "x,y,z",
-            "gyro_axis_sign": "+1,+1,+1",
+            "gyro_axis_sign": "+1,-1,+1",
             "gyro_output_frame": "body_frd",
             "gyro_roll_deg_s": "0.625",
-            "gyro_pitch_deg_s": "-1.25",
+            "gyro_pitch_deg_s": "1.25",
             "gyro_yaw_deg_s": "1.875",
             "vbat_v": "4.20",
             "motor_output_count": "8",
@@ -291,7 +291,7 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertTrue(payload["vision"]["new_result"])
         self.assertEqual(payload["flight_controller"]["attitude_deg"], [2.5, -1.0, 90.0])
         self.assertEqual(payload["flight_controller"]["gyro_msp_raw"], [10.0, -20.0, 30.0])
-        self.assertEqual(payload["flight_controller"]["gyro_deg_s"], [0.625, -1.25, 1.875])
+        self.assertEqual(payload["flight_controller"]["gyro_deg_s"], [0.625, 1.25, 1.875])
         self.assertTrue(payload["flight_controller"]["gyro_conversion"]["available"])
         self.assertEqual(
             payload["flight_controller"]["gyro_conversion"]["reason"],

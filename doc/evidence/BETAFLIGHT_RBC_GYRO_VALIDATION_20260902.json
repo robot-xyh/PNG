@@ -1,0 +1,259 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-09-02",
+  "hardware": {
+    "host": "orangepi5max",
+    "flight_controller": "BTFL 25.12.2",
+    "msp_api": "1.47",
+    "camera_output": [640, 512]
+  },
+  "safety_scope": {
+    "control_mode": "log_only",
+    "armed_seen": false,
+    "override_active_seen": false,
+    "set_raw_rc_maxima": {
+      "attempt": 0,
+      "write_attempt": 0,
+      "success": 0,
+      "ack": 0
+    },
+    "flight_or_control_authorized": false
+  },
+  "camera_extrinsic": {
+    "body_frame": "FRD",
+    "camera_frame": "opencv_x_right_y_down_z_forward",
+    "R_BC": [
+      [0.0, 1.0, 0.0],
+      [1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0]
+    ],
+    "determinant": 1.0,
+    "optical_axis_body": [0.0, 0.0, -1.0],
+    "optical_axis_error_deg": 0.0,
+    "phase_windows_s": {
+      "baseline": [10.0, 40.0],
+      "nose_up": [46.0, 48.0],
+      "nose_down": [56.0, 60.0],
+      "right_roll": [66.0, 68.0],
+      "left_roll": [72.0, 75.0],
+      "final_baseline": [82.0, 112.0]
+    },
+    "inertial_los_residual_to_baseline_deg": {
+      "nose_up": 0.874,
+      "nose_down": 2.294,
+      "right_roll": 3.419,
+      "left_roll": 2.986,
+      "final_baseline": 1.884
+    },
+    "legacy_pitch_up_90_residual_to_baseline_deg": {
+      "nose_up": 6.918,
+      "nose_down": 24.515,
+      "right_roll": 15.311,
+      "left_roll": 13.752,
+      "final_baseline": 2.625
+    },
+    "verified_for_installed_mount": true
+  },
+  "msp_raw_imu_gyro": {
+    "scale_deg_s_per_lsb": 0.0625,
+    "axis_order": ["x", "y", "z"],
+    "axis_sign_to_body_frd": [1.0, -1.0, 1.0],
+    "pitch_definition": "q_frd follows d(-MSP_ATTITUDE.pitch_deg)/dt",
+    "formal_run": {
+      "roll_correlation": 0.958623,
+      "pitch_uncorrected_correlation": -0.963606,
+      "pitch_corrected_correlation": 0.963606
+    },
+    "pitch_retest": {
+      "rows": 5970,
+      "duration_s": 120.274338,
+      "pitch_span_deg": 17.9,
+      "gyro_y_range_deg_s": [-17.4375, 15.0],
+      "moving_samples": 468,
+      "pitch_uncorrected_correlation": -0.968964,
+      "pitch_corrected_correlation": 0.968964,
+      "corrected_fitted_gain": 0.946014
+    },
+    "yaw_sign_status": "validated_positive_z",
+    "yaw_exploratory_5hz": {
+      "rows": 4474,
+      "yaw_span_deg": 75.0,
+      "gyro_z_range_deg_s": [-29.875, 34.3125],
+      "visible_motion_events": 13,
+      "sample_correlation": -0.161,
+      "status": "inconclusive_due_to_sampling_and_attitude_quantization"
+    },
+    "yaw_validation_20hz": {
+      "rows": 4469,
+      "duration_s": 89.982964,
+      "attitude_samples": 1449,
+      "gyro_samples": 1449,
+      "yaw_span_deg": 69.0,
+      "gyro_z_range_deg_s": [-28.625, 27.4375],
+      "event_count": 9,
+      "event_sign_matches": 9,
+      "event_correlation": 0.993819,
+      "yaw_delta_per_gyro_integral_gain": 0.87629,
+      "best_sample_correlation": 0.419438,
+      "best_sample_lag_s": 0.4,
+      "temporary_poll_hz": {
+        "attitude": 20.0,
+        "raw_imu": 20.0,
+        "raw_gps": 0.0,
+        "altitude": 0.0,
+        "rc": 2.0
+      },
+      "restored_poll_hz": {
+        "raw_imu": 5.0,
+        "raw_gps": 5.0,
+        "altitude": 5.0,
+        "rc": 5.0
+      },
+      "restored_config_sha256": "9e5dbb9de21ca59434c1f53a020a76b7f27d1089721d17ec16c96d2ef11d16c9"
+    }
+  },
+  "perception": {
+    "formal_run": {
+      "new_results": 3159,
+      "valid_bboxes": 3124,
+      "confirmed_results": 3157,
+      "valid_bbox_ratio": 0.988921,
+      "confirmed_ratio": 0.999367,
+      "track_ids": [1],
+      "maximum_bbox_gap_s": 1.287946,
+      "result_age_ms_p50_p95_max": [56.884, 84.514, 112.76]
+    },
+    "pitch_retest": {
+      "new_results": 3116,
+      "valid_bboxes": 3112,
+      "confirmed_results": 3114,
+      "valid_bbox_ratio": 0.998716,
+      "confirmed_ratio": 0.999358,
+      "track_ids": [1],
+      "maximum_bbox_gap_s": 0.120347,
+      "result_age_ms_p50_p95_max": [56.84, 84.972, 122.206]
+    }
+  },
+  "deployment_regression": {
+    "run_id": "RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616",
+    "rows": 1494,
+    "duration_s": 30.220009,
+    "audit_passed": true,
+    "audit_violations": 0,
+    "camera_extrinsic_source": "R_BC",
+    "camera_extrinsic_verified": true,
+    "camera_optical_axis_error_deg": 0.0,
+    "gyro_axis_sign_observed": "+1,-1,+1",
+    "gyro_conversion_ready_rows": 1494,
+    "set_raw_rc_maxima": {
+      "attempt": 0,
+      "write_attempt": 0,
+      "success": 0,
+      "ack": 0
+    }
+  },
+  "method": {
+    "attitude_rate": "For each row, fit a local least-squares slope over +/-0.12 s. Correlate samples where both fitted attitude rate and gyro magnitude are at least 3 deg/s.",
+    "yaw_event_validation": "Recover ATTITUDE and RAW_IMU sample times from per-command age fields. Segment events where abs(gyro_z) exceeds 5 deg/s, merge gaps no longer than 0.45 s, integrate gyro_z, and compare its sign and magnitude with unwrapped yaw change over boundaries expanded by 0.25 s.",
+    "inertial_los": "For confirmed new detections, form the calibrated camera ray from bbox center, rotate it by candidate R_BC and the FRD-corrected R_IB, then compare normalized phase-median vectors to the initial baseline.",
+    "limitations": [
+      "Camera timestamp is capture-return monotonic, not hardware exposure time.",
+      "MSP_ATTITUDE is quantized to one degree and sampled asynchronously; yaw event integrals, not sample correlation, are the acceptance evidence.",
+      "Fixed indoor target and DISARM LOG_ONLY data do not authorize flight control."
+    ]
+  },
+  "source_files": {
+    "formal_csv": {
+      "path": "logs/indoor_rbc_remote/R_BC_GYRO_120S_OFFSET_20260902_134333_20260902_134335.csv",
+      "sha256": "0b779508a62327c47b3c8d29ccc22342dea57a09ef651c5654ad6d5926b31d37"
+    },
+    "formal_meta": {
+      "path": "logs/indoor_rbc_remote/R_BC_GYRO_120S_OFFSET_20260902_134333_20260902_134335_meta.json",
+      "sha256": "980b4c08964ccff9432bdd3c82ea53c4c70f5995754e202bfc463f5faebceb88"
+    },
+    "formal_events": {
+      "path": "logs/indoor_rbc_remote/R_BC_GYRO_120S_OFFSET_20260902_134333_20260902_134335_events.jsonl",
+      "sha256": "bf14a962408300d766d88af9618d629c1fd9dc4aba3061e95c400617ea609f83"
+    },
+    "formal_audit": {
+      "path": "logs/indoor_rbc_remote/R_BC_GYRO_120S_OFFSET_20260902_134333_20260902_134335_audit.json",
+      "sha256": "a2ff0a59ce5044f3998324f686f3c6e65e36c04a2b8903ca9801093644f786f8"
+    },
+    "pitch_retest_csv": {
+      "path": "logs/indoor_rbc_remote/PITCH_AXIS_RETEST_120S_20260902_135509_20260902_135510.csv",
+      "sha256": "aeb012f4d57c940377e61841b823205c4df69fc973d8287a87415a69d6f6649e"
+    },
+    "pitch_retest_meta": {
+      "path": "logs/indoor_rbc_remote/PITCH_AXIS_RETEST_120S_20260902_135509_20260902_135510_meta.json",
+      "sha256": "f1a7ec25466f14e53a7a9779747c8bec8901e23fda6f9a4557b8069cd3d9d46e"
+    },
+    "pitch_retest_events": {
+      "path": "logs/indoor_rbc_remote/PITCH_AXIS_RETEST_120S_20260902_135509_20260902_135510_events.jsonl",
+      "sha256": "18882143cf8d88849631f4c98c6a10db0fdb377077a253ffab3b78c95e9a5dd5"
+    },
+    "pitch_retest_audit": {
+      "path": "logs/indoor_rbc_remote/PITCH_AXIS_RETEST_120S_20260902_135509_20260902_135510_audit.json",
+      "sha256": "86a59a8cac60c3a69cbad892c8dcc713a200ae3e46015355916e9bedea8c0833"
+    },
+    "deployment_regression_csv": {
+      "path": "logs/indoor_rbc_remote/RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616_20260902_141617.csv",
+      "sha256": "eda446ad5a5f7f075b43361fe9af56763e607412d0b6cbbf9c03cc234e779153"
+    },
+    "deployment_regression_meta": {
+      "path": "logs/indoor_rbc_remote/RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616_20260902_141617_meta.json",
+      "sha256": "7dbbc9a1c1bd4afe1708d933af37b6922abf6a669b52eef67e6d3beb1b88ac55"
+    },
+    "deployment_regression_events": {
+      "path": "logs/indoor_rbc_remote/RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616_20260902_141617_events.jsonl",
+      "sha256": "c250598579b42590e873850c6943eadde732d120e835378eaeadccd2694f6aa8"
+    },
+    "deployment_regression_audit": {
+      "path": "logs/indoor_rbc_remote/RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616_20260902_141617_audit.json",
+      "sha256": "785ebc871fb0e30af9052bd01c03d46147097901ef9f48c76855f16f896a0a18"
+    },
+    "deployment_regression_console": {
+      "path": "logs/indoor_rbc_remote/RBC_GYRO_CONFIG_REGRESSION_30S_20260902_141616_console.log",
+      "sha256": "70ff559dcc292bd65c6a52827e9324d3e20fb5fd4561d6c238c07f7c88006173"
+    },
+    "yaw_exploratory_5hz_csv": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_INDOOR_90S_20260902_142949_20260902_142951.csv",
+      "sha256": "79ea8c5e89778d66af8c216c06a4ec21d802735c0031ffd5b7d16a5d045ae4fa"
+    },
+    "yaw_exploratory_5hz_meta": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_INDOOR_90S_20260902_142949_20260902_142951_meta.json",
+      "sha256": "831b99c94cd7c7d242c79c7a0be0a7bf19f68f46b1cb257e7e5f86ef26755570"
+    },
+    "yaw_exploratory_5hz_events": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_INDOOR_90S_20260902_142949_20260902_142951_events.jsonl",
+      "sha256": "b77ce38a02ad6fbcab91ba50ad259fb90b572c95fb53f9460482d399850d8ee3"
+    },
+    "yaw_exploratory_5hz_audit": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_INDOOR_90S_20260902_142949_20260902_142951_audit.json",
+      "sha256": "039aeadcac0b26ca4a21a35f7bd344e779604b761c84356d06b9bd90caaec5ac"
+    },
+    "yaw_exploratory_5hz_console": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_INDOOR_90S_20260902_142949_console.log",
+      "sha256": "ee80302a529c98290d52e282b7677d257cfc3b375911c92437f1e21d21a89382"
+    },
+    "yaw_validation_20hz_csv": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_20HZ_RETEST2_90S_20260902_144351_20260902_144352.csv",
+      "sha256": "10d2c85d95954023ca4caad0604ce8dd27a4d0034b281de58e3f20c8a8df52f6"
+    },
+    "yaw_validation_20hz_meta": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_20HZ_RETEST2_90S_20260902_144351_20260902_144352_meta.json",
+      "sha256": "be508ce77db8ab7ce1d765334365db0da6f3f3392ab673f5400d3b29e4d66cbd"
+    },
+    "yaw_validation_20hz_events": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_20HZ_RETEST2_90S_20260902_144351_20260902_144352_events.jsonl",
+      "sha256": "ba3f955d702a94552e31f9a283e8e2f19231eea13811c7be1864fdfda877b6fa"
+    },
+    "yaw_validation_20hz_audit": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_20HZ_RETEST2_90S_20260902_144351_20260902_144352_audit.json",
+      "sha256": "0134c4d0f7560285c92707c168fa0a47fe280b749b65c6b04aed4d915026e210"
+    },
+    "yaw_validation_20hz_console": {
+      "path": "logs/indoor_rbc_remote/YAW_AXIS_20HZ_RETEST2_90S_20260902_144351_console.log",
+      "sha256": "cf81554e744ba149d3deb9ec68a9aaf1088b78b83160da679c323259653e15fe"
+    }
+  }
+}

@@ -152,7 +152,7 @@ class BetaflightRuntimeTest(unittest.TestCase):
                 "enabled": True,
                 "scale_deg_s_per_lsb": 0.0625,
                 "axis_order": ["x", "y", "z"],
-                "axis_sign": [1, 1, 1],
+                "axis_sign": [1, -1, 1],
                 "output_frame": "body_frd",
                 "expected_fc_variant": "BTFL",
                 "expected_fc_version": [25, 12, 2],
@@ -163,7 +163,7 @@ class BetaflightRuntimeTest(unittest.TestCase):
 
         self.assertTrue(converter.available)
         self.assertEqual(converter.reason, "firmware_binding_match")
-        self.assertEqual(converter.convert((16, -32, 8)), (1.0, -2.0, 0.5))
+        self.assertEqual(converter.convert((16, -32, 8)), (1.0, 2.0, 0.5))
 
         mismatched = dict(self._fc_identity(), fc_version_patch=3)
         rejected = bind_msp_raw_imu_gyro(config, mismatched)

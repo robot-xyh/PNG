@@ -54,8 +54,12 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "rate_gain_input_frame"):
             tool._validate_noprop_config(wrong_rate_frame, output)
 
+        legacy = copy.deepcopy(example)
+        legacy["camera"].pop("R_BC")
+        legacy["camera"]["pitch_up_deg"] = 90.0
+        legacy["camera"]["extrinsic_validation"]["verified"] = False
         with self.assertRaisesRegex(RuntimeError, "R_BC must be explicit"):
-            tool._validate_noprop_config(example, output)
+            tool._validate_noprop_config(legacy, output)
 
         unverified = copy.deepcopy(config)
         unverified["camera"]["extrinsic_validation"]["verified"] = False
@@ -85,6 +89,11 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         invalid_gyro_entry["msp_runtime"]["raw_imu_gyro"]["scale_deg_s_per_lsb"] = 0.1
         with self.assertRaisesRegex(RuntimeError, "scale must be 0.0625"):
             tool._validate_noprop_config(invalid_gyro_entry, output)
+
+        wrong_gyro_sign = copy.deepcopy(config)
+        wrong_gyro_sign["msp_runtime"]["raw_imu_gyro"]["axis_sign"] = [1.0, 1.0, 1.0]
+        with self.assertRaisesRegex(RuntimeError, "measured x,y,z to FRD sign mapping"):
+            tool._validate_noprop_config(wrong_gyro_sign, output)
 
         missing_rate_source = copy.deepcopy(config)
         missing_rate_source["guidance_command"]["entry_handoff"].pop("rate_source")
