@@ -1,4 +1,4 @@
-# Betaflight/PNG 飞手人工飞行 LOG_ONLY 测试卡（2026-08-31，更新至 2026-09-01）
+# Betaflight/PNG 飞手人工飞行 LOG_ONLY 测试卡（2026-08-31，更新至 2026-09-02）
 
 > 当前离线评估 `release_passed=false`。本卡只允许飞手人工控制，Orange Pi 运行 Python
 > `LOG_ONLY` 采集。全程禁止 RC7/MSP OVERRIDE 接管、`--allow-control`、自主逼近、碰撞航线和
@@ -7,11 +7,19 @@
 当前进度：2026-08-31已完成一次室内`F01_INDOOR`短悬停，人工飞行和日志链路有条件通过，但
 发现启动时RC5实际处于ARM区、室内无目标假检及触地前电机/电流瞬态。2026-09-01已完成拆桨
 `G00`和高度复测：GPS fix、原点及水平N/E数据链路可用，现场明确记录了东移，但未用动作标记完整
-覆盖北/南/东/西；气压D位置方向暂按通过，实际抬升约1.8 m时D变化约4.9 m且MSP vario/`v_d`
-始终为0，因此正式六方向和垂直速度门禁未关闭。当天还完成
+覆盖北/南/东/西；DISARM期间气压D位置有明显慢漂，两次局部抬升响应约1.795/1.780 m，
+但缺同步高度真值。DISARM日志中MSP vario/`v_d`为0；后续ARM推力实验的825个高度样本中
+479个vario非零，证明动态垂直速度链路存在，但精度和延迟尚未标定。当天还完成
 三次`F00_SKY_GROUND`共约654.3 s；静态天空/建筑背景子项通过，瞬时小目标被ByteTrack拒绝，
 但操作员确认的真实飞机被单类UAV模型持续confirmed并产生制导候选，且四航向覆盖未补齐。室外
-F01/F02、`F00_SKY_HOVER`和F03-F06尚未执行，`release_passed=false`及主动控制禁令不变。
+F01/F02、`F00_SKY_HOVER`和F03-F06尚未执行。当天另完成一次`THRUST_ENVELOPE`人工油门脉冲，
+`LOG00062`确认1500 us附近形成约0.4 s、2.37 g平台且脉冲内电机未饱和。落地末端的40.92 A、
+23.28 V和单电机1985 raw已确认为正常触地姿态修正瞬态，仍从推力拟合中排除。该结果只作为已测短时上限，
+不是最大推力或主动控制批准；
+`release_passed=false`及主动控制禁令不变。2026-09-02的`LOG00063`确认稳定悬停物理油门中位
+`1275 us`，`LOG00065`确认Betaflight Rate profile 0为`RC Rate=1.0 / Super=0.7 / Expo=0`，
+Roll/Pitch命令到gyro响应约10/11 ms。实测`MSP_RAW_IMU / 16`转换已进入runner，但仍绑定
+`BTFL 25.12.2 / API 1.47`；相机旧`pitch_up_deg=90`仍产生90度光轴误差，主动控制继续禁止。
 
 ## 1. 本次启动哪个程序
 
@@ -76,6 +84,9 @@ LQ、Wi-Fi、网页和 Orange Pi 均不是飞行安全链路。任何计算机�
 - [ ] 相机镜头清洁、上视无遮挡，安装方向未在标定后改变
 - [ ] 四副桨型号、旋向、正反面和锁紧方式正确，无裂纹或缺口
 - [ ] 电池健康、固定和重心正常；所有线缆远离桨盘和活动部件
+- [x] 推力科目实机基本参数：起飞质量`2.412 kg`、`6S 10000 mAh`、`3115-900KV`电机、共四副10x5.0三叶桨、手制ESC
+- [x] 桨叶实物标记`1050R`，确认标称直径10英寸、桨距5.0英寸；`R`为反向旋转版本
+- [ ] 补充电池C数；ESC额定电流未知，暂记为非当前限制项，不等于无电流上限
 - [ ] LQ 天线必须先安装再上电；AP=`192.168.1.200`、STA=`192.168.1.201`
 - [ ] 地面电脑 LQ 网口=`192.168.1.123/24`，Orange Pi=`192.168.1.10/24`
 - [ ] Configurator、C++ src、debugd、旧 Python 和其他串口/相机进程均已关闭
@@ -128,7 +139,7 @@ df -h .
 - [ ] `pwd` 是 `/home/orangepi/png_betaflight_python`
 - [ ] 当前板端是无`.git`导出目录，出现`repository_commit=UNAVAILABLE`属已知状态；必须依靠配置
   SHA256、meta内的源引用和PC端归档追溯版本
-- [ ] 配置 SHA256 是 `259f9793fb4c74750275595ced8a07ff33986de3b0044d0cce9158c9dec50a99`
+- [ ] 配置 SHA256 是 `b9118cc9ad0ebfb82fe0ecf2ace74f26602d6ca15bb7f0a5fd1546c5632a3c81`
 - [ ] `/dev/ttyS1` 存在；`fuser` 没有显示占用进程
 - [ ] `pgrep` 没有显示旧 runner、C++ 或 debugd 进程
 - [ ] 磁盘可用空间大于 10 GB，Orange Pi 温度起始低于 70 C
@@ -138,7 +149,7 @@ df -h .
 ## 6. 每个科目的完整启动命令
 
 把 `TEST_ID` 改成当前科目，例如 `G00`、`P00`、`F01`。以下命令在 Orange Pi 上执行，默认最多
-运行 15 分钟，正常情况下落地后提前按 `Ctrl+C` 结束：
+运行15分钟；runner检测到有效ARM后再DISARM，会自动保留10秒尾段并正常退出：
 
 ```bash
 cd /home/orangepi/png_betaflight_python
@@ -151,7 +162,7 @@ mkdir -p "$LOG_DIR"
 
 python3 -u examples/run_betaflight_log_only.py \
   --config config/betaflight.rk3588.kinematics_log_only.example.json \
-  --duration-s 900 --rate-hz 50 \
+  --duration-s 900 --stop-after-disarm-s 10 --rate-hz 50 \
   --log-dir "$LOG_DIR" --log-prefix "$RUN_ID" \
   --control-mode log_only \
   --detector-source rknn_bytetrack \
@@ -172,6 +183,14 @@ BF state=LOG_ONLY reason=log_only ... publish=disabled ...
 `Camera extrinsic ... verified=0` 在当前 LOG_ONLY 阶段可以记录后继续；这些状态禁止主动控制。
 启动异常、串口打不开、相机失败或进程直接退出时，本科目取消。
 
+终端还必须显示：
+
+```text
+MSP RAW_IMU gyro: available=1 reason=firmware_binding_match scale=0.0625 ...
+```
+
+若为`available=0`，说明固件身份或配置不一致；本轮只能保存原始gyro，不能把转换值用于交接平滑。
+
 ## 7. 启动后 30 秒验收
 
 地面电脑打开：
@@ -188,6 +207,7 @@ http://192.168.1.10:8080/
 - [ ] `MSP_SET_RAW_RC` attempt/write/success/ACK 全部为 0
 - [ ] `sent_us` 为空，不存在 885 us 或任何算法发送帧
 - [ ] camera/isolated worker/MSP/parser/Web 均无错误
+- [ ] `Gyro conversion=READY / firmware_binding_match`；静止时Roll/Pitch rate接近0，转动时连续变化
 - [ ] RKNN 一般约5-8 ms，tracker持续更新；无目标时应记录任何假轨迹或假`guidance_valid`
 - [ ] `perception_result_age_ms` 不持续超过 120 ms
 - [ ] 温度低于 75 C，电池电压与实际电池节数一致
@@ -220,6 +240,9 @@ watch -n 0.5 'curl -s http://192.168.1.10:8080/api/v1/telemetry | jq "{
   reason_kin: .kinematics.reason,
   position_ned: .kinematics.position_ned_m,
   velocity_ned: .kinematics.velocity_ned_filtered_m_s,
+  gyro_deg_s: .flight_controller.gyro_deg_s,
+  gyro_conversion: .flight_controller.gyro_conversion,
+  log_tail_s: .run.post_disarm_tail_remaining_s,
   track: .vision.track_id,
   confirmed: .vision.tracker_confirmed,
   result_age_ms: .vision.result_age_ms,
@@ -230,6 +253,24 @@ watch -n 0.5 'curl -s http://192.168.1.10:8080/api/v1/telemetry | jq "{
 字段为 `null` 而不是 0 时，视为版本或遥测合同不一致，不能假定为安全值。LOG_ONLY 下
 `watchdog_ok=false` 或 `snapshot_approved=false` 可以出现，因为本次未申请控制；但状态仍必须是
 `LOG_ONLY/disabled`。
+
+### 7.1 下一步室内 R_BC 与gyro动作采集
+
+科目命名为`R_BC_GYRO_INDOOR`，全部拆桨、保持DISARM和RC7人工侧；无需GPS和功率电池。使用第6节
+命令，但改为`--duration-s 180 --stop-after-disarm-s 0`。把真实无人机目标固定在上视相机可见位置，
+不得手持目标和机体同时运动。
+
+1. 机体保持基线10秒，记录图像中心、姿态和转换后gyro。
+2. 仅抬头约10--15度，保持2秒后回基线，重复3次；再仅低头重复3次。
+3. 仅向右滚转约10--15度并恢复，重复3次；再向左滚转重复3次。
+4. 每次动作之间静止3秒，不改变目标、相机安装或机体航向；动作角度不要求完全一致。
+5. 全部动作结束后静止10秒，让180秒定时自然退出。提前`Ctrl+C`会在meta中记录
+   `keyboard_interrupt`，不能作为日志完整性通过证据。
+6. 离线联合检查`gyro_*_deg_s`、`roll/pitch_deg`、`los_C`和`lambda_I`。先由动作符号确定相机三轴，
+   再写显式正交`R_BC`；禁止只把`verified`改为true或用控制增益符号掩盖轴交换。
+
+通过条件：gyro转换全程可用、抬头/低头和左右滚转各自符号稳定且回零、固定世界目标的惯性LOS
+残差明显小于当前旧外参结果。未通过时继续LOG_ONLY，不生成主动控制批准文件。
 
 ## 8. G00 室外拆桨定位与 NED 符号
 
@@ -369,6 +410,52 @@ raw中位为`[668,656,630,668]`、95%极差109 raw，未饱和；复用LOG00042�
 作用于飞控。这不能证明换用非零控制映射后仍无影响，反而证明“无目标时不会形成有效候选”尚未
 成立。结论为：**室内人工短悬停和采集链路有条件预备通过；启动门禁需按实测RC5极性执行；正式
 F01、天空负样本、目标跟踪和主动控制均未通过。**
+
+### 11.2 THRUST_ENVELOPE 自然动作与日志分箱
+
+该科目只测量飞手人工油门下的悬停和短时推力包线。它不测试自动油门，不要求命中精确PWM，
+也不用于追求最大推力。原先按`H+50/H+100/H+150 us`定义P1/P2/P3的做法从本卡废止；这些名称
+只保留为历史口令，不能再作为递增飞行步骤。
+
+当前默认直接复用`THRUST_ENVELOPE_20260901_164023`和`LOG00062`，不要求为补齐1327、1377、
+1427 us重新飞行。如专家要求重复性证据，只允许使用新`TEST_ID=THRUST_ENVELOPE_REPEAT`并执行：
+
+1. 无目标机，RC7始终人工侧；启动后确认`LOG_ONLY/disabled`及全部SET_RAW_RC计数为0。
+2. 飞手人工起飞并稳定悬停至少10秒，操作员不得要求飞手在空中查看网页或RadioMaster数值。
+3. 飞手只做一次自然、平滑、小幅加油门再回到悬停，不设置油门拨动开关，不追求任何精确PWM，
+   也不以达到上次1500 us为任务目标。
+4. 恢复稳定至少10秒后人工落地；触地立即最低油门并DISARM，继续记录10秒。
+5. 实际峰值、持续时间和响应全部以后处理日志为准。实际峰值低于计划仍是有效样本；如日志显示
+   超过既有1500 us上限，本轮只归档为越界证据，不得继续下一轮。
+6. 起飞前没有飞手、观察员和Blackbox，或电机、ESC、桨、机架与电池状态未复核时，不执行重复科目。
+
+离线处理应把物理`rc_in_ch4`按实际值分箱，而不是按飞手口述赋值。当前建议区间为
+`[1260,1300)`、`[1300,1350)`、`[1350,1400)`、`[1400,1450)`和`[1450,1501)` us。每箱分别
+统计上升段和回落段的样本数、连续时长、比力中位/P10/P90、电流、电压、功率、四电机raw及极差；
+同时估计油门到`accSmooth`的响应延迟。起飞、落地、明显横向动作和Roll/Pitch绝对值超过5度的
+样本不得混入垂向推力拟合。动态分箱只能形成保守飞行包线，不能替代推力台静推力曲线。
+
+#### 2026-09-01 LOG00062实测结果
+
+完整分析见`doc/BETAFLIGHT_LOG00062_THRUST_ENVELOPE_ANALYSIS.md`，结构化指标见
+`doc/evidence/LOG00062_THRUST_ENVELOPE_analysis.json`。主机与Blackbox油门相关系数为0.999279，
+ARM时长只差0.213 s；全程`override_active=0`、SET_RAW_RC写入0。
+
+|项目|实测|判定|
+|---|---:|---|
+|脉冲前悬停油门中位|1277 us|悬停候选，未写入批准配置|
+|实际脉冲峰值|1500 us|相对悬停约+223 us，已超过旧P3计划|
+|1500 us平台|0.407 s；中位2.371 g|短时平台成立|
+|100/200 ms滑动峰值|2.448/2.427 g|不是单样本尖峰|
+|超过2.0/2.25 g时长|0.531/0.330 s|短时能力成立|
+|脉冲电流/电压/功率|30.52 A / 24.13 V / 739.50 W|须与硬件限值核对|
+|脉冲电机最大/饱和|1119 raw / 0 s|未进入1800高值门限|
+|落地末端|40.92 A、23.28 V、1985 raw|已确认正常触地瞬态；排除于推力拟合|
+
+当前判定为“1500 us附近的短时2.4 g级比力已测得，最大推力未知”。默认不做更高油门测试；
+按`2.412 kg`起飞质量换算，1500 us平台中位动态总推力估计约`56.09 N（5.72 kgf）`，
+峰值约`58.57 N（5.97 kgf）`；该结果不等同于推力台静推力。本架次为`ANGLE_MODE|HORIZON_MODE`，也不能用于校准
+Acro模式的`RC us -> body rate`。该结果不改变`release_passed=false`。
 
 ## 12. F02 实飞 NED 与气压速度复核
 
@@ -516,6 +603,7 @@ F03/F04的检测、ByteTrack、图像中心、LOS符号、结果年龄和出框�
 - 目标身份明显误切、两机低于批准间距或进入非计划闭合航线
 - 人员进入飞行区、观察员或任一飞手要求终止、天气/空域条件变化
 - 低电压、异常电流、动力下降、异常振动/声音、硬件松动或温度达到 75 C
+- 推力复验中飞手需要低头找精确油门数值、出现非计划大幅爬升，或落地后未能立即最低油门/DISARM
 
 程序在飞行中退出不会自动接管飞机；飞手继续人工控制并立即安全降落。
 
@@ -538,23 +626,26 @@ F03/F04的检测、ByteTrack、图像中心、LOS符号、结果年龄和出框�
 2. `F00_SKY_GROUND`：拆桨无目标天空负样本
 3. `P00`：现场重新检查带桨地面怠速
 4. `F01`：无目标单机人工悬停，同时形成带桨天空基线
-5. `F02`：单机NED方向与气压速度
-6. `F00_SKY_HOVER`：若F01没有完整60秒稳定负样本则单独补采
-7. `F03`：双机静止目标
-8. `F04`：双机非碰撞横穿
-9. `F05`：可选尺度变化
-10. `F06`：可选边缘、丢失和重捕获
+5. `THRUST_ENVELOPE_REVIEW`：默认只离线复核既有LOG00062，不新增飞行；专家要求时才执行自然动作复验
+6. `F02`：单机NED方向与气压速度
+7. `F00_SKY_HOVER`：若F01没有完整60秒稳定负样本则单独补采
+8. `F03`：双机静止目标
+9. `F04`：双机非碰撞横穿
+10. `F05`：可选尺度变化
+11. `F06`：可选边缘、丢失和重捕获
 
 如果当日时间或电池不足，优先完成G00、F00_SKY_GROUND、P00、F01、F02和F03；不要通过缩短
 复核或减小双机间距赶进度。2026-09-01的F00-A静态背景结果可以支持继续人工LOG_ONLY采集，但
 飞机非目标事件、四航向覆盖和F00_SKY_HOVER仍未关闭；后续F03-F06不得宣称主动控制就绪。
+推力包线不得为了“完成P2/P3”临时增加架次；现有LOG00062已经越过旧P3计划值，后续优先分析
+既有平滑过渡数据和横向人工动作，而不是继续增加油门。
 
 ## 16. 落地、停止程序与日志归档
 
 1. [ ] 目标机先退出工作区；拦截机人工落地并 DISARM。
-2. [ ] 确认桨完全停止，RC7 保持人工侧，程序继续记录至少 10 秒。
-3. [ ] 在运行终端按一次`Ctrl+C`并等待shell提示符返回。通过`tee`运行时关闭提示可能来不及显示，
-   不得仅以是否出现`Shutdown requested`判断成功。
+2. [ ] 确认桨完全停止，RC7保持人工侧；不要按`Ctrl+C`，等待10秒尾段完成并自动返回shell。
+3. [ ] 若DISARM后12秒仍未退出，按一次`Ctrl+C`并把本架次标记为“尾段自动退出失败”；保存现有文件，
+   后续定位runner阻塞，不得删除或重跑覆盖证据。
 4. [ ] 确认runner已退出、串口已释放；以下两个命令均不应显示占用进程：
 
 ```bash
@@ -573,7 +664,13 @@ META="${CSV%.csv}_meta.json"
 EVENTS="${CSV%.csv}_events.jsonl"
 
 ls -lh "$CSV" "$META" "$EVENTS" "$LOG_DIR/${RUN_ID}_console.log"
+jq '.completion' "$META"
+tail -n 3 "$EVENTS"
 ```
+
+正常飞行架次的meta必须显示`stop_reason=post_disarm_tail_complete`、`complete=true`、
+`post_disarm_tail_completed=true`，CSV末段必须持续记录`armed=0`。`keyboard_interrupt`或`unknown`
+只能归档为不完整日志，不能关闭LOG00065暴露的25.6秒缺口问题。
 
 7. [ ] 运行日志合同审计：
 
@@ -616,6 +713,29 @@ python3 tools/analyze_betaflight_blackbox_flight.py \
 跨架次复用LOG00042电机raw到us标定时，必须显式提供`--motor-scale-us-per-raw`和
 `--motor-offset-us`并在报告中注明是继承标定。
 
+`THRUST_ENVELOPE`使用相同工具，但必须显式声明日志切分阈值和Blackbox固件头中的
+`acc_1G`。以下命令只识别实际发生的脉冲，不要求飞手事先命中阈值：
+
+```bash
+python3 tools/analyze_betaflight_blackbox_flight.py \
+  --host-csv "$HOST_CSV" \
+  --blackbox-csv "$BLACKBOX_CSV" \
+  --blackbox-bfl "$BFL" \
+  --decoder-commit "$BLACKBOX_DECODER_COMMIT" \
+  --motor-scale-us-per-raw 0.499231573 \
+  --motor-offset-us 977.151031 \
+  --thrust-pulse-threshold-us 1350 \
+  --thrust-plateau-threshold-us 1495 \
+  --acc-1g-raw 2048 \
+  --thrust-hover-window-s 8 \
+  --thrust-hover-gap-s 2 \
+  --thrust-post-delay-s 1 \
+  --output "${HOST_CSV%.csv}_thrust_envelope.json"
+```
+
+阈值用于离线选段，不是下一架次的飞行目标。必须联合检查`thrust_envelope.windows`、
+`endpoint_transients`和原始曲线；再按第11.2节的实际油门区间分箱，并把上升/回落和落地段分开。
+
 ## 17. 数据有效性判定
 
 所有科目的共同硬门禁：
@@ -628,6 +748,7 @@ python3 tools/analyze_betaflight_blackbox_flight.py \
 - G00/F02等运动学科目的GPS/气压数据未持续陈旧；纯视觉科目明确标注无运动学结论
 - 无目标段任何confirmed、`guidance_valid`或`sp_valid`假候选都已统计，不得因最终零发送而忽略
 - 飞手、观察员和操作员均确认无未记录异常
+- 推力包线报告使用Blackbox固件头的`acc_1G`，区分脉冲与落地，并报告实际油门而非计划油门
 
 F01/F02 可验证带桨状态链路和 NED 符号；室内F03/F04只验证无GPS条件下的视觉检测、跟踪和图像
 LOS，室外F03-F06才覆盖真实天空、风和远距离尺度下的YOLO+ByteTrack、LOS、TTC/VM候选诊断。
@@ -644,6 +765,7 @@ LOS，室外F03-F06才覆盖真实天空、风和远距离尺度下的YOLO+ByteT
 |P00|||||□通过 □失败|怠速|
 |F01_INDOOR|F01_INDOOR_20260831_143812|主机25.0至24.3 V；BFL瞬态22.55 V|164.46 s主机/69.13 s BFL|GPS无效；室内假检严重|审计通过；LOG00057已对齐|□人工悬停通过；落地瞬态待复核|
 |F01|||||□通过 □失败||
+|THRUST_ENVELOPE|`THRUST_ENVELOPE_20260901_164023`|2.412 kg；6S 10000 mAh；3115-900KV；四副10x5.0三叶桨|178.46 s ARM；1.031 s脉冲|悬停1277 us；1500 us平台2.371 g；估计56.09 N|LOG00062相关系数0.999279；脉冲无电机饱和|短时上限已测；落地峰值已确认正常且排除于拟合；不做旧P2/P3递增|
 |F02|||||□通过 □失败||
 |F00_SKY_HOVER|||||□通过 □失败|无目标天空|
 |F00_FACTORY_NEGATIVE|||||□通过 □失败|无GPS厂房负样本|

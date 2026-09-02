@@ -33,6 +33,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-tilt-deg", type=float, default=35.0)
     parser.add_argument("--max-rate-deg-s", type=float, default=120.0)
     parser.add_argument("--attitude-kp-s-inv", type=float, default=4.0)
+    parser.add_argument("--body-rate-command-delay-s", type=float, default=0.011)
     parser.add_argument("--body-rate-response-tau-s", type=float, default=0.04)
     parser.add_argument("--perception-latency-s", type=float, default=0.0)
     parser.add_argument(
@@ -80,6 +81,7 @@ def main() -> None:
         max_roll_rate_deg_s=args.max_rate_deg_s,
         max_pitch_rate_deg_s=args.max_rate_deg_s,
         attitude_kp_s_inv=args.attitude_kp_s_inv,
+        body_rate_command_delay_s=args.body_rate_command_delay_s,
         body_rate_response_tau_s=args.body_rate_response_tau_s,
         perception_latency_s=args.perception_latency_s,
         perception_rate_hz=args.perception_rate_hz,

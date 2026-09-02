@@ -1494,3 +1494,23 @@ SSH重启或改配置。落地后按DISARM、继续记录10秒、正常停止程
 独立有效时，才允许可选R04带桨怠速；仍禁止油门阶跃、RC7接管和主动PNG。无编码器测试只形成
 方向检查，不能形成动态时延标定。刚性台架无法复现平移、升力和自由飞行姿态响应，R00-R04均
 不能证明悬停油门、飞行PID、TTC或比例导引拦截能力，也不能替代带桨P00/F01。
+
+## 2026-09-02 MSP gyro、实测候选参数与日志尾段
+
+依据`LOG00063/LOG00065`对齐结果，Python runner新增显式`msp_runtime.raw_imu_gyro`配置。转换仅在
+飞控身份完全匹配`BTFL 25.12.2`和MSP API `1.47`时可用，当前轴序为`x,y,z`、符号为
+`+,+,+`、输出机体系为FRD，比例为`0.0625 deg/s/LSB`。身份不匹配时转换保持不可用；主动控制若
+要求gyro交接会在启动阶段拒绝运行。转换后的Roll/Pitch/Yaw与原始值、比例、轴序、符号和绑定原因
+均进入schema 17 CSV/meta/Web，runner不再向`GuidanceCommandShaper`固定传入`None`。
+
+候选参数表和LOG_ONLY实机配置同步写入悬停油门`1275 us`、Betaflight Rates
+`RC Rate=1.0 / Super=0.7 / Expo=0`及首轮Roll/Pitch命令上限`60 deg/s`。离线仿真新增独立
+`body_rate_command_delay_s=0.011`，不替换尚未重新拟合的`body_rate_response_tau_s=0.04`；
+Monte Carlo JSON和独立matrix15 CLI均传入该延迟，避免直接运行matrix15时退回零延迟。
+相机仍保留`verified=false`和90度光轴误差，下一步只允许拆桨DISARM的室内固定目标动作采集。
+
+为处理LOG00065主机CSV少于Blackbox 25.602 s的问题，runner新增
+`--stop-after-disarm-s 10`。只有观察到有效ARM到DISARM边沿才启动尾段；遥测陈旧不触发，重新ARM会
+取消倒计时。正常完成后events写`post_disarm_tail_started/run_stop`，meta写入行数、退出原因和
+`post_disarm_tail_completed=true`。测试卡已改为等待自动退出；若DISARM后12秒仍未退出，则保存故障
+证据并标为不完整，不再用手动停止结果关闭日志完整性问题。

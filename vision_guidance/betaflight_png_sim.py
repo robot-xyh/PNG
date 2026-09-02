@@ -77,6 +77,7 @@ class ClosedLoopSimulationConfig:
     attitude_kp_s_inv: float = 4.0
     max_roll_rate_deg_s: float = 120.0
     max_pitch_rate_deg_s: float = 120.0
+    body_rate_command_delay_s: float = 0.0
     body_rate_response_tau_s: float = 0.04
     altitude_hold_position_gain_s2: float = 1.0
     altitude_hold_velocity_gain_s_inv: float = 2.0
@@ -143,6 +144,7 @@ class ClosedLoopSimulationConfig:
         for name in (
             "upward_centering_gain_s2",
             "speed_hold_gain_s_inv",
+            "body_rate_command_delay_s",
             "perception_latency_s",
             "perception_rate_hz",
             "los_angle_noise_std_deg",
@@ -330,6 +332,7 @@ def simulate_case(
     yaw_rad = math.atan2(float(target_position[1]), float(target_position[0]))
     actual_p_rad_s = 0.0
     actual_q_rad_s = 0.0
+    body_rate_command_history: deque[tuple[float, float, float]] = deque()
     mapping_config = AccelerationTiltRateConfig(
         gravity_mps2=cfg.gravity_m_s2,
         roll_attitude_kp_s_inv=cfg.attitude_kp_s_inv,
@@ -721,6 +724,11 @@ def simulate_case(
         )
         p_command = math.radians(setpoint.roll_rate_deg_s)
         q_command = math.radians(setpoint.pitch_rate_deg_s)
+        body_rate_command_history.append((elapsed, p_command, q_command))
+        p_command, q_command = _delayed_body_rate_command(
+            body_rate_command_history,
+            elapsed - cfg.body_rate_command_delay_s,
+        )
         response_alpha = 1.0 - math.exp(-cfg.dt_s / cfg.body_rate_response_tau_s)
         actual_p_rad_s += response_alpha * (p_command - actual_p_rad_s)
         actual_q_rad_s += response_alpha * (q_command - actual_q_rad_s)
@@ -1132,6 +1140,25 @@ def _rotation_matrix_frd(roll: float, pitch: float, yaw: float) -> np.ndarray:
             [-sp, cp * sr, cp * cr],
         ],
         dtype=float,
+    )
+
+
+def _delayed_body_rate_command(
+    history: deque[tuple[float, float, float]],
+    query_time_s: float,
+) -> tuple[float, float]:
+    if not history or query_time_s < history[0][0]:
+        return 0.0, 0.0
+    while len(history) >= 2 and history[1][0] <= query_time_s:
+        history.popleft()
+    left = history[0]
+    if len(history) == 1 or query_time_s <= left[0]:
+        return left[1], left[2]
+    right = history[1]
+    alpha = (query_time_s - left[0]) / max(1.0e-12, right[0] - left[0])
+    return (
+        left[1] + alpha * (right[1] - left[1]),
+        left[2] + alpha * (right[2] - left[2]),
     )
 
 

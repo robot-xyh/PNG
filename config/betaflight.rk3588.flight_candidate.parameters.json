@@ -4,7 +4,7 @@
     "runnable": false,
     "control_authorized": false,
     "propeller_flight_authorized": false,
-    "reason": "Formal 6000-row candidate evaluation failed every scenario, and required aircraft, throttle, rate, sign, state-source, and safety values remain unset. This file is not accepted as a runner config or approval manifest."
+    "reason": "Measured hover and Rate candidates are recorded, but formal candidate evaluation failed, the camera extrinsic is invalid, and guidance sign, state-source, and safety release requirements remain unresolved. This file is not accepted as a runner config or approval manifest."
   },
   "evidence": {
     "vision_archive": "logs/deployment_archives/fixed_vm_online_20260829_104631.tar.gz",
@@ -19,7 +19,9 @@
     "intercept_evaluation_csv_sha256": "b2114e96d7f1f2ca32025324982c1b0173a8de77e4f48eaf0bdccc4b170340a2",
     "intercept_evaluation_rows": 6000,
     "intercept_evaluation_trials_per_case": 100,
-    "intercept_evaluation_release_passed": false
+    "intercept_evaluation_release_passed": false,
+    "hover_acro_report": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md",
+    "hover_acro_metrics": "doc/evidence/LOG00063_65_HOVER_ACRO_analysis.json"
   },
   "guidance": {
     "law": "candidate_velocity_hold_variable_thrust",
@@ -64,8 +66,8 @@
     "pitch_attitude_kp_s_inv": null,
     "max_roll_tilt_deg": null,
     "max_pitch_tilt_deg": null,
-    "max_roll_rate_deg_s": null,
-    "max_pitch_rate_deg_s": null,
+    "max_roll_rate_deg_s": 60.0,
+    "max_pitch_rate_deg_s": 60.0,
     "roll_rate_sign": null,
     "pitch_rate_sign": null,
     "min_vertical_specific_force_mps2": null
@@ -79,25 +81,65 @@
     "expert_review_complete": false
   },
   "throttle": {
-    "aircraft_mass_kg": null,
-    "battery_cell_count": null,
-    "hover_throttle_us": null,
+    "aircraft_mass_kg": 2.412,
+    "battery_cell_count": 6,
+    "hover_throttle_us": 1275,
     "hover_thrust_normalized": null,
     "minimum_flight_throttle_us": null,
     "maximum_flight_throttle_us": null,
-    "calibration_method": null
+    "calibration_method": "LOG00063 stable hover physical RC median; P10/P90=1263/1280 us"
+  },
+  "propulsion": {
+    "battery_capacity_mah": 10000,
+    "motor_model_or_size": "3115",
+    "motor_kv": 900,
+    "propeller_count": 4,
+    "propeller_diameter_in": 10.0,
+    "propeller_blade_count": 3,
+    "propeller_pitch_in": 5.0,
+    "propeller_marking_observed": "1050R",
+    "propeller_pitch_basis": "blade_marking",
+    "esc_type": "custom",
+    "esc_current_limit_a": null,
+    "esc_current_limit_status": "operator_assessed_not_current_blocker"
   },
   "betaflight_rates": {
-    "profile_index": null,
-    "rates_type": null,
-    "roll_rc_rate": null,
-    "roll_super_rate": null,
-    "roll_expo": null,
-    "pitch_rc_rate": null,
-    "pitch_super_rate": null,
-    "pitch_expo": null,
+    "profile_index": 0,
+    "rates_type": "Betaflight",
+    "roll_rc_rate": 1.0,
+    "roll_super_rate": 0.7,
+    "roll_expo": 0.0,
+    "pitch_rc_rate": 1.0,
+    "pitch_super_rate": 0.7,
+    "pitch_expo": 0.0,
     "measured_roll_rate_lut": null,
-    "measured_pitch_rate_lut": null
+    "measured_pitch_rate_lut": null,
+    "validated_roll_setpoint_range_deg_s": [-123.0, 108.0],
+    "validated_pitch_setpoint_range_deg_s": [-81.0, 103.0]
+  },
+  "body_rate_response": {
+    "roll_command_delay_s": 0.010,
+    "pitch_command_delay_s": 0.011,
+    "simulation_command_delay_s": 0.011,
+    "simulation_response_tau_s": 0.04,
+    "response_tau_status": "not fitted; retained separately from measured pure delay"
+  },
+  "msp_raw_imu_gyro": {
+    "enabled": true,
+    "scale_deg_s_per_lsb": 0.0625,
+    "axis_order": ["x", "y", "z"],
+    "axis_sign": [1.0, 1.0, 1.0],
+    "output_frame": "body_frd",
+    "expected_fc_variant": "BTFL",
+    "expected_fc_version": [25, 12, 2],
+    "expected_api_version": [1, 47],
+    "evidence": "LOG00065 host MSP_RAW_IMU aligned to Blackbox gyroADC"
+  },
+  "camera_extrinsic": {
+    "verified": false,
+    "current_source": "legacy_pitch_up_deg",
+    "current_optical_axis_error_deg": 90.0,
+    "required_next_test": "indoor stationary-target pitch and roll motion test before writing explicit R_BC"
   },
   "safety_release": {
     "offline_candidate_evaluation_passed": false,

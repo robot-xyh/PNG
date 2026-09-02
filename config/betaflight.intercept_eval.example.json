@@ -12,6 +12,7 @@
     "attitude_kp_s_inv": 4.0,
     "max_roll_rate_deg_s": 60.0,
     "max_pitch_rate_deg_s": 60.0,
+    "body_rate_command_delay_s": 0.011,
     "body_rate_response_tau_s": 0.04,
     "perception_rate_hz": 30.0,
     "perception_stale_timeout_s": 0.35,

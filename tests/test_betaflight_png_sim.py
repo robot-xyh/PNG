@@ -1,4 +1,5 @@
 import unittest
+from collections import deque
 
 import numpy as np
 
@@ -6,6 +7,7 @@ from vision_guidance.betaflight_png_sim import (
     MATRIX15_CASES,
     ClosedLoopSimulationConfig,
     MatrixCase,
+    _delayed_body_rate_command,
     _rotation_matrix_frd,
     simulate_case,
     simulate_matrix15,
@@ -13,6 +15,17 @@ from vision_guidance.betaflight_png_sim import (
 
 
 class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
+    def test_body_rate_delay_interpolates_between_simulation_steps(self):
+        history = deque([(0.0, 0.0, 0.0), (0.01, 10.0, -20.0)])
+
+        delayed = _delayed_body_rate_command(history, 0.005)
+
+        self.assertEqual(delayed, (5.0, -10.0))
+
+    def test_body_rate_delay_must_be_non_negative(self):
+        with self.assertRaisesRegex(ValueError, "body_rate_command_delay_s"):
+            ClosedLoopSimulationConfig(body_rate_command_delay_s=-0.001)
+
     def test_matrix_contains_reported_fifteen_cases(self):
         self.assertEqual(len(MATRIX15_CASES), 15)
         self.assertEqual(MATRIX15_CASES[0].case_id, "M01")
