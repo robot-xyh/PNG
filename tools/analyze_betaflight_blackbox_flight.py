@@ -37,6 +37,9 @@ BLACKBOX_NUMERIC_FIELDS = (
     "gyroUnfilt[0]",
     "gyroUnfilt[1]",
     "gyroUnfilt[2]",
+    "accSmooth[0]",
+    "accSmooth[1]",
+    "accSmooth[2]",
     "motor[0]",
     "motor[1]",
     "motor[2]",
@@ -79,6 +82,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--vbat-low-v", type=float, default=23.0)
     parser.add_argument("--motor-scale-us-per-raw", type=float)
     parser.add_argument("--motor-offset-us", type=float)
+    parser.add_argument("--thrust-pulse-threshold-us", type=float)
+    parser.add_argument("--thrust-plateau-threshold-us", type=float)
+    parser.add_argument("--acc-1g-raw", type=float, default=2048.0)
+    parser.add_argument("--thrust-hover-window-s", type=float, default=8.0)
+    parser.add_argument("--thrust-hover-gap-s", type=float, default=2.0)
+    parser.add_argument("--thrust-post-delay-s", type=float, default=1.0)
     parser.add_argument("--output", default="")
     return parser.parse_args()
 
@@ -104,6 +113,12 @@ def main() -> None:
         vbat_low_v=float(args.vbat_low_v),
         motor_scale_us_per_raw=args.motor_scale_us_per_raw,
         motor_offset_us=args.motor_offset_us,
+        thrust_pulse_threshold_us=args.thrust_pulse_threshold_us,
+        thrust_plateau_threshold_us=args.thrust_plateau_threshold_us,
+        acc_1g_raw=float(args.acc_1g_raw),
+        thrust_hover_window_s=float(args.thrust_hover_window_s),
+        thrust_hover_gap_s=float(args.thrust_hover_gap_s),
+        thrust_post_delay_s=float(args.thrust_post_delay_s),
     )
     output = (
         Path(args.output)
@@ -135,6 +150,12 @@ def analyze(
     vbat_low_v: float = 23.0,
     motor_scale_us_per_raw: float | None = None,
     motor_offset_us: float | None = None,
+    thrust_pulse_threshold_us: float | None = None,
+    thrust_plateau_threshold_us: float | None = None,
+    acc_1g_raw: float = 2048.0,
+    thrust_hover_window_s: float = 8.0,
+    thrust_hover_gap_s: float = 2.0,
+    thrust_post_delay_s: float = 1.0,
 ) -> dict[str, Any]:
     _validate_parameters(
         min_check_us=min_check_us,
@@ -144,6 +165,12 @@ def analyze(
         alignment_step_s=alignment_step_s,
         motor_scale_us_per_raw=motor_scale_us_per_raw,
         motor_offset_us=motor_offset_us,
+        thrust_pulse_threshold_us=thrust_pulse_threshold_us,
+        thrust_plateau_threshold_us=thrust_plateau_threshold_us,
+        acc_1g_raw=acc_1g_raw,
+        thrust_hover_window_s=thrust_hover_window_s,
+        thrust_hover_gap_s=thrust_hover_gap_s,
+        thrust_post_delay_s=thrust_post_delay_s,
     )
     host_csv = host_csv.expanduser().resolve()
     blackbox_csv = blackbox_csv.expanduser().resolve()
@@ -292,7 +319,345 @@ def analyze(
                 )
             ),
         }
+    if thrust_pulse_threshold_us is not None:
+        result["thrust_envelope"] = _thrust_envelope_metrics(
+            host_rows,
+            host_throttle_field=host_throttle_field,
+            selected_armed=selected_armed,
+            blackbox=blackbox,
+            blackbox_time_s=blackbox_time_s,
+            sample_dt_s=sample_dt_s,
+            motors=motors,
+            alignment_offset_s=float(alignment["host_minus_blackbox_s"]),
+            pulse_threshold_us=thrust_pulse_threshold_us,
+            plateau_threshold_us=thrust_plateau_threshold_us,
+            acc_1g_raw=acc_1g_raw,
+            hover_window_s=thrust_hover_window_s,
+            hover_gap_s=thrust_hover_gap_s,
+            post_delay_s=thrust_post_delay_s,
+            motor_high_raw=motor_high_raw,
+            motor_saturation_raw=motor_saturation_raw,
+            motor_scale_us_per_raw=motor_scale_us_per_raw,
+            motor_offset_us=motor_offset_us,
+        )
     return result
+
+
+def _thrust_envelope_metrics(
+    host_rows: list[dict[str, str]],
+    *,
+    host_throttle_field: str,
+    selected_armed: tuple[float, float],
+    blackbox: dict[str, np.ndarray],
+    blackbox_time_s: np.ndarray,
+    sample_dt_s: np.ndarray,
+    motors: np.ndarray,
+    alignment_offset_s: float,
+    pulse_threshold_us: float,
+    plateau_threshold_us: float | None,
+    acc_1g_raw: float,
+    hover_window_s: float,
+    hover_gap_s: float,
+    post_delay_s: float,
+    motor_high_raw: float,
+    motor_saturation_raw: float,
+    motor_scale_us_per_raw: float | None,
+    motor_offset_us: float | None,
+) -> dict[str, Any]:
+    pulse = _select_host_throttle_run(
+        host_rows,
+        throttle_field=host_throttle_field,
+        armed_interval=selected_armed,
+        threshold_us=pulse_threshold_us,
+    )
+    if pulse is None:
+        raise RuntimeError(
+            f"host CSV has no armed throttle run at or above {pulse_threshold_us:g} us"
+        )
+    plateau = None
+    if plateau_threshold_us is not None:
+        plateau = _select_host_throttle_run(
+            host_rows,
+            throttle_field=host_throttle_field,
+            armed_interval=(pulse[0], pulse[1]),
+            threshold_us=plateau_threshold_us,
+        )
+
+    host_windows: dict[str, tuple[float, float]] = {
+        "hover_pre": (
+            pulse[0] - hover_gap_s - hover_window_s,
+            pulse[0] - hover_gap_s,
+        ),
+        "pulse": (pulse[0], pulse[1]),
+        "hover_post": (
+            pulse[1] + post_delay_s,
+            pulse[1] + post_delay_s + hover_window_s,
+        ),
+    }
+    if plateau is not None:
+        host_windows["peak_plateau"] = (plateau[0], plateau[1])
+
+    acceleration = np.column_stack(
+        [blackbox[f"accSmooth[{index}]"] for index in range(3)]
+    )
+    load_factor = np.linalg.norm(acceleration, axis=1) / acc_1g_raw
+    windows: dict[str, Any] = {}
+    for name, host_interval in host_windows.items():
+        blackbox_interval = (
+            host_interval[0] - alignment_offset_s,
+            host_interval[1] - alignment_offset_s,
+        )
+        mask = (blackbox_time_s >= blackbox_interval[0]) & (
+            blackbox_time_s <= blackbox_interval[1]
+        )
+        if not np.any(mask):
+            continue
+        window_metrics = _thrust_window_metrics(
+            mask,
+            blackbox_time_s=blackbox_time_s,
+            sample_dt_s=sample_dt_s,
+            blackbox=blackbox,
+            motors=motors,
+            acceleration=acceleration,
+            load_factor=load_factor,
+            acc_1g_raw=acc_1g_raw,
+            host_interval=host_interval,
+            blackbox_interval=blackbox_interval,
+            pulse_window=name in {"pulse", "peak_plateau"},
+            motor_high_raw=motor_high_raw,
+            motor_saturation_raw=motor_saturation_raw,
+            motor_scale_us_per_raw=motor_scale_us_per_raw,
+            motor_offset_us=motor_offset_us,
+        )
+        window_metrics["host"] = _host_window_metrics(
+            host_rows,
+            throttle_field=host_throttle_field,
+            interval=host_interval,
+        )
+        windows[name] = window_metrics
+
+    return {
+        "parameters": {
+            "host_throttle_field": host_throttle_field,
+            "pulse_threshold_us": pulse_threshold_us,
+            "plateau_threshold_us": plateau_threshold_us,
+            "acc_1g_raw": acc_1g_raw,
+            "hover_window_s": hover_window_s,
+            "hover_gap_s": hover_gap_s,
+            "post_delay_s": post_delay_s,
+        },
+        "pulse_host_interval_s": _rounded_interval((pulse[0], pulse[1])),
+        "pulse_host_duration_s": _rounded(pulse[1] - pulse[0]),
+        "pulse_host_max_throttle_us": _rounded(pulse[2]),
+        "plateau_host_interval_s": (
+            None if plateau is None else _rounded_interval((plateau[0], plateau[1]))
+        ),
+        "plateau_host_duration_s": (
+            None if plateau is None else _rounded(plateau[1] - plateau[0])
+        ),
+        "windows": windows,
+    }
+
+
+def _select_host_throttle_run(
+    rows: list[dict[str, str]],
+    *,
+    throttle_field: str,
+    armed_interval: tuple[float, float],
+    threshold_us: float,
+) -> tuple[float, float, float] | None:
+    samples = [
+        (elapsed, throttle)
+        for row in rows
+        if (elapsed := _number(row.get("elapsed_s"))) is not None
+        and (throttle := _number(row.get(throttle_field))) is not None
+        and armed_interval[0] <= elapsed <= armed_interval[1]
+        and _integer(row.get("armed")) == 1
+    ]
+    if not samples:
+        return None
+    timestamps = np.asarray([sample[0] for sample in samples], dtype=float)
+    throttle = np.asarray([sample[1] for sample in samples], dtype=float)
+    selected = throttle >= threshold_us
+    if not np.any(selected):
+        return None
+    positive_steps = np.diff(timestamps)
+    positive_steps = positive_steps[positive_steps > 0.0]
+    gap_limit_s = max(
+        0.2,
+        3.0 * float(np.median(positive_steps)) if len(positive_steps) else 0.2,
+    )
+    runs: list[tuple[int, int]] = []
+    start: int | None = None
+    previous: int | None = None
+    for index in np.flatnonzero(selected):
+        if start is None:
+            start = int(index)
+        elif previous is not None and (
+            index != previous + 1 or timestamps[index] - timestamps[previous] > gap_limit_s
+        ):
+            runs.append((start, previous))
+            start = int(index)
+        previous = int(index)
+    if start is not None and previous is not None:
+        runs.append((start, previous))
+    best = max(
+        runs,
+        key=lambda run: (
+            float(np.max(throttle[run[0] : run[1] + 1])),
+            timestamps[run[1]] - timestamps[run[0]],
+        ),
+    )
+    return (
+        float(timestamps[best[0]]),
+        float(timestamps[best[1]]),
+        float(np.max(throttle[best[0] : best[1] + 1])),
+    )
+
+
+def _host_window_metrics(
+    rows: list[dict[str, str]],
+    *,
+    throttle_field: str,
+    interval: tuple[float, float],
+) -> dict[str, Any]:
+    selected = [
+        row
+        for row in rows
+        if (timestamp := _number(row.get("elapsed_s"))) is not None
+        and interval[0] <= timestamp <= interval[1]
+    ]
+    result: dict[str, Any] = {}
+    throttle = np.asarray(
+        [
+            value
+            for row in selected
+            if (value := _number(row.get(throttle_field))) is not None
+        ],
+        dtype=float,
+    )
+    if len(throttle):
+        result["throttle_us"] = _percentiles(throttle)
+    attitude: dict[str, Any] = {}
+    for axis in ("roll", "pitch", "yaw"):
+        values = np.asarray(
+            [
+                value
+                for row in selected
+                if (value := _number(row.get(f"{axis}_deg"))) is not None
+            ],
+            dtype=float,
+        )
+        if len(values):
+            attitude[axis] = {
+                "min_deg": _rounded(np.min(values)),
+                "max_deg": _rounded(np.max(values)),
+                "p95_abs_deg": _rounded(np.percentile(np.abs(values), 95.0)),
+            }
+    if attitude:
+        result["attitude"] = attitude
+    return result
+
+
+def _thrust_window_metrics(
+    mask: np.ndarray,
+    *,
+    blackbox_time_s: np.ndarray,
+    sample_dt_s: np.ndarray,
+    blackbox: dict[str, np.ndarray],
+    motors: np.ndarray,
+    acceleration: np.ndarray,
+    load_factor: np.ndarray,
+    acc_1g_raw: float,
+    host_interval: tuple[float, float],
+    blackbox_interval: tuple[float, float],
+    pulse_window: bool,
+    motor_high_raw: float,
+    motor_saturation_raw: float,
+    motor_scale_us_per_raw: float | None,
+    motor_offset_us: float | None,
+) -> dict[str, Any]:
+    selected_motors = motors[mask]
+    current = blackbox["amperageLatest (A)"][mask]
+    voltage = blackbox["vbatLatest (V)"][mask]
+    result = _segment_metrics(mask, sample_dt_s, blackbox, motors)
+    result.update(
+        {
+            "host_interval_s": _rounded_interval(host_interval),
+            "blackbox_interval_s": _rounded_interval(blackbox_interval),
+            "load_factor_g": _percentiles(load_factor[mask]),
+            "acceleration_axes_g": {
+                f"axis_{index}": _percentiles(acceleration[mask, index] / acc_1g_raw)
+                for index in range(3)
+            },
+            "electrical_power_w": _percentiles(current * voltage),
+            "motor_high_duration_s": _rounded(
+                np.sum(sample_dt_s[mask][np.any(selected_motors >= motor_high_raw, axis=1)])
+            ),
+            "motor_saturation_duration_s": _rounded(
+                np.sum(
+                    sample_dt_s[mask][
+                        np.any(selected_motors >= motor_saturation_raw, axis=1)
+                    ]
+                )
+            ),
+        }
+    )
+    if motor_scale_us_per_raw is not None and motor_offset_us is not None:
+        result["motor_us_approx"] = {
+            "p50": _rounded_vector(
+                np.percentile(selected_motors, 50.0, axis=0) * motor_scale_us_per_raw
+                + motor_offset_us
+            ),
+            "p95": _rounded_vector(
+                np.percentile(selected_motors, 95.0, axis=0) * motor_scale_us_per_raw
+                + motor_offset_us
+            ),
+            "max": _rounded_vector(
+                np.max(selected_motors, axis=0) * motor_scale_us_per_raw
+                + motor_offset_us
+            ),
+        }
+    if pulse_window:
+        selected_load = load_factor[mask]
+        median_dt_s = float(np.median(np.diff(blackbox_time_s)))
+        result["load_factor_filtered_max_g"] = {
+            f"{window_ms}ms": _rounded(
+                _rolling_mean_max(selected_load, window_ms / 1000.0, median_dt_s)
+            )
+            for window_ms in (20, 50, 100, 200)
+        }
+        result["load_factor_thresholds"] = {
+            f"{threshold_g:g}": {
+                "duration_s": _rounded(
+                    np.sum(sample_dt_s[mask][selected_load >= threshold_g])
+                ),
+                "max_contiguous_s": _rounded(
+                    _maximum_contiguous_duration(
+                        selected_load >= threshold_g, sample_dt_s[mask]
+                    )
+                ),
+            }
+            for threshold_g in (1.2, 1.5, 2.0, 2.25)
+        }
+    return result
+
+
+def _rolling_mean_max(values: np.ndarray, window_s: float, sample_dt_s: float) -> float:
+    width = max(1, min(len(values), int(round(window_s / sample_dt_s))))
+    return float(np.max(np.convolve(values, np.ones(width) / width, mode="valid")))
+
+
+def _maximum_contiguous_duration(mask: np.ndarray, dt_s: np.ndarray) -> float:
+    best = 0.0
+    current = 0.0
+    for active, duration in zip(mask, dt_s):
+        if active:
+            current += float(duration)
+            best = max(best, current)
+        else:
+            current = 0.0
+    return best
 
 
 def _validate_parameters(**values: Any) -> None:
@@ -306,6 +671,21 @@ def _validate_parameters(**values: Any) -> None:
     offset = values["motor_offset_us"]
     if (scale is None) != (offset is None):
         raise ValueError("motor scale and offset must be provided together")
+    pulse_threshold = values["thrust_pulse_threshold_us"]
+    plateau_threshold = values["thrust_plateau_threshold_us"]
+    if pulse_threshold is None and plateau_threshold is not None:
+        raise ValueError("thrust pulse threshold is required with plateau threshold")
+    if (
+        pulse_threshold is not None
+        and plateau_threshold is not None
+        and plateau_threshold < pulse_threshold
+    ):
+        raise ValueError("thrust plateau threshold must not be below pulse threshold")
+    if values["acc_1g_raw"] <= 0.0:
+        raise ValueError("acc_1g_raw must be positive")
+    for field in ("thrust_hover_window_s", "thrust_hover_gap_s", "thrust_post_delay_s"):
+        if values[field] < 0.0:
+            raise ValueError(f"{field} must be non-negative")
 
 
 def _read_host_rows(path: Path, throttle_field: str) -> list[dict[str, str]]:

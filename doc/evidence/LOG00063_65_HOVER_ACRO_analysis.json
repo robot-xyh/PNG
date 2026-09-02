@@ -1,0 +1,541 @@
+{
+  "schema_version": 1,
+  "test_id": "ACRO_RATE_MAP_01_20260902_114542",
+  "inputs": {
+    "host_csv": {
+      "path": "logs/flight_20260902/ACRO_RATE_MAP_01_20260902_114542_20260902_114544.csv",
+      "sha256": "ef48220a5e86139edbb288864708dc226b0cec11371152981ba296491f6d87e9"
+    },
+    "blackbox_csv": "/tmp/blackbox_20260902_raw_1788322135/LOG00065.01.csv",
+    "blackbox_bfl": {
+      "path": "logs/blackbox_import/LOG00065.BFL",
+      "sha256": "526a166be3f0963efbd7e9fda342fb41f235683d51b0f145d6a2b53de82a9e93"
+    },
+    "hover_host_csv": {
+      "path": "logs/flight_20260902/HOVER_THROTTLE_CONFIRM_01_20260902_113900_20260902_113903.csv",
+      "sha256": "1071380bd82c2579ba0df7c53b9cb8f048e7c58aa1b6ce8acbf88c3e3689350d"
+    },
+    "hover_blackbox_bfl": {
+      "path": "logs/blackbox_import/LOG00063.BFL",
+      "sha256": "9aaa92ef10733af0d7f6fb93008cef11b7eaa069b0f2660cd9f682fba2a1a296"
+    },
+    "decoder_commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "rotation_decode_mode": "raw"
+  },
+  "betaflight_rates": {
+    "rates_type": "Betaflight",
+    "rc_rate": [
+      1.0,
+      1.0,
+      1.0
+    ],
+    "expo": [
+      0.0,
+      0.0,
+      0.0
+    ],
+    "super_rate": [
+      0.7,
+      0.7,
+      0.7
+    ]
+  },
+  "blackbox": {
+    "duration_s": 55.81397,
+    "rows": 45086,
+    "analysis_interval_s": [
+      3.0,
+      54.51397
+    ],
+    "gyro_field_interpretation": "raw numeric gyroADC; old decoder deg/s conversion rejected; numerical 1:1 response checked against setpoint"
+  },
+  "hover_confirmation": {
+    "armed_duration_s": 56.216455,
+    "stable_window_s": 41.198573,
+    "physical_throttle_pwm_us": {
+      "min": 1246.0,
+      "p10": 1263.0,
+      "median": 1275.0,
+      "p90": 1280.0,
+      "max": 1294.0
+    },
+    "vbat_v": {
+      "min": 24.8,
+      "p10": 24.8,
+      "median": 24.8,
+      "p90": 24.9,
+      "max": 24.9
+    },
+    "current_a": {
+      "min": 3.85,
+      "p10": 4.22,
+      "median": 4.97,
+      "p90": 5.64,
+      "max": 6.06
+    },
+    "set_raw_rc_attempt_max": 0,
+    "msp_request_error_max": 0
+  },
+  "host_blackbox_overlap": {
+    "host_minus_blackbox_s": 245.294,
+    "samples": 141,
+    "combined_rmse_us": 1.444704,
+    "roll_correlation": 0.99942939,
+    "pitch_correlation": 0.99962132,
+    "blackbox_covered_by_host_s": 30.211521,
+    "blackbox_without_host_csv_s": 25.602449
+  },
+  "msp_raw_imu_alignment": {
+    "axis_mapping": "MSP x/y/z -> Blackbox roll/pitch/yaw, same sign",
+    "candidate_scale_deg_s_per_lsb": 0.0625,
+    "roll": {
+      "correlation": 0.997132686,
+      "free_fit_scale": 0.060422711,
+      "fixed_scale_rmse_deg_s": 2.002687,
+      "fixed_scale_p95_abs_error_deg_s": 5.178982
+    },
+    "pitch": {
+      "correlation": 0.997478839,
+      "free_fit_scale": 0.061989239,
+      "fixed_scale_rmse_deg_s": 1.521744,
+      "fixed_scale_p95_abs_error_deg_s": 3.5625
+    },
+    "yaw": {
+      "correlation": 0.931876076,
+      "fixed_scale_rmse_deg_s": 0.600404,
+      "note": "low-excitation check only"
+    }
+  },
+  "acro_axes": {
+    "roll": {
+      "physical_pwm_range_us": [
+        1285.0,
+        1696.0
+      ],
+      "rc_command_range": [
+        -215.0,
+        196.0
+      ],
+      "setpoint_range_deg_s": [
+        -123.0,
+        108.0
+      ],
+      "gyro_numeric_range": [
+        -136.0,
+        124.0
+      ],
+      "rate_formula": {
+        "correlation": 0.999600029,
+        "mae_deg_s": 0.45415,
+        "p95_abs_error_deg_s": 2.050847
+      },
+      "tracking": {
+        "best_delay_ms": 10,
+        "correlation": 0.991294923,
+        "gain": 1.016237533,
+        "offset_numeric": -0.015724519,
+        "rmse_numeric": 2.496321
+      },
+      "bins": [
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            5,
+            20
+          ],
+          "samples": 2733,
+          "rc_command_median": -10.0,
+          "physical_pwm_median_us": 1490.0,
+          "setpoint_median_deg_s": -4.0,
+          "gyro_median_numeric": -4.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            5,
+            20
+          ],
+          "samples": 2465,
+          "rc_command_median": 10.0,
+          "physical_pwm_median_us": 1510.0,
+          "setpoint_median_deg_s": 4.0,
+          "gyro_median_numeric": 4.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            20,
+            40
+          ],
+          "samples": 1617,
+          "rc_command_median": -25.0,
+          "physical_pwm_median_us": 1475.0,
+          "setpoint_median_deg_s": -11.0,
+          "gyro_median_numeric": -11.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            20,
+            40
+          ],
+          "samples": 1750,
+          "rc_command_median": 28.0,
+          "physical_pwm_median_us": 1528.0,
+          "setpoint_median_deg_s": 11.0,
+          "gyro_median_numeric": 11.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            40,
+            60
+          ],
+          "samples": 755,
+          "rc_command_median": -50.0,
+          "physical_pwm_median_us": 1450.0,
+          "setpoint_median_deg_s": -22.0,
+          "gyro_median_numeric": -21.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            40,
+            60
+          ],
+          "samples": 1148,
+          "rc_command_median": 48.0,
+          "physical_pwm_median_us": 1548.0,
+          "setpoint_median_deg_s": 21.0,
+          "gyro_median_numeric": 21.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            60,
+            90
+          ],
+          "samples": 965,
+          "rc_command_median": -68.0,
+          "physical_pwm_median_us": 1432.0,
+          "setpoint_median_deg_s": -30.0,
+          "gyro_median_numeric": -30.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            60,
+            90
+          ],
+          "samples": 1094,
+          "rc_command_median": 78.0,
+          "physical_pwm_median_us": 1578.0,
+          "setpoint_median_deg_s": 35.0,
+          "gyro_median_numeric": 34.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            90,
+            130
+          ],
+          "samples": 613,
+          "rc_command_median": -106.0,
+          "physical_pwm_median_us": 1394.0,
+          "setpoint_median_deg_s": -50.0,
+          "gyro_median_numeric": -50.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            90,
+            130
+          ],
+          "samples": 694,
+          "rc_command_median": 103.0,
+          "physical_pwm_median_us": 1603.0,
+          "setpoint_median_deg_s": 48.0,
+          "gyro_median_numeric": 51.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            130,
+            180
+          ],
+          "samples": 248,
+          "rc_command_median": -152.0,
+          "physical_pwm_median_us": 1348.0,
+          "setpoint_median_deg_s": -77.0,
+          "gyro_median_numeric": -78.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            130,
+            180
+          ],
+          "samples": 262,
+          "rc_command_median": 138.0,
+          "physical_pwm_median_us": 1638.0,
+          "setpoint_median_deg_s": 68.0,
+          "gyro_median_numeric": 71.5
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            180,
+            230
+          ],
+          "samples": 246,
+          "rc_command_median": -200.0,
+          "physical_pwm_median_us": 1300.0,
+          "setpoint_median_deg_s": -111.0,
+          "gyro_median_numeric": -115.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            180,
+            230
+          ],
+          "samples": 129,
+          "rc_command_median": 190.0,
+          "physical_pwm_median_us": 1690.0,
+          "setpoint_median_deg_s": 103.0,
+          "gyro_median_numeric": 108.0
+        }
+      ]
+    },
+    "pitch": {
+      "physical_pwm_range_us": [
+        1342.0,
+        1689.0
+      ],
+      "rc_command_range": [
+        -158.0,
+        189.0
+      ],
+      "setpoint_range_deg_s": [
+        -81.0,
+        103.0
+      ],
+      "gyro_numeric_range": [
+        -97.0,
+        114.0
+      ],
+      "rate_formula": {
+        "correlation": 0.999506932,
+        "mae_deg_s": 0.474057,
+        "p95_abs_error_deg_s": 2.147356
+      },
+      "tracking": {
+        "best_delay_ms": 11,
+        "correlation": 0.993426545,
+        "gain": 1.039020793,
+        "offset_numeric": 0.010277738,
+        "rmse_numeric": 2.377061
+      },
+      "bins": [
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            5,
+            20
+          ],
+          "samples": 3577,
+          "rc_command_median": -10.0,
+          "physical_pwm_median_us": 1490.0,
+          "setpoint_median_deg_s": -4.0,
+          "gyro_median_numeric": -4.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            5,
+            20
+          ],
+          "samples": 3223,
+          "rc_command_median": 10.0,
+          "physical_pwm_median_us": 1510.0,
+          "setpoint_median_deg_s": 4.0,
+          "gyro_median_numeric": 5.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            20,
+            40
+          ],
+          "samples": 2527,
+          "rc_command_median": -28.0,
+          "physical_pwm_median_us": 1472.0,
+          "setpoint_median_deg_s": -12.0,
+          "gyro_median_numeric": -12.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            20,
+            40
+          ],
+          "samples": 2304,
+          "rc_command_median": 28.0,
+          "physical_pwm_median_us": 1528.0,
+          "setpoint_median_deg_s": 12.0,
+          "gyro_median_numeric": 12.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            40,
+            60
+          ],
+          "samples": 1723,
+          "rc_command_median": -45.0,
+          "physical_pwm_median_us": 1455.0,
+          "setpoint_median_deg_s": -19.0,
+          "gyro_median_numeric": -20.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            40,
+            60
+          ],
+          "samples": 913,
+          "rc_command_median": 48.0,
+          "physical_pwm_median_us": 1548.0,
+          "setpoint_median_deg_s": 20.0,
+          "gyro_median_numeric": 21.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            60,
+            90
+          ],
+          "samples": 1053,
+          "rc_command_median": -75.0,
+          "physical_pwm_median_us": 1425.0,
+          "setpoint_median_deg_s": -34.0,
+          "gyro_median_numeric": -33.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            60,
+            90
+          ],
+          "samples": 751,
+          "rc_command_median": 70.0,
+          "physical_pwm_median_us": 1570.0,
+          "setpoint_median_deg_s": 31.0,
+          "gyro_median_numeric": 32.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            90,
+            130
+          ],
+          "samples": 899,
+          "rc_command_median": -107.0,
+          "physical_pwm_median_us": 1393.0,
+          "setpoint_median_deg_s": -50.0,
+          "gyro_median_numeric": -53.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            90,
+            130
+          ],
+          "samples": 636,
+          "rc_command_median": 106.0,
+          "physical_pwm_median_us": 1606.0,
+          "setpoint_median_deg_s": 50.0,
+          "gyro_median_numeric": 51.0
+        },
+        {
+          "sign": "negative",
+          "abs_rc_command_bin": [
+            130,
+            180
+          ],
+          "samples": 447,
+          "rc_command_median": -143.0,
+          "physical_pwm_median_us": 1357.0,
+          "setpoint_median_deg_s": -71.0,
+          "gyro_median_numeric": -75.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            130,
+            180
+          ],
+          "samples": 849,
+          "rc_command_median": 153.0,
+          "physical_pwm_median_us": 1653.0,
+          "setpoint_median_deg_s": 78.0,
+          "gyro_median_numeric": 80.0
+        },
+        {
+          "sign": "positive",
+          "abs_rc_command_bin": [
+            180,
+            230
+          ],
+          "samples": 124,
+          "rc_command_median": 183.0,
+          "physical_pwm_median_us": 1683.0,
+          "setpoint_median_deg_s": 99.0,
+          "gyro_median_numeric": 105.5
+        }
+      ]
+    }
+  },
+  "electrical": {
+    "analysis_interval_s": [
+      3.0,
+      54.51397
+    ],
+    "vbat_v": {
+      "min": 24.49,
+      "p10": 24.59,
+      "median": 24.66,
+      "p90": 24.77,
+      "max": 24.93
+    },
+    "current_a": {
+      "min": 0.0,
+      "p10": 3.28,
+      "median": 5.07,
+      "p90": 7.73,
+      "max": 15.97
+    },
+    "motor_raw_max_central": [
+      780,
+      894,
+      807,
+      943
+    ],
+    "motor_saturation_rows_central": 0,
+    "endpoint_current_max_a": 34.25,
+    "endpoint_motor_raw_max": [
+      1587,
+      1456,
+      1630,
+      2047
+    ]
+  },
+  "conclusion": {
+    "acro_behavior_confirmed": true,
+    "rate_formula_confirmed": true,
+    "setpoint_to_gyro_tracking_confirmed": true,
+    "msp_raw_imu_scale_validated_for_current_firmware": true,
+    "host_csv_complete_for_blackbox": false,
+    "absolute_gyro_units_directly_from_decoder": false
+  }
+}

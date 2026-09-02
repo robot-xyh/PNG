@@ -89,13 +89,67 @@ class BetaflightBlackboxFlightTest(unittest.TestCase):
         self.assertEqual(result["method"], "arm_start_fallback")
         self.assertEqual(result["host_minus_blackbox_s"], 0.0)
 
+    def test_thrust_envelope_selects_pulse_and_reports_sustained_load(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            blackbox_path = root / "flight.csv"
+            host_path = root / "host.csv"
+            blackbox_time_s = np.arange(0.0, 6.0, 0.02)
+            throttle = np.full(len(blackbox_time_s), 1000.0)
+            throttle[(blackbox_time_s >= 1.0) & (blackbox_time_s <= 5.5)] = 1250.0
+            pulse = (blackbox_time_s >= 4.0) & (blackbox_time_s <= 4.4)
+            throttle[pulse] = 1470.0
+            load_factor = np.ones(len(blackbox_time_s))
+            load_factor[pulse] = 2.0
+            self._write_blackbox(
+                blackbox_path,
+                blackbox_time_s,
+                throttle,
+                load_factor=load_factor,
+            )
+            self._write_host(host_path, blackbox_time_s, throttle, offset_s=10.15)
+
+            result = tool.analyze(
+                host_path,
+                blackbox_path,
+                alignment_step_s=0.005,
+                thrust_pulse_threshold_us=1400.0,
+                thrust_plateau_threshold_us=1490.0,
+                thrust_hover_window_s=1.0,
+                thrust_hover_gap_s=0.2,
+                thrust_post_delay_s=0.2,
+            )
+
+            envelope = result["thrust_envelope"]
+            self.assertGreater(envelope["pulse_host_duration_s"], 0.35)
+            self.assertLess(envelope["pulse_host_duration_s"], 0.45)
+            self.assertAlmostEqual(envelope["pulse_host_max_throttle_us"], 1496.5, places=1)
+            pulse_metrics = envelope["windows"]["pulse"]
+            self.assertEqual(pulse_metrics["load_factor_g"]["p100"], 2.0)
+            self.assertEqual(pulse_metrics["load_factor_filtered_max_g"]["100ms"], 2.0)
+            self.assertAlmostEqual(pulse_metrics["host"]["throttle_us"]["p100"], 1496.5)
+            self.assertGreater(
+                pulse_metrics["load_factor_thresholds"]["1.5"]["duration_s"], 0.35
+            )
+            self.assertEqual(pulse_metrics["motor_saturation_duration_s"], 0.0)
+
     @staticmethod
-    def _write_blackbox(path: Path, time_s: np.ndarray, throttle: np.ndarray) -> None:
+    def _write_blackbox(
+        path: Path,
+        time_s: np.ndarray,
+        throttle: np.ndarray,
+        *,
+        load_factor: np.ndarray | None = None,
+    ) -> None:
         fields = list(tool.BLACKBOX_NUMERIC_FIELDS) + list(tool.BLACKBOX_CATEGORY_FIELDS)
+        if load_factor is None:
+            load_factor = np.ones(len(time_s))
         with path.open("w", newline="", encoding="utf-8") as stream:
             writer = csv.DictWriter(stream, fieldnames=fields)
             writer.writeheader()
-            for index, (timestamp, command) in enumerate(zip(time_s, throttle)):
+            for index, (timestamp, command, load) in enumerate(
+                zip(time_s, throttle, load_factor)
+            ):
                 endpoint = timestamp >= 5.0
                 row = {field: "0" for field in fields}
                 row.update(
@@ -105,6 +159,7 @@ class BetaflightBlackboxFlightTest(unittest.TestCase):
                         "vbatLatest (V)": "22.5" if endpoint else "24.5",
                         "amperageLatest (A)": "30.0" if endpoint else "5.0",
                         "rssi": "800",
+                        "accSmooth[2]": f"{2048.0 * load:.3f}",
                         "motor[0]": "2047" if endpoint else "500",
                         "motor[1]": "520",
                         "motor[2]": "510",
