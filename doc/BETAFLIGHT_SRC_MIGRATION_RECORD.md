@@ -1498,8 +1498,9 @@ SSH重启或改配置。落地后按DISARM、继续记录10秒、正常停止程
 ## 2026-09-02 MSP gyro、实测候选参数与日志尾段
 
 依据`LOG00063/LOG00065`对齐结果，Python runner新增显式`msp_runtime.raw_imu_gyro`配置。转换仅在
-飞控身份完全匹配`BTFL 25.12.2`和MSP API `1.47`时可用，当前轴序为`x,y,z`、符号为
-`+,+,+`、输出机体系为FRD，比例为`0.0625 deg/s/LSB`。身份不匹配时转换保持不可用；主动控制若
+飞控身份完全匹配`BTFL 25.12.2`和MSP API `1.47`时可用。初始实现按Blackbox比例先配置轴序
+`x,y,z`、符号`+,+,+`、输出机体系FRD和`0.0625 deg/s/LSB`；随后固定目标动态验证发现Y轴必须
+取反，当前配置已由下节结果修正为`+,-,+`。身份不匹配时转换保持不可用；主动控制若
 要求gyro交接会在启动阶段拒绝运行。转换后的Roll/Pitch/Yaw与原始值、比例、轴序、符号和绑定原因
 均进入schema 17 CSV/meta/Web，runner不再向`GuidanceCommandShaper`固定传入`None`。
 
@@ -1507,10 +1508,63 @@ SSH重启或改配置。落地后按DISARM、继续记录10秒、正常停止程
 `RC Rate=1.0 / Super=0.7 / Expo=0`及首轮Roll/Pitch命令上限`60 deg/s`。离线仿真新增独立
 `body_rate_command_delay_s=0.011`，不替换尚未重新拟合的`body_rate_response_tau_s=0.04`；
 Monte Carlo JSON和独立matrix15 CLI均传入该延迟，避免直接运行matrix15时退回零延迟。
-相机仍保留`verified=false`和90度光轴误差，下一步只允许拆桨DISARM的室内固定目标动作采集。
+该版本提交时相机仍保留`verified=false`和90度光轴误差，仅允许拆桨DISARM的室内固定目标动作
+采集；下节记录了该采集结果和后续配置修正。
 
 为处理LOG00065主机CSV少于Blackbox 25.602 s的问题，runner新增
 `--stop-after-disarm-s 10`。只有观察到有效ARM到DISARM边沿才启动尾段；遥测陈旧不触发，重新ARM会
 取消倒计时。正常完成后events写`post_disarm_tail_started/run_stop`，meta写入行数、退出原因和
 `post_disarm_tail_completed=true`。测试卡已改为等待自动退出；若DISARM后12秒仍未退出，则保存故障
 证据并标为不完整，不再用手动停止结果关闭日志完整性问题。
+
+## 2026-09-02 固定目标 R_BC 与 RAW_IMU Pitch 复验
+
+只连接`.42/orangepi5max`，在拆桨、DISARM、RC7人工侧和`LOG_ONLY`下完成
+`R_BC_GYRO_120S_OFFSET`及独立`PITCH_AXIS_RETEST_120S`。两轮均按120秒自然结束，审计通过且
+`MSP_SET_RAW_RC` attempt/write/success/ACK全部为0。首轮覆盖pitch `-4.8--13.5 deg`和roll
+`-9.0--11.4 deg`；显式`R_BC=[[0,1,0],[1,0,0],[0,0,-1]]`在抬头、低头、右滚、左滚及最终
+基线的惯性LOS残差为`0.874/2.294/3.419/2.986/1.884 deg`，均小于5 deg。旧
+`pitch_up_deg=90`在相同窗口最大残差为`24.515 deg`。
+
+`MSP_ATTITUDE.pitch_deg`是抬头为负的显示值，FRD pitch为其相反数。以`+/-0.12 s`局部拟合姿态
+导数、筛选两侧幅值均不小于3 deg/s的动态样本后，未修正gyro Y与FRD pitch rate在首轮/复测的
+相关系数为`-0.964/-0.969`，Y取反后为`+0.964/+0.969`；Roll与gyro X为`+0.959`。因此
+`MSP_RAW_IMU / 16`的比例保持，当前FRD转换固定为`axis_order=[x,y,z]`、
+`axis_sign=[+1,-1,+1]`。本轮Yaw激励不足，`+Z`当时继续标记为候选；后续20 Hz复测结果见下节。
+
+跟踪方面，首轮3159个新结果中3124个有效框、3157个confirmed且仅`track_id=1`；左滚时因
+`track_aspect_above_final`出现最长1.288秒空缺。复测3116个新结果中3112个有效框、3114个
+confirmed，最长空缺0.120秒。机器可读指标和原始文件哈希位于
+`doc/evidence/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.json`，技术报告为
+`doc/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.md`。该轮证据关闭本机安装外参和Roll/Pitch陀螺轴向，
+Yaw由后续复测关闭；硬件曝光时间戳、飞行振动和主动控制放行仍未关闭。
+
+修正后的`betaflight.rk3588.kinematics_log_only.example.json`、
+`betaflight.rk3588.noprop.example.json`和飞行候选参数表SHA256分别为
+`9e5dbb9de21ca59434c1f53a020a76b7f27d1089721d17ec16c96d2ef11d16c9`、
+`c6e2fc45399a79ed6143cbdca8eb1465e4a75229d5bdc2228edd5249e9a503bd`和
+`8034b7887aa1082b79e87d54a7a9230c60f09c0940bec7d44450855898a7163c`。板端`*.local.json`没有被
+覆盖；将这些字段同步到local配置后，旧批准会因配置哈希变化失效，必须重新采集快照。本阶段
+没有生成新的主动控制或有桨批准。
+
+## 2026-09-02 Yaw 轴与视觉制导软件时延复测
+
+先以5 Hz RAW_IMU采集Yaw动作，虽覆盖75度，但MSP姿态1度量化和稀疏异步采样使逐样本相关性
+不足。随后临时把ATTITUDE/RAW_IMU提高到20 Hz、关闭GPS/高度轮询并把RC降至2 Hz，完成90秒
+`LOG_ONLY`复测。有效轮航向跨度69度、Z轴角速度范围`-28.625..27.438 deg/s`；按
+`|gyro_z|>5 deg/s`分段后9/9事件积分与航向变化同号，事件相关系数0.994、拟合增益0.876，
+确认当前固件和安装方向使用Yaw `+Z`。审计通过且四项RC写入计数均为0。试验后板端和本地轮询
+已恢复RAW_IMU/GPS/高度/RC各5 Hz，配置SHA256恢复为
+`9e5dbb9de21ca59434c1f53a020a76b7f27d1089721d17ec16c96d2ef11d16c9`。
+
+随后用相同恢复配置执行120秒手持目标进入/移出测试。对1584个有效框结果，采集返回时间戳到主
+循环消费的P50/P95/P99/max为`56.791/85.259/99.783/116.772 ms`；RKNN总耗时P95为
+6.407 ms，融合等待P95为40.608 ms，姿态样本绝对时间偏差P95为71.243 ms。Track 14和31长段
+有效率分别为97.80%和99.58%，confirmed均为100%；ID变化只发生在`lost/none`后的重捕获。
+审计及MSP错误均为0，但相机读取有一次162.571 ms峰值。
+
+本轮只通过当前软件链路P95小于100 ms的门槛。相机仍使用`capture_return_monotonic`，没有硬件
+曝光/LED真值，`LOG_ONLY`也没有测命令到gyro或姿态响应，因此P0物理端到端时延缺口没有完全
+关闭。本轮不改控制参数、不生成批准文件。报告分别为
+`doc/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.md`和
+`doc/BETAFLIGHT_VISION_GUIDANCE_LATENCY_20260902.md`。

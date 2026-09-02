@@ -4,7 +4,7 @@
     "runnable": false,
     "control_authorized": false,
     "propeller_flight_authorized": false,
-    "reason": "Measured hover and Rate candidates are recorded, but formal candidate evaluation failed, the camera extrinsic is invalid, and guidance sign, state-source, and safety release requirements remain unresolved. This file is not accepted as a runner config or approval manifest."
+    "reason": "Measured hover, Rate, gyro, and camera-extrinsic candidates are recorded, but formal intercept evaluation failed and guidance, state-source, and safety release requirements remain unresolved. This file is not accepted as a runner config or approval manifest."
   },
   "evidence": {
     "vision_archive": "logs/deployment_archives/fixed_vm_online_20260829_104631.tar.gz",
@@ -21,7 +21,11 @@
     "intercept_evaluation_trials_per_case": 100,
     "intercept_evaluation_release_passed": false,
     "hover_acro_report": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md",
-    "hover_acro_metrics": "doc/evidence/LOG00063_65_HOVER_ACRO_analysis.json"
+    "hover_acro_metrics": "doc/evidence/LOG00063_65_HOVER_ACRO_analysis.json",
+    "rbc_gyro_report": "doc/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.md",
+    "rbc_gyro_metrics": "doc/evidence/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.json",
+    "vision_guidance_latency_report": "doc/BETAFLIGHT_VISION_GUIDANCE_LATENCY_20260902.md",
+    "vision_guidance_latency_metrics": "doc/evidence/BETAFLIGHT_VISION_GUIDANCE_LATENCY_20260902.json"
   },
   "guidance": {
     "law": "candidate_velocity_hold_variable_thrust",
@@ -128,18 +132,24 @@
     "enabled": true,
     "scale_deg_s_per_lsb": 0.0625,
     "axis_order": ["x", "y", "z"],
-    "axis_sign": [1.0, 1.0, 1.0],
+    "axis_sign": [1.0, -1.0, 1.0],
     "output_frame": "body_frd",
     "expected_fc_variant": "BTFL",
     "expected_fc_version": [25, 12, 2],
     "expected_api_version": [1, 47],
-    "evidence": "LOG00065 host MSP_RAW_IMU aligned to Blackbox gyroADC"
+    "evidence": "LOG00065 established the 1/16 scale; 2026-09-02 fixed-target attitude tests established +X/-Y FRD signs and 20 Hz yaw event integration established +Z."
   },
   "camera_extrinsic": {
-    "verified": false,
-    "current_source": "legacy_pitch_up_deg",
-    "current_optical_axis_error_deg": 90.0,
-    "required_next_test": "indoor stationary-target pitch and roll motion test before writing explicit R_BC"
+    "verified": true,
+    "current_source": "R_BC",
+    "R_BC": [
+      [0.0, 1.0, 0.0],
+      [1.0, 0.0, 0.0],
+      [0.0, 0.0, -1.0]
+    ],
+    "current_optical_axis_error_deg": 0.0,
+    "validation_evidence": "R_BC_GYRO_120S_OFFSET and PITCH_AXIS_RETEST_120S on 2026-09-02",
+    "remaining_limit": "Hardware exposure timestamp and command-to-attitude physical response latency are not validated."
   },
   "safety_release": {
     "offline_candidate_evaluation_passed": false,

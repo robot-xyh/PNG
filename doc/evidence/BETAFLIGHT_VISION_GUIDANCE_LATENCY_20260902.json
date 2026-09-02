@@ -1,0 +1,118 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-09-02",
+  "run_id": "VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714",
+  "hardware": {
+    "host": "orangepi5max",
+    "flight_controller": "BTFL 25.12.2",
+    "msp_api": "1.47",
+    "detector": "RK3588 RKNN plus ByteTrack"
+  },
+  "configuration": {
+    "path": "config/betaflight.rk3588.kinematics_log_only.example.json",
+    "sha256": "9e5dbb9de21ca59434c1f53a020a76b7f27d1089721d17ec16c96d2ef11d16c9",
+    "runner_rate_hz": 50.0,
+    "camera_timestamp_source": "capture_return_monotonic"
+  },
+  "safety": {
+    "control_mode": "log_only",
+    "armed_seen": false,
+    "override_active_seen": false,
+    "audit_passed": true,
+    "audit_violations": 0,
+    "set_raw_rc_maxima": {
+      "attempt": 0,
+      "write_attempt": 0,
+      "success": 0,
+      "ack": 0
+    }
+  },
+  "run": {
+    "rows": 5959,
+    "duration_s": 119.992513,
+    "new_perception_results": 3376,
+    "valid_bbox_results": 1584
+  },
+  "latency_ms": {
+    "valid_bbox_perception_result_age_p50_p95_p99_max": [56.791, 85.259, 99.783, 116.772],
+    "all_results_rknn_total_p50_p95_p99_max": [6.273, 6.407, 6.47, 19.252],
+    "valid_bbox_fusion_wait_p50_p95_p99_max": [20.06, 40.608, 60.192, 80.239],
+    "valid_bbox_attitude_offset_absolute_p50_p95_p99_max": [33.519, 71.243, 80.098, 96.964],
+    "all_results_camera_read_p50_p95_p99_max": [8.032, 8.386, 8.455, 162.571],
+    "loop_period_s_p50_p95_p99_max": [0.02, 0.02, 0.021, 0.126]
+  },
+  "tracking": {
+    "observed_track_ids": [6, 10, 14, 23, 28, 31],
+    "direct_id_changes_while_continuously_tracked": 0,
+    "track_14": {
+      "window_s": [60.817072, 74.598],
+      "valid_over_new": [355, 363],
+      "valid_ratio": 0.977961,
+      "confirmed_over_valid": [355, 355],
+      "clipped_results": 7
+    },
+    "track_31": {
+      "window_s": [93.239531, 119.993],
+      "valid_over_new": [708, 711],
+      "valid_ratio": 0.995781,
+      "confirmed_over_valid": [708, 708],
+      "clipped_results": 0
+    },
+    "first_confirmation_delay_ms": [40.1, 40.1, 80.7, 40.1],
+    "handheld_limitations": {
+      "track_10_clipped_over_valid": [248, 328],
+      "track_23_valid_over_new": [164, 268]
+    }
+  },
+  "guidance": {
+    "valid_results": 123,
+    "principal_rejections": {
+      "area_not_expanding": 752,
+      "ttc_out_of_range": 430,
+      "bbox_top_clipped": 262,
+      "track_id_changed": 5
+    },
+    "interception_performance_claimed": false
+  },
+  "errors": {
+    "msp_request": 0,
+    "msp_checksum": 0,
+    "msp_parser": 0,
+    "msp_worker_poll": 0,
+    "msp_worker_send": 0,
+    "web": 0
+  },
+  "acceptance": {
+    "software_perception_age_p95_below_100_ms": true,
+    "software_perception_age_max_below_120_ms": true,
+    "full_physical_end_to_end_latency_closed": false
+  },
+  "limitations": [
+    "No hardware exposure timestamp or LED/photodiode reference was available.",
+    "The handheld target introduced motion, clipping, and low-score gaps.",
+    "LOG_ONLY did not measure command-to-gyro or command-to-attitude response.",
+    "This result does not authorize active control or interception flight."
+  ],
+  "source_files": {
+    "csv": {
+      "path": "logs/indoor_latency_remote/VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714_20260902_145715.csv",
+      "sha256": "5b4aa001de7244b453e1409936793bacfd0d7911c478c73e99d62b11bbca99e6"
+    },
+    "meta": {
+      "path": "logs/indoor_latency_remote/VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714_20260902_145715_meta.json",
+      "sha256": "8389c0986bb01faf50f500c046319e2a321b91cfadd121a20614fec913c06b14"
+    },
+    "events": {
+      "path": "logs/indoor_latency_remote/VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714_20260902_145715_events.jsonl",
+      "sha256": "d2764b9b18ec18f4388cfa8e1ce45bdc896d838723dc9356aaf8cfb1eab1dd93"
+    },
+    "audit": {
+      "path": "logs/indoor_latency_remote/VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714_20260902_145715_audit.json",
+      "sha256": "55dfb51d197d41591d22a35d29b62c4dac59af962b348f9d0ec5124de2bce8c6"
+    },
+    "console": {
+      "path": "logs/indoor_latency_remote/VISION_GUIDANCE_LATENCY_HANDHELD_120S_20260902_145714_console.log",
+      "sha256": "f088aeaabddbd58ed5ffb9dab43f616e23a57c1776ff99400a1277ae876fc9a2"
+    }
+  }
+}
