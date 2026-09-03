@@ -1,0 +1,152 @@
+{
+  "schema_version": 1,
+  "test_id": "VM_FINAL_CHAIN_INDOOR_120S_20260902_214423",
+  "date": "2026-09-02",
+  "mode": "log_only",
+  "environment": "indoor_noprop_disarmed",
+  "archive": {
+    "path": "logs/indoor_vm_final_chain/VM_FINAL_CHAIN_INDOOR_120S_20260902_214423.tar.gz",
+    "sha256": "aac68d2c28e46a597ee82ea65c14b576a2fa4ef8652379e2e4820596ab2af261"
+  },
+  "configuration": {
+    "sha256": "a1f70cb447014791bae7bb19f9a58006b0fdd69a4a5f2d4e85cef3e938076497",
+    "main_loop_hz": 50.0,
+    "perception_hz": 30.0,
+    "attitude_poll_hz": 20.0,
+    "raw_gps_poll_hz": 5.0,
+    "altitude_poll_hz": 5.0,
+    "guidance_law": "fixed_vm_png",
+    "navigation_constant": 3.0,
+    "fixed_vm_m_s": 1.0,
+    "max_acceleration_m_s2": 1.0,
+    "command_mapping": "accel_tilt_rate",
+    "tilt_limit_deg": 20.0,
+    "rate_limit_deg_s": 60.0,
+    "control_authorization_enabled": false
+  },
+  "runtime": {
+    "duration_s": 119.990484,
+    "rows": 5963,
+    "stop_reason": "duration_complete",
+    "audit_passed": true,
+    "audit_violations": 0,
+    "audit_warnings": 0,
+    "armed_max": 0,
+    "msp_set_raw_rc_attempt_count": 0,
+    "msp_set_raw_rc_success_count": 0,
+    "msp_worker_error_count": 0,
+    "msp_request_error_count": 0,
+    "msp_checksum_error_count": 0,
+    "msp_parser_error_count": 0,
+    "rknn_worker_error_count": 0,
+    "publish_deadline_miss_count": 4,
+    "loop_period_ms": {
+      "p95": 20.21,
+      "max": 83.078
+    },
+    "rknn_total_ms_max": 17.303
+  },
+  "perception": {
+    "new_result_count": 3152,
+    "valid_target_count": 2089,
+    "valid_target_fraction_full_run": 0.662754,
+    "full_run_fraction_includes_intentional_target_absence": true,
+    "confirmed_fraction_given_valid_target": 1.0,
+    "los_valid_fraction_given_valid_target": 0.997128,
+    "guidance_valid_fraction_given_valid_target": 0.997128,
+    "result_age_ms": {
+      "p50": 56.87,
+      "p95": 84.556,
+      "p99": 95.66976,
+      "max": 113.437
+    },
+    "fusion_wait_ms": {
+      "p50": 20.059,
+      "p95": 40.3888,
+      "p99": 60.185,
+      "max": 80.244
+    },
+    "normalized_center_range": {
+      "x": [-0.707945, 0.714406],
+      "y": [-0.566281, 0.13948]
+    },
+    "horizontal_hysteretic_reversal_count": 8,
+    "horizontal_continuous_segment_reversal_count": 3,
+    "horizontal_continuous_track_id": 2,
+    "vertical_hysteretic_reversal_count": 2,
+    "vertical_reversal_interpretation": "one_complete_round_trip",
+    "vertical_continuous_track_id": 32
+  },
+  "segments": {
+    "static_35_55_s": {
+      "duration_s": 20.0,
+      "new_results": 494,
+      "valid_results": 494,
+      "valid_fraction": 1.0,
+      "confirmed_fraction": 1.0,
+      "los_valid_fraction": 1.0,
+      "track_ids": [2],
+      "result_age_p95_ms": 85.71875
+    },
+    "horizontal_58_5_72_45_s": {
+      "duration_s": 13.95,
+      "new_results": 393,
+      "valid_results": 375,
+      "valid_fraction": 0.954198,
+      "confirmed_fraction_given_valid": 1.0,
+      "los_valid_fraction_given_valid": 1.0,
+      "track_ids": [2],
+      "result_age_p95_ms": 83.5035
+    },
+    "vertical_93_68_98_85_s": {
+      "duration_s": 5.17,
+      "new_results": 137,
+      "valid_results": 123,
+      "valid_fraction": 0.89781,
+      "confirmed_fraction_given_valid": 1.0,
+      "los_valid_fraction_given_valid": 0.99187,
+      "track_ids": [32],
+      "result_age_p95_ms": 83.8068
+    }
+  },
+  "guidance": {
+    "valid_new_result_count": 2083,
+    "nonfinite_valid_row_count": 0,
+    "nonzero_rate_while_guidance_invalid_count": 0,
+    "lambda_dot_I_range_per_s": {
+      "x": [-0.306938, 0.264023],
+      "y": [-0.282599, 0.706928],
+      "z": [-0.058383, 0.081865]
+    },
+    "rate_range_deg_s": {
+      "roll": [-24.713983, 16.865242],
+      "pitch": [-18.74104, 21.017509]
+    },
+    "acceleration_magnitude_m_s2": {
+      "p50": 0.156899,
+      "p95": 0.66778,
+      "max": 1.0,
+      "at_limit_fraction": 0.004321
+    },
+    "mapping_correlations": {
+      "body_y_to_desired_roll": 0.999951,
+      "body_x_to_desired_pitch": -0.999976,
+      "body_y_to_roll_rate": 0.999951,
+      "body_x_to_pitch_rate": -0.998026
+    }
+  },
+  "verdict": {
+    "safety_audit": "pass",
+    "static_tracking": "pass",
+    "horizontal_continuity": "pass",
+    "vertical_axis_functional_direction": "pass_composed_with_prior_rbc_pitch_validation",
+    "three_repeat_vertical_stress": "not_performed_not_required_for_implementation",
+    "latency_p95_under_100_ms": "pass",
+    "guidance_to_body_rate_mapping": "pass_log_only",
+    "target_loss_fail_closed": "pass",
+    "indoor_final_chain_implementation_readiness": "pass",
+    "powered_closed_loop": "not_tested",
+    "real_air_interception": "not_tested",
+    "active_control_release_approved": false
+  }
+}
