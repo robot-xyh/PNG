@@ -343,6 +343,50 @@ class FlightControlTest(unittest.TestCase):
         self.assertTrue(recovered.latched)
         self.assertEqual(recovered.reason, "motor_telemetry_stale")
 
+    def test_motor_output_interlock_graces_only_persistent_spread(self):
+        interlock = MotorOutputInterlock(
+            MotorOutputInterlockConfig(
+                enabled=True,
+                max_output_us=1500,
+                max_spread_us=250,
+                violation_grace_s=1.0,
+                latch_until_disarm=True,
+            )
+        )
+
+        grace = interlock.update(
+            armed=True,
+            motor_outputs=(1100, 1400, 1100, 1400),
+            telemetry_age_s=0.1,
+            timestamp=20.0,
+        )
+        recovered = interlock.update(
+            armed=True,
+            motor_outputs=(1200, 1201, 1200, 1201),
+            telemetry_age_s=0.1,
+            timestamp=25.0,
+        )
+        interlock.update(
+            armed=True,
+            motor_outputs=(1100, 1400, 1100, 1400),
+            telemetry_age_s=0.1,
+            timestamp=30.0,
+        )
+        persistent = interlock.update(
+            armed=True,
+            motor_outputs=(1100, 1400, 1100, 1400),
+            telemetry_age_s=0.1,
+            timestamp=31.0,
+        )
+
+        self.assertTrue(grace.ok)
+        self.assertEqual(grace.reason, "motor_output_spread_grace")
+        self.assertTrue(recovered.ok)
+        self.assertEqual(recovered.reason, "ok")
+        self.assertFalse(persistent.ok)
+        self.assertTrue(persistent.latched)
+        self.assertEqual(persistent.reason, "motor_output_spread_high")
+
     def test_takeover_duration_interlock_limits_continuous_noprop_takeover(self):
         interlock = TakeoverDurationInterlock(
             TakeoverDurationInterlockConfig(
@@ -378,6 +422,22 @@ class FlightControlTest(unittest.TestCase):
         self.assertTrue(reset.ok)
         self.assertFalse(reset.latched)
 
+    def test_disabled_takeover_duration_accepts_null_limit_indefinitely(self):
+        config = TakeoverDurationInterlockConfig.from_mapping(
+            {"enabled": False, "max_duration_s": None, "latch_until_disarm": False}
+        )
+        interlock = TakeoverDurationInterlock(config)
+
+        started = interlock.update(timestamp=1.0, armed=True, takeover_active=True)
+        continued = interlock.update(timestamp=3601.0, armed=True, takeover_active=True)
+
+        self.assertTrue(started.ok)
+        self.assertTrue(continued.ok)
+        self.assertEqual(continued.reason, "disabled")
+        self.assertEqual(continued.active_duration_s, 0.0)
+        self.assertIsNone(continued.max_duration_s)
+        self.assertIsNone(continued.remaining_s)
+
     def test_takeover_duration_interlock_resets_when_released_before_limit(self):
         interlock = TakeoverDurationInterlock(
             TakeoverDurationInterlockConfig(enabled=True, max_duration_s=3.0)
@@ -391,6 +451,146 @@ class FlightControlTest(unittest.TestCase):
         self.assertEqual(released.reason, "inactive")
         self.assertTrue(restarted.ok)
         self.assertEqual(restarted.active_duration_s, 0.0)
+
+    def test_takeover_duration_interlock_rearms_after_continuous_release_dwell(self):
+        interlock = TakeoverDurationInterlock(
+            TakeoverDurationInterlockConfig(
+                enabled=True,
+                max_duration_s=5.0,
+                latch_until_disarm=False,
+                rearm_release_s=0.5,
+            )
+        )
+
+        self.assertTrue(
+            interlock.update(timestamp=10.0, armed=True, takeover_active=True).ok
+        )
+        expired = interlock.update(timestamp=15.0, armed=True, takeover_active=True)
+        still_held = interlock.update(timestamp=15.1, armed=True, takeover_active=True)
+        release_started = interlock.update(
+            timestamp=15.2,
+            armed=True,
+            takeover_active=False,
+        )
+        release_complete = interlock.update(
+            timestamp=15.7,
+            armed=True,
+            takeover_active=False,
+        )
+        restarted = interlock.update(timestamp=15.8, armed=True, takeover_active=True)
+
+        self.assertFalse(expired.ok)
+        self.assertFalse(expired.latched)
+        self.assertEqual(expired.reason, "takeover_duration_exceeded")
+        self.assertFalse(still_held.ok)
+        self.assertEqual(still_held.reason, "takeover_release_required")
+        self.assertTrue(release_started.ok)
+        self.assertEqual(release_started.reason, "takeover_rearm_wait")
+        self.assertTrue(release_complete.ok)
+        self.assertEqual(release_complete.reason, "inactive")
+        self.assertTrue(restarted.ok)
+        self.assertEqual(restarted.active_duration_s, 0.0)
+
+    def test_takeover_duration_counts_only_actual_control_and_requires_release(self):
+        interlock = TakeoverDurationInterlock(
+            TakeoverDurationInterlockConfig(
+                enabled=True,
+                max_duration_s=10.0,
+                latch_until_disarm=False,
+                rearm_release_s=0.5,
+            )
+        )
+
+        waiting = interlock.update(
+            timestamp=1.0,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        still_waiting = interlock.update(
+            timestamp=6.0,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        started = interlock.update(
+            timestamp=6.1,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+        running = interlock.update(
+            timestamp=11.1,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+        paused = interlock.update(
+            timestamp=13.1,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        resumed = interlock.update(
+            timestamp=13.2,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+        expired = interlock.update(
+            timestamp=18.2,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+
+        self.assertEqual(waiting.reason, "waiting_for_control")
+        self.assertEqual(still_waiting.active_duration_s, 0.0)
+        self.assertEqual(started.active_duration_s, 0.0)
+        self.assertAlmostEqual(running.active_duration_s, 5.0)
+        self.assertAlmostEqual(paused.active_duration_s, 5.0)
+        self.assertAlmostEqual(resumed.active_duration_s, 5.0)
+        self.assertFalse(expired.ok)
+        self.assertAlmostEqual(expired.active_duration_s, 10.0)
+
+        held = interlock.update(
+            timestamp=19.0,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        release_started = interlock.update(
+            timestamp=19.1,
+            armed=True,
+            takeover_requested=False,
+            control_active=False,
+        )
+        too_soon = interlock.update(
+            timestamp=19.5,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        interlock.update(
+            timestamp=20.0,
+            armed=True,
+            takeover_requested=False,
+            control_active=False,
+        )
+        rearmed = interlock.update(
+            timestamp=20.5,
+            armed=True,
+            takeover_requested=False,
+            control_active=False,
+        )
+
+        self.assertEqual(held.reason, "takeover_release_required")
+        self.assertTrue(release_started.ok)
+        self.assertEqual(release_started.reason, "takeover_rearm_wait")
+        self.assertFalse(too_soon.ok)
+        self.assertEqual(too_soon.reason, "takeover_release_required")
+        self.assertTrue(rearmed.ok)
+        self.assertEqual(rearmed.active_duration_s, 0.0)
 
     def test_watchdog_freshness(self):
         watchdog = CommandWatchdog(timeout_s=0.5)
@@ -710,6 +910,107 @@ class FlightControlTest(unittest.TestCase):
         self.assertAlmostEqual(setpoint.roll_rate_deg_s, 4.0 * desired_roll)
         self.assertAlmostEqual(setpoint.pitch_rate_deg_s, 0.0)
         self.assertEqual(setpoint.thrust, 0.4)
+
+    def test_accel_tilt_rate_measured_thrust_maps_hover_and_max_load(self):
+        config = {
+            "thrust_feedforward": {
+                "enabled": True,
+                "model": "measured_load_factor",
+                "hover_load_factor_g": 1.0,
+                "max_load_factor_g": 2.37,
+                "minimum_tilt_cosine": 0.5,
+                "calibration_id": "LOG00062_1275_1500",
+            }
+        }
+        hover = guidance_eval_to_setpoint(
+            GuidanceEval(timestamp=1.0, g_eval=np.zeros(3), valid=True, quality=1.0),
+            R_IB=np.eye(3),
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.5,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate=config,
+        )
+        max_load = guidance_eval_to_setpoint(
+            GuidanceEval(
+                timestamp=2.0,
+                g_eval=np.array([0.0, 0.0, -1.37 * 9.80665]),
+                valid=True,
+                quality=1.0,
+            ),
+            R_IB=np.eye(3),
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.5,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate=config,
+        )
+
+        self.assertEqual(hover.thrust_model, "measured_load_factor")
+        self.assertAlmostEqual(hover.thrust_load_factor_raw_g, 1.0)
+        self.assertAlmostEqual(hover.thrust, 0.5)
+        self.assertFalse(hover.thrust_command_limited)
+        self.assertAlmostEqual(max_load.thrust_load_factor_raw_g, 2.37)
+        self.assertAlmostEqual(max_load.thrust_command_raw, 1.0)
+        self.assertAlmostEqual(max_load.thrust, 1.0)
+
+    def test_accel_tilt_rate_measured_thrust_compensates_current_tilt(self):
+        roll_rad = np.deg2rad(35.0)
+        R_IB = np.array(
+            [
+                [1.0, 0.0, 0.0],
+                [0.0, np.cos(roll_rad), -np.sin(roll_rad)],
+                [0.0, np.sin(roll_rad), np.cos(roll_rad)],
+            ]
+        )
+        setpoint = guidance_eval_to_setpoint(
+            GuidanceEval(timestamp=1.0, g_eval=np.zeros(3), valid=True, quality=1.0),
+            R_IB=R_IB,
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.5,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate={
+                "thrust_feedforward": {
+                    "enabled": True,
+                    "model": "measured_load_factor",
+                    "hover_load_factor_g": 1.0,
+                    "max_load_factor_g": 2.37,
+                    "minimum_tilt_cosine": 0.5,
+                    "calibration_id": "LOG00062_1275_1500",
+                }
+            },
+        )
+
+        expected_load = 1.0 / np.cos(roll_rad)
+        expected_thrust = 0.5 + 0.5 * (expected_load - 1.0) / 1.37
+        self.assertAlmostEqual(setpoint.thrust_load_factor_raw_g, expected_load)
+        self.assertAlmostEqual(setpoint.thrust, expected_thrust)
+
+    def test_accel_tilt_rate_measured_thrust_clamps_excess_load(self):
+        setpoint = guidance_eval_to_setpoint(
+            GuidanceEval(
+                timestamp=1.0,
+                g_eval=np.array([0.0, 0.0, -30.0]),
+                valid=True,
+                quality=1.0,
+            ),
+            R_IB=np.eye(3),
+            rate_gain_matrix=np.zeros((3, 3)),
+            hover_thrust=0.5,
+            mapping_type="accel_tilt_rate",
+            accel_tilt_rate={
+                "thrust_feedforward": {
+                    "enabled": True,
+                    "model": "measured_load_factor",
+                    "hover_load_factor_g": 1.0,
+                    "max_load_factor_g": 2.37,
+                    "minimum_tilt_cosine": 0.5,
+                    "calibration_id": "LOG00062_1275_1500",
+                }
+            },
+        )
+
+        self.assertGreater(setpoint.thrust_command_raw, 1.0)
+        self.assertEqual(setpoint.thrust, 1.0)
+        self.assertTrue(setpoint.thrust_command_limited)
 
     def test_accel_tilt_rate_uses_current_attitude_and_explicit_output_sign(self):
         pitch_rad = np.deg2rad(-3.0)

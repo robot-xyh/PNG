@@ -5,6 +5,7 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -133,6 +134,34 @@ class _FakeCv2:
 
 
 class BetaflightLoggingTest(unittest.TestCase):
+    def test_csv_source_wait_does_not_report_a_new_empty_detection(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "detections.csv"
+            path.write_text(
+                "frame_id,exposure_ts,x1,y1,x2,y2,track_id,score\n"
+                "1,1.0,10,20,30,40,7,0.9\n",
+                encoding="utf-8",
+            )
+            source = runner.DetectionCsvSource(str(path))
+
+            waiting, waiting_stats = source.detect(
+                elapsed_s=0.5,
+                timestamp=10.5,
+                frame_id=1,
+            )
+            detection, detection_stats = source.detect(
+                elapsed_s=1.0,
+                timestamp=11.0,
+                frame_id=2,
+            )
+
+        self.assertIsNone(waiting)
+        self.assertEqual(waiting_stats["detector_reject_reason"], "csv_waiting")
+        self.assertEqual(waiting_stats["perception_new_result"], 0)
+        self.assertIsNotNone(detection)
+        self.assertEqual(detection.track_id, 7)
+        self.assertEqual(detection_stats["perception_new_result"], 1)
+
     def test_cpu_affinity_parser_accepts_ranges_and_rejects_overlap(self):
         self.assertEqual(runner._parse_cpu_affinity("4-5,7"), (4, 5, 7))
         self.assertEqual(runner._parse_cpu_affinity(""), ())
@@ -470,6 +499,19 @@ class BetaflightLoggingTest(unittest.TestCase):
             -1.0,
         )
 
+        prop_rig_config = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "config/betaflight.rk3588.velocity_png.prop_rig_active.json"
+            ).read_text()
+        )
+        prop_rig_runtime = runner._velocity_establishing_runtime(
+            prop_rig_config,
+            intrinsics=runner._camera_intrinsics(prop_rig_config),
+            bench_scope="prop_rig_active",
+        )
+        self.assertIsNotNone(prop_rig_runtime)
+
         with self.assertRaisesRegex(RuntimeError, "restricted"):
             runner._velocity_establishing_runtime(
                 config,
@@ -610,6 +652,11 @@ class BetaflightLoggingTest(unittest.TestCase):
             yaw_rate_deg_s=3.0,
             thrust=0.5,
             source="guidance_eval",
+            thrust_model="measured_load_factor",
+            thrust_required_specific_force_mps2=12.0,
+            thrust_load_factor_raw_g=1.223,
+            thrust_command_raw=0.581,
+            thrust_command_limited=True,
         )
         pre_shape_setpoint = GuidanceSetpoint(
             timestamp=10.1,
@@ -625,6 +672,11 @@ class BetaflightLoggingTest(unittest.TestCase):
             current_pitch_angle_deg=-2.0,
             roll_attitude_error_deg=4.0,
             pitch_attitude_error_deg=-2.0,
+            thrust_model="measured_load_factor",
+            thrust_required_specific_force_mps2=12.0,
+            thrust_load_factor_raw_g=1.223,
+            thrust_command_raw=0.581,
+            thrust_command_limited=True,
         )
         shaping = GuidanceCommandShapingDiagnostics(
             input_roll_rate_deg_s=4.0,
@@ -767,6 +819,10 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(row["sp_source"], "guidance_eval")
         self.assertEqual(row["pre_shape_sp_roll_rate_deg_s"], "4.000000")
         self.assertEqual(row["sp_roll_rate_deg_s"], "1.000000")
+        self.assertEqual(row["command_thrust_model"], "measured_load_factor")
+        self.assertEqual(row["command_thrust_load_factor_raw_g"], "1.223000")
+        self.assertEqual(row["command_thrust_raw"], "0.581000")
+        self.assertEqual(row["command_thrust_limited"], 1)
         self.assertEqual(row["entry_handoff_progress"], "0.250000")
         self.assertEqual(row["entry_handoff_source"], "gyro")
         self.assertEqual(row["tilt_roll_softcap_factor"], "0.500000")
@@ -845,7 +901,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 18)
+            self.assertEqual(data["log_schema_version"], 19)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 
@@ -903,6 +959,44 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(events[1]["old"], 0)
             self.assertEqual(events[1]["new"], 1)
             self.assertEqual(events[1]["context"]["rc_sent"][2], 1000)
+
+    def test_durable_csv_flushes_periodically_and_syncs_transitions_and_close(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "durable.csv"
+            with mock.patch.object(runner.os, "fsync") as fsync:
+                logger = runner.DurableCsvLogger(
+                    path,
+                    ["timestamp", "state"],
+                    flush_interval_s=1.0,
+                )
+                self.assertEqual(fsync.call_count, 1)
+                with mock.patch.object(logger, "flush", wraps=logger.flush) as flush:
+                    logger.write_row(
+                        {"timestamp": "1.0", "state": "idle"},
+                        timestamp_s=1.0,
+                        transition_state=(0, 0, "LOG_ONLY", "disabled"),
+                    )
+                    logger.write_row(
+                        {"timestamp": "1.5", "state": "idle"},
+                        timestamp_s=1.5,
+                        transition_state=(0, 0, "LOG_ONLY", "disabled"),
+                    )
+                    logger.write_row(
+                        {"timestamp": "2.1", "state": "idle"},
+                        timestamp_s=2.1,
+                        transition_state=(0, 0, "LOG_ONLY", "disabled"),
+                    )
+                    self.assertEqual(flush.call_count, 2)
+                logger.write_row(
+                    {"timestamp": "2.2", "state": "active"},
+                    timestamp_s=2.2,
+                    transition_state=(1, 1, "ACTIVE", "algorithm"),
+                )
+                self.assertEqual(fsync.call_count, 2)
+                logger.close()
+                self.assertEqual(fsync.call_count, 3)
+
+            self.assertEqual(len(path.read_text(encoding="utf-8").splitlines()), 5)
 
     def test_python_gc_pause_monitor_records_incremental_pauses(self):
         times = iter((1.0, 1.0125, 2.0, 2.003))

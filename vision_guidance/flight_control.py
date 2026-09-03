@@ -40,6 +40,11 @@ class GuidanceSetpoint:
     current_pitch_angle_deg: float | None = None
     roll_attitude_error_deg: float | None = None
     pitch_attitude_error_deg: float | None = None
+    thrust_model: str = "fixed_hover"
+    thrust_required_specific_force_mps2: float | None = None
+    thrust_load_factor_raw_g: float | None = None
+    thrust_command_raw: float | None = None
+    thrust_command_limited: bool = False
 
     @classmethod
     def from_body_rates_rad_s(
@@ -213,6 +218,47 @@ class GuidanceCommandShapingDiagnostics:
 
 
 @dataclass(frozen=True)
+class ThrustFeedforwardConfig:
+    enabled: bool = False
+    model: str = "fixed_hover"
+    hover_load_factor_g: float = 1.0
+    max_load_factor_g: float = 2.37
+    minimum_tilt_cosine: float = 0.5
+    calibration_id: str = ""
+
+    @classmethod
+    def from_mapping(cls, values: Mapping[str, object]) -> "ThrustFeedforwardConfig":
+        return cls(
+            enabled=bool(values.get("enabled", False)),
+            model=str(values.get("model", "fixed_hover")).strip().lower(),
+            hover_load_factor_g=float(values.get("hover_load_factor_g", 1.0)),
+            max_load_factor_g=float(values.get("max_load_factor_g", 2.37)),
+            minimum_tilt_cosine=float(values.get("minimum_tilt_cosine", 0.5)),
+            calibration_id=str(values.get("calibration_id", "")).strip(),
+        )
+
+    def __post_init__(self) -> None:
+        if self.model not in {"fixed_hover", "measured_load_factor"}:
+            raise ValueError("unsupported thrust feedforward model")
+        if self.enabled and self.model != "measured_load_factor":
+            raise ValueError("enabled thrust feedforward requires measured_load_factor")
+        if not np.isfinite(self.hover_load_factor_g) or self.hover_load_factor_g <= 0.0:
+            raise ValueError("hover_load_factor_g must be finite and positive")
+        if (
+            not np.isfinite(self.max_load_factor_g)
+            or self.max_load_factor_g <= self.hover_load_factor_g
+        ):
+            raise ValueError("max_load_factor_g must exceed hover_load_factor_g")
+        if (
+            not np.isfinite(self.minimum_tilt_cosine)
+            or not 0.0 < self.minimum_tilt_cosine <= 1.0
+        ):
+            raise ValueError("minimum_tilt_cosine must be in (0, 1]")
+        if self.enabled and not self.calibration_id:
+            raise ValueError("enabled thrust feedforward requires calibration_id")
+
+
+@dataclass(frozen=True)
 class AccelerationTiltRateConfig:
     """Map an inertial acceleration demand through an attitude outer loop."""
 
@@ -226,6 +272,9 @@ class AccelerationTiltRateConfig:
     roll_rate_sign: float = 1.0
     pitch_rate_sign: float = 1.0
     min_vertical_specific_force_mps2: float = 0.5
+    thrust_feedforward: ThrustFeedforwardConfig = field(
+        default_factory=ThrustFeedforwardConfig
+    )
 
     def __post_init__(self) -> None:
         positive_fields = (
@@ -263,6 +312,9 @@ class AccelerationTiltRateConfig:
             pitch_rate_sign=float(values.get("pitch_rate_sign", 1.0)),
             min_vertical_specific_force_mps2=float(
                 values.get("min_vertical_specific_force_mps2", 0.5)
+            ),
+            thrust_feedforward=ThrustFeedforwardConfig.from_mapping(
+                dict(values.get("thrust_feedforward", {}))
             ),
         )
 
@@ -861,6 +913,7 @@ class MotorOutputInterlockConfig:
     channel_count: int = 4
     max_output_us: int = 1200
     max_spread_us: int = 150
+    violation_grace_s: float = 0.0
     telemetry_timeout_s: float = 0.75
     latch_until_disarm: bool = True
 
@@ -871,6 +924,7 @@ class MotorOutputInterlockConfig:
             channel_count=int(values.get("channel_count", 4)),
             max_output_us=int(values.get("max_output_us", 1200)),
             max_spread_us=int(values.get("max_spread_us", 150)),
+            violation_grace_s=float(values.get("violation_grace_s", 0.0)),
             telemetry_timeout_s=float(values.get("telemetry_timeout_s", 0.75)),
             latch_until_disarm=bool(values.get("latch_until_disarm", True)),
         )
@@ -882,6 +936,8 @@ class MotorOutputInterlockConfig:
             raise ValueError("motor interlock max_output_us must be in [1000, 2000]")
         if not 0 <= self.max_spread_us <= 1000:
             raise ValueError("motor interlock max_spread_us must be in [0, 1000]")
+        if not np.isfinite(self.violation_grace_s) or self.violation_grace_s < 0.0:
+            raise ValueError("motor interlock violation_grace_s must be finite and non-negative")
         if self.telemetry_timeout_s <= 0.0:
             raise ValueError("motor interlock telemetry_timeout_s must be positive")
 
@@ -903,6 +959,7 @@ class MotorOutputInterlock:
         self._latched_reason = ""
         self._latched_output_max_us: float | None = None
         self._latched_output_spread_us: float | None = None
+        self._spread_violation_started_s: float | None = None
 
     def update(
         self,
@@ -910,6 +967,7 @@ class MotorOutputInterlock:
         armed: bool,
         motor_outputs: Sequence[float] | None,
         telemetry_age_s: float | None,
+        timestamp: float | None = None,
     ) -> MotorOutputInterlockState:
         if not self.config.enabled:
             return MotorOutputInterlockState(True, "disabled", False, telemetry_age_s=telemetry_age_s)
@@ -918,6 +976,7 @@ class MotorOutputInterlock:
             self._latched_reason = ""
             self._latched_output_max_us = None
             self._latched_output_spread_us = None
+            self._spread_violation_started_s = None
             return MotorOutputInterlockState(True, "disarmed", False, telemetry_age_s=telemetry_age_s)
         if self._latched:
             return MotorOutputInterlockState(
@@ -949,6 +1008,28 @@ class MotorOutputInterlock:
             reason = "motor_output_high"
         elif output_spread > self.config.max_spread_us:
             reason = "motor_output_spread_high"
+        else:
+            self._spread_violation_started_s = None
+        if reason == "motor_output_spread_high" and self.config.violation_grace_s > 0.0:
+            if timestamp is None or not np.isfinite(timestamp):
+                return self._fault(
+                    reason,
+                    output_max,
+                    output_spread,
+                    telemetry_age_s,
+                )
+            now = float(timestamp)
+            if self._spread_violation_started_s is None or now < self._spread_violation_started_s:
+                self._spread_violation_started_s = now
+            if now - self._spread_violation_started_s < self.config.violation_grace_s:
+                return MotorOutputInterlockState(
+                    True,
+                    "motor_output_spread_grace",
+                    False,
+                    output_max,
+                    output_spread,
+                    telemetry_age_s,
+                )
         if reason:
             return self._fault(
                 reason,
@@ -989,20 +1070,35 @@ class MotorOutputInterlock:
 @dataclass(frozen=True)
 class TakeoverDurationInterlockConfig:
     enabled: bool = False
-    max_duration_s: float = 3.0
+    max_duration_s: float | None = 3.0
     latch_until_disarm: bool = True
+    rearm_release_s: float = 0.0
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "TakeoverDurationInterlockConfig":
+        raw_max_duration = values.get("max_duration_s", 3.0)
         return cls(
             enabled=bool(values.get("enabled", False)),
-            max_duration_s=float(values.get("max_duration_s", 3.0)),
+            max_duration_s=(
+                None if raw_max_duration is None else float(raw_max_duration)
+            ),
             latch_until_disarm=bool(values.get("latch_until_disarm", True)),
+            rearm_release_s=float(values.get("rearm_release_s", 0.0)),
         )
 
     def __post_init__(self) -> None:
-        if not np.isfinite(self.max_duration_s) or self.max_duration_s <= 0.0:
+        if self.enabled and (
+            self.max_duration_s is None
+            or not np.isfinite(self.max_duration_s)
+            or self.max_duration_s <= 0.0
+        ):
             raise ValueError("takeover duration max_duration_s must be finite and positive")
+        if self.max_duration_s is not None and (
+            not np.isfinite(self.max_duration_s) or self.max_duration_s <= 0.0
+        ):
+            raise ValueError("takeover duration max_duration_s must be null or finite and positive")
+        if not np.isfinite(self.rearm_release_s) or self.rearm_release_s < 0.0:
+            raise ValueError("takeover duration rearm_release_s must be finite and non-negative")
 
 
 @dataclass(frozen=True)
@@ -1012,76 +1108,191 @@ class TakeoverDurationInterlockState:
     latched: bool
     active_duration_s: float = 0.0
     max_duration_s: float | None = None
+    remaining_s: float | None = None
+    takeover_requested: bool = False
+    control_active: bool = False
+    release_elapsed_s: float = 0.0
 
 
 class TakeoverDurationInterlock:
-    """Bound continuous supervised takeover time for a fixed no-prop airframe."""
+    """Bound actual algorithm publication within one supervised takeover request."""
 
     def __init__(self, config: TakeoverDurationInterlockConfig):
         self.config = config
-        self._started_s: float | None = None
         self._latched = False
-        self._latched_duration_s = 0.0
+        self._active_duration_s = 0.0
+        self._rearm_required = False
+        self._release_started_s: float | None = None
+        self._last_update_s: float | None = None
+        self._last_control_active = False
 
     def update(
         self,
         *,
         timestamp: float,
         armed: bool,
-        takeover_active: bool,
+        takeover_requested: bool | None = None,
+        control_active: bool | None = None,
+        takeover_active: bool | None = None,
     ) -> TakeoverDurationInterlockState:
         now = float(timestamp)
         if not np.isfinite(now):
             raise ValueError("takeover duration timestamp must be finite")
+        if takeover_active is not None:
+            if takeover_requested is None:
+                takeover_requested = bool(takeover_active)
+            if control_active is None:
+                control_active = bool(takeover_active)
+        requested = bool(takeover_requested)
+        active = bool(control_active)
+        if active and not requested:
+            active = False
         if not self.config.enabled:
-            self._started_s = None
-            return TakeoverDurationInterlockState(True, "disabled", False)
+            self._reset(now)
+            return TakeoverDurationInterlockState(
+                True,
+                "disabled",
+                False,
+                takeover_requested=requested,
+                control_active=active,
+            )
         if not armed:
-            self._started_s = None
-            self._latched = False
-            self._latched_duration_s = 0.0
+            self._reset(now)
             return TakeoverDurationInterlockState(
                 True,
                 "disarmed",
                 False,
                 max_duration_s=self.config.max_duration_s,
+                remaining_s=self.config.max_duration_s,
+                takeover_requested=requested,
+                control_active=False,
             )
+        previous_update_s = self._last_update_s
+        dt = (
+            0.0
+            if previous_update_s is None or now < previous_update_s
+            else max(0.0, now - previous_update_s)
+        )
+        self._last_update_s = now
         if self._latched:
             return TakeoverDurationInterlockState(
                 False,
                 "takeover_duration_exceeded",
                 True,
-                self._latched_duration_s,
+                self._active_duration_s,
                 self.config.max_duration_s,
+                0.0,
+                requested,
+                active,
             )
-        if not takeover_active:
-            self._started_s = None
+        if self._rearm_required:
+            if requested:
+                self._release_started_s = None
+                self._last_control_active = False
+                return TakeoverDurationInterlockState(
+                    False,
+                    "takeover_release_required",
+                    False,
+                    self._active_duration_s,
+                    self.config.max_duration_s,
+                    max(0.0, self.config.max_duration_s - self._active_duration_s),
+                    True,
+                    False,
+                )
+            if self._release_started_s is None or now < self._release_started_s:
+                self._release_started_s = now
+            release_duration_s = max(0.0, now - self._release_started_s)
+            if release_duration_s < self.config.rearm_release_s:
+                self._last_control_active = False
+                return TakeoverDurationInterlockState(
+                    True,
+                    "takeover_rearm_wait",
+                    False,
+                    self._active_duration_s,
+                    self.config.max_duration_s,
+                    max(0.0, self.config.max_duration_s - self._active_duration_s),
+                    False,
+                    False,
+                    release_duration_s,
+                )
+            self._active_duration_s = 0.0
+            self._rearm_required = False
+            self._release_started_s = None
+            self._last_control_active = False
             return TakeoverDurationInterlockState(
                 True,
                 "inactive",
                 False,
                 max_duration_s=self.config.max_duration_s,
+                remaining_s=self.config.max_duration_s,
             )
-        if self._started_s is None or now < self._started_s:
-            self._started_s = now
-        duration_s = max(0.0, now - self._started_s)
-        if duration_s >= self.config.max_duration_s:
+        if not requested:
+            if self._active_duration_s > 0.0:
+                self._rearm_required = True
+                self._release_started_s = now
+                reason = (
+                    "inactive"
+                    if self.config.rearm_release_s <= 0.0
+                    else "takeover_rearm_wait"
+                )
+                if self.config.rearm_release_s <= 0.0:
+                    self._active_duration_s = 0.0
+                    self._rearm_required = False
+                    self._release_started_s = None
+            else:
+                reason = "inactive"
+            self._last_control_active = False
+            return TakeoverDurationInterlockState(
+                True,
+                reason,
+                False,
+                self._active_duration_s,
+                max_duration_s=self.config.max_duration_s,
+                remaining_s=max(
+                    0.0,
+                    self.config.max_duration_s - self._active_duration_s,
+                ),
+                release_elapsed_s=0.0,
+            )
+        if active and self._last_control_active:
+            self._active_duration_s += dt
+        self._last_control_active = active
+        if self._active_duration_s >= self.config.max_duration_s:
+            self._active_duration_s = max(
+                self.config.max_duration_s,
+                self._active_duration_s,
+            )
             self._latched = bool(self.config.latch_until_disarm)
-            self._latched_duration_s = duration_s
+            self._rearm_required = not self._latched
+            self._release_started_s = None
             return TakeoverDurationInterlockState(
                 False,
                 "takeover_duration_exceeded",
                 self._latched,
-                duration_s,
+                self._active_duration_s,
                 self.config.max_duration_s,
+                0.0,
+                True,
+                active,
             )
         return TakeoverDurationInterlockState(
             True,
-            "timing",
+            "timing" if active else "waiting_for_control",
             False,
-            duration_s,
+            self._active_duration_s,
             self.config.max_duration_s,
+            max(0.0, self.config.max_duration_s - self._active_duration_s),
+            True,
+            active,
         )
+
+    def _reset(self, timestamp: float | None = None) -> None:
+        self._latched = False
+        self._active_duration_s = 0.0
+        self._rearm_required = False
+        self._release_started_s = None
+        self._last_update_s = timestamp
+        self._last_control_active = False
 
 
 @dataclass(frozen=True)
@@ -1333,12 +1544,22 @@ def _acceleration_tilt_rate_setpoint(
             config.max_pitch_rate_deg_s,
         )
     )
+    thrust, thrust_model, required_specific_force, load_factor_raw, thrust_raw = (
+        _acceleration_thrust_feedforward(
+            vertical_force_mps2=vertical_force,
+            roll_rad=roll_rad,
+            pitch_rad=pitch_rad,
+            hover_thrust=hover_thrust,
+            gravity_mps2=config.gravity_mps2,
+            config=config.thrust_feedforward,
+        )
+    )
     return GuidanceSetpoint(
         timestamp=float(guidance.timestamp),
         roll_rate_deg_s=roll_rate,
         pitch_rate_deg_s=pitch_rate,
         yaw_rate_deg_s=float(yaw_rate_deg_s),
-        thrust=float(hover_thrust),
+        thrust=thrust,
         valid=True,
         source="guidance_eval",
         mapping_type="accel_tilt_rate",
@@ -1348,6 +1569,50 @@ def _acceleration_tilt_rate_setpoint(
         current_pitch_angle_deg=current_pitch_deg,
         roll_attitude_error_deg=roll_error_deg,
         pitch_attitude_error_deg=pitch_error_deg,
+        thrust_model=thrust_model,
+        thrust_required_specific_force_mps2=required_specific_force,
+        thrust_load_factor_raw_g=load_factor_raw,
+        thrust_command_raw=thrust_raw,
+        thrust_command_limited=not np.isclose(thrust, thrust_raw),
+    )
+
+
+def _acceleration_thrust_feedforward(
+    *,
+    vertical_force_mps2: float,
+    roll_rad: float,
+    pitch_rad: float,
+    hover_thrust: float,
+    gravity_mps2: float,
+    config: ThrustFeedforwardConfig,
+) -> tuple[float, str, float, float, float]:
+    if not config.enabled:
+        hover = float(hover_thrust)
+        return hover, "fixed_hover", float(vertical_force_mps2), 1.0, hover
+
+    tilt_cosine = max(
+        config.minimum_tilt_cosine,
+        float(np.cos(roll_rad) * np.cos(pitch_rad)),
+    )
+    required_specific_force = float(vertical_force_mps2) / tilt_cosine
+    load_factor = required_specific_force / float(gravity_mps2)
+    if load_factor <= config.hover_load_factor_g:
+        raw_thrust = float(hover_thrust) * (
+            load_factor / config.hover_load_factor_g
+        )
+    else:
+        raw_thrust = float(hover_thrust) + (
+            (load_factor - config.hover_load_factor_g)
+            / (config.max_load_factor_g - config.hover_load_factor_g)
+            * (1.0 - float(hover_thrust))
+        )
+    thrust = float(np.clip(raw_thrust, 0.0, 1.0))
+    return (
+        thrust,
+        config.model,
+        required_specific_force,
+        load_factor,
+        raw_thrust,
     )
 
 

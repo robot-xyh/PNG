@@ -184,6 +184,12 @@ class MspRuntimeConfig:
     throttle_channel_zero_based: int = 2
     set_raw_rc_channel_map: str = "AETR1234"
     throttle_handover_s: float = 0.4
+    throttle_slew_limit_us_per_s: float = 0.0
+    throttle_relative_limit_us: int = 0
+    throttle_reference_min_us: int = 1000
+    throttle_reference_max_us: int = 2000
+    throttle_command_min_us: int = 1000
+    throttle_command_max_us: int = 2000
     prefill_enabled: bool = False
     prefill_min_frames: int = 10
     prefill_valid_min_us: int = 900
@@ -218,6 +224,14 @@ class MspRuntimeConfig:
             throttle_channel_zero_based=int(values.get("throttle_channel_zero_based", 2)),
             set_raw_rc_channel_map=str(values.get("set_raw_rc_channel_map", "AETR1234")).upper(),
             throttle_handover_s=float(values.get("throttle_handover_s", 0.4)),
+            throttle_slew_limit_us_per_s=float(
+                values.get("throttle_slew_limit_us_per_s", 0.0)
+            ),
+            throttle_relative_limit_us=int(values.get("throttle_relative_limit_us", 0)),
+            throttle_reference_min_us=int(values.get("throttle_reference_min_us", 1000)),
+            throttle_reference_max_us=int(values.get("throttle_reference_max_us", 2000)),
+            throttle_command_min_us=int(values.get("throttle_command_min_us", 1000)),
+            throttle_command_max_us=int(values.get("throttle_command_max_us", 2000)),
             prefill_enabled=bool(values.get("prefill_enabled", False)),
             prefill_min_frames=int(values.get("prefill_min_frames", 10)),
             prefill_valid_min_us=int(values.get("prefill_valid_min_us", 900)),
@@ -252,8 +266,22 @@ class MspRuntimeConfig:
             config.physical_rc_timeout_s <= 0.0
             or not 0.0 <= config.override_grace_hold_s <= 2.0
             or config.throttle_handover_s < 0.0
+            or not 0.0 <= config.throttle_slew_limit_us_per_s <= 5000.0
         ):
             raise ValueError("MSP worker timeout/handover values are invalid")
+        if not 0 <= config.throttle_relative_limit_us <= 500:
+            raise ValueError("throttle_relative_limit_us must be in [0, 500]")
+        if not (
+            750
+            <= config.throttle_command_min_us
+            <= config.throttle_reference_min_us
+            <= config.throttle_reference_max_us
+            <= config.throttle_command_max_us
+            <= 2250
+        ):
+            raise ValueError(
+                "throttle command/reference limits must be ordered within [750, 2250]"
+            )
         if config.prefill_min_frames <= 0 or config.staged_command_timeout_s <= 0.0:
             raise ValueError("MSP worker prefill/command timeout values are invalid")
         if not 0 <= config.override_mode_cli_id <= 255:
@@ -326,6 +354,8 @@ class MspWorkerSnapshot:
     set_raw_rc_ack_fresh: bool
     rc_poll_suspended: bool
     throttle_handover: "ThrottleHandoverSnapshot"
+    throttle_slew_limited: bool
+    throttle_slew_output_us: int | None
     adapter_stats: MspAdapterStats
 
 
@@ -513,6 +543,10 @@ def _validate_set_raw_rc_channel_map(channel_map: str) -> None:
 class ThrottleHandoverSnapshot:
     source_us: int | None = None
     target_us: int | None = None
+    requested_target_us: int | None = None
+    lower_limit_us: int | None = None
+    upper_limit_us: int | None = None
+    target_limited: bool = False
     alpha: float | None = None
     output_us: int | None = None
     active: bool = False
@@ -532,7 +566,15 @@ class ThrottleHandover:
         self._from_us = int(physical_throttle_us)
         self._snapshot = ThrottleHandoverSnapshot(source_us=self._from_us, alpha=0.0, active=True)
 
-    def apply(self, timestamp: float, target_us: int) -> int:
+    def apply(
+        self,
+        timestamp: float,
+        target_us: int,
+        *,
+        requested_target_us: int | None = None,
+        lower_limit_us: int | None = None,
+        upper_limit_us: int | None = None,
+    ) -> int:
         if self._start_s is None or self.duration_s <= 0.0:
             alpha = 1.0
         else:
@@ -541,6 +583,14 @@ class ThrottleHandover:
         self._snapshot = ThrottleHandoverSnapshot(
             source_us=self._from_us,
             target_us=int(target_us),
+            requested_target_us=(
+                int(target_us) if requested_target_us is None else int(requested_target_us)
+            ),
+            lower_limit_us=lower_limit_us,
+            upper_limit_us=upper_limit_us,
+            target_limited=(
+                requested_target_us is not None and int(requested_target_us) != int(target_us)
+            ),
             alpha=alpha,
             output_us=output_us,
             active=alpha < 1.0,
@@ -586,6 +636,10 @@ class BetaflightMspIoWorker:
         self._send_error_count = 0
         self._worker_error = ""
         self._handover = ThrottleHandover(config.throttle_handover_s)
+        self._throttle_reference_us: int | None = None
+        self._throttle_slew_output_us: int | None = None
+        self._throttle_slew_timestamp_s: float | None = None
+        self._throttle_slew_limited = False
         self._was_algorithm_authorized = False
         self._manual_rc: tuple[int, ...] = ()
         self._prefill_success_count = 0
@@ -783,6 +837,8 @@ class BetaflightMspIoWorker:
                 set_raw_rc_ack_fresh=ack_fresh,
                 rc_poll_suspended=rc_poll_suspended,
                 throttle_handover=self._handover.snapshot(),
+                throttle_slew_limited=self._throttle_slew_limited,
+                throttle_slew_output_us=self._throttle_slew_output_us,
                 adapter_stats=adapter_stats,
             )
 
@@ -1179,6 +1235,8 @@ class BetaflightMspIoWorker:
                 self._prefill_success_count = 0
                 self._publish_mode = "disabled"
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         if telemetry is None or not telemetry.rc_channels or not fresh:
             with self._lock:
@@ -1187,6 +1245,8 @@ class BetaflightMspIoWorker:
                 self._prefill_success_count = 0
                 self._publish_mode = "physical_rc_stale"
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         try:
             physical = (
@@ -1204,6 +1264,8 @@ class BetaflightMspIoWorker:
                 self._publish_mode = "channel_map_error"
                 self._worker_error = str(exc)
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         if not self._physical_rc_valid(physical):
             with self._lock:
@@ -1211,6 +1273,8 @@ class BetaflightMspIoWorker:
                 self._prefill_success_count = 0
                 self._publish_mode = "physical_rc_invalid"
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         if override_active and not manual_rc:
             with self._lock:
@@ -1218,6 +1282,8 @@ class BetaflightMspIoWorker:
                 self._prefill_success_count = 0
                 self._publish_mode = "manual_rc_unavailable"
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         command_age = None if command_received_s is None else max(0.0, now - command_received_s)
         command_fresh = command_age is not None and command_age <= self.config.staged_command_timeout_s
@@ -1238,6 +1304,18 @@ class BetaflightMspIoWorker:
                 self._send_skip_count += 1
                 self._publish_mode = "channel_count_mismatch"
             return
+        throttle_reference_invalid = False
+        throttle = self.config.throttle_channel_zero_based
+        handover_source = manual_rc if len(manual_rc) > throttle else physical
+        if use_algorithm and not self._was_algorithm_authorized:
+            candidate_reference = int(handover_source[throttle])
+            if not self.config.throttle_reference_min_us <= candidate_reference <= self.config.throttle_reference_max_us:
+                use_algorithm = False
+                throttle_reference_invalid = True
+            else:
+                self._throttle_reference_us = candidate_reference
+                self._handover.reset(now, candidate_reference)
+                self._reset_throttle_slew(now, candidate_reference)
         if use_algorithm and command is not None:
             channels = list(
                 merge_physical_rc(
@@ -1247,25 +1325,57 @@ class BetaflightMspIoWorker:
                     aux_arm_channel_zero_based=self.config.aux_arm_channel_zero_based,
                 )
             )
-            throttle = self.config.throttle_channel_zero_based
-            handover_source = manual_rc if len(manual_rc) > throttle else physical
-            if not self._was_algorithm_authorized:
-                self._handover.reset(now, handover_source[throttle])
-            channels[throttle] = self._handover.apply(now, channels[throttle])
+            requested_throttle = int(
+                command.target_channels[throttle]
+                if len(command.target_channels) > throttle
+                else channels[throttle]
+            )
+            channels[throttle] = requested_throttle
+            lower_limit_us = None
+            upper_limit_us = None
+            if self.config.throttle_relative_limit_us > 0:
+                if self._throttle_reference_us is None:
+                    raise RuntimeError("algorithm throttle reference is unavailable")
+                lower_limit_us = max(
+                    self.config.throttle_command_min_us,
+                    self._throttle_reference_us - self.config.throttle_relative_limit_us,
+                )
+                upper_limit_us = min(
+                    self.config.throttle_command_max_us,
+                    self._throttle_reference_us + self.config.throttle_relative_limit_us,
+                )
+                channels[throttle] = min(
+                    upper_limit_us,
+                    max(lower_limit_us, requested_throttle),
+                )
+            handover_output_us = self._handover.apply(
+                now,
+                channels[throttle],
+                requested_target_us=requested_throttle,
+                lower_limit_us=lower_limit_us,
+                upper_limit_us=upper_limit_us,
+            )
+            channels[throttle] = self._apply_throttle_slew(now, handover_output_us)
             publish_mode = "algorithm"
         elif self.config.prefill_enabled:
             channels = list(self._passthrough_channels(physical, manual_rc, override_active))
-            if not ack_fresh and prefill_ready:
+            if throttle_reference_invalid:
+                publish_mode = "throttle_reference_out_of_range"
+            elif not ack_fresh and prefill_ready:
                 publish_mode = "set_ack_stale"
             else:
                 publish_mode = "prefill" if not prefill_ready else "passthrough"
             self._handover.clear()
+            self._throttle_reference_us = None
+            self._clear_throttle_slew()
         else:
             with self._lock:
                 self._send_skip_count += 1
                 self._was_algorithm_authorized = False
                 self._publish_mode = "algorithm_not_authorized"
                 self._handover.clear()
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
             return
         try:
             request_id = None
@@ -1319,6 +1429,34 @@ class BetaflightMspIoWorker:
                 self._worker_error = str(exc)
                 self._was_algorithm_authorized = False
                 self._prefill_success_count = 0
+
+    def _reset_throttle_slew(self, timestamp: float, source_us: int) -> None:
+        self._throttle_slew_output_us = int(source_us)
+        self._throttle_slew_timestamp_s = float(timestamp)
+        self._throttle_slew_limited = False
+
+    def _clear_throttle_slew(self) -> None:
+        self._throttle_slew_output_us = None
+        self._throttle_slew_timestamp_s = None
+        self._throttle_slew_limited = False
+
+    def _apply_throttle_slew(self, timestamp: float, target_us: int) -> int:
+        target = int(target_us)
+        limit = float(self.config.throttle_slew_limit_us_per_s)
+        previous = self._throttle_slew_output_us
+        previous_s = self._throttle_slew_timestamp_s
+        now = float(timestamp)
+        if limit <= 0.0 or previous is None or previous_s is None or now < previous_s:
+            output = target
+        else:
+            max_delta = limit * max(0.0, now - previous_s)
+            output = int(
+                round(min(previous + max_delta, max(previous - max_delta, target)))
+            )
+        self._throttle_slew_output_us = output
+        self._throttle_slew_timestamp_s = now
+        self._throttle_slew_limited = output != target
+        return output
 
     def _prefill_ready(self) -> bool:
         return bool(not self.config.prefill_enabled or self._prefill_success_count >= self.config.prefill_min_frames)

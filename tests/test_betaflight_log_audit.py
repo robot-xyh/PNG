@@ -167,6 +167,35 @@ class BetaflightLogAuditTest(unittest.TestCase):
             self.assertEqual(violation["count"], 1)
             self.assertEqual(violation["first_elapsed_s"], 1.0)
 
+    def test_schema_v19_accepts_explicitly_unbounded_takeover_duration(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            row = self._safe_row()
+            row.update(
+                safety_state="ACTIVE",
+                takeover_duration_interlock_ok="1",
+                takeover_duration_interlock_reason="disabled",
+                takeover_duration_interlock_latched="0",
+                takeover_duration_s="0.0",
+            )
+            csv_path = self._write_log(root, row, schema_version=19)
+            meta_path = root / "bench_meta.json"
+            meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            meta["config"]["safety"]["takeover_duration_interlock"] = {
+                "enabled": False,
+                "max_duration_s": None,
+                "latch_until_disarm": False,
+                "rearm_release_s": 0.0,
+            }
+            meta_path.write_text(json.dumps(meta), encoding="utf-8")
+
+            result = tool.analyze_log(csv_path)
+            codes = {item["code"] for item in result["violations"]}
+
+            self.assertNotIn("active_without_takeover_duration_interlock", codes)
+            self.assertFalse(result["thresholds"]["takeover_duration_enabled"])
+            self.assertIsNone(result["thresholds"]["takeover_duration_max_s"])
+
     def test_transport_gap_reports_first_cumulative_crossing_time(self):
         with tempfile.TemporaryDirectory() as directory:
             first = self._safe_row()

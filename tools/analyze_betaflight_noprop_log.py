@@ -73,6 +73,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "pitch": float(mapping.get("pitch_command_limit_deg_s", 3.0)),
         "yaw": float(mapping.get("yaw_command_limit_deg_s", 0.0)),
     }
+    takeover_duration_enabled = bool(takeover_interlock.get("enabled", False))
+    raw_takeover_duration_max_s = takeover_interlock.get("max_duration_s", 3.0)
     thresholds = {
         "publish_hz": publish_hz,
         "max_send_gap_s": 3.0 / max(1.0, publish_hz),
@@ -85,7 +87,12 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "armed_motor_output_max_us": motor_output_max_us,
         "armed_motor_spread_max_us": motor_spread_max_us,
         "motor_output_channel_count": motor_channel_count,
-        "takeover_duration_max_s": float(takeover_interlock.get("max_duration_s", 3.0)),
+        "takeover_duration_enabled": takeover_duration_enabled,
+        "takeover_duration_max_s": (
+            None
+            if raw_takeover_duration_max_s is None
+            else float(raw_takeover_duration_max_s)
+        ),
         "rate_limits_deg_s": rate_limits,
         "tilt_envelope": {
             "enabled": bool(tilt_config.get("enabled", False)),
@@ -102,7 +109,7 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
     if not meta:
         warnings.append(f"meta_missing_or_invalid:{meta_path}")
     schema_version = _integer(meta.get("log_schema_version"))
-    if schema_version is not None and schema_version not in range(2, 19):
+    if schema_version is not None and schema_version not in range(2, 20):
         warnings.append(f"unsupported_log_schema_version:{schema_version}")
 
     invalid_rc_rows = []
@@ -161,7 +168,11 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
                 _integer(row.get("takeover_duration_interlock_ok")) != 1
                 or _integer(row.get("takeover_duration_interlock_latched")) == 1
                 or duration_s is None
-                or duration_s > thresholds["takeover_duration_max_s"] + 1.0e-6
+                or (
+                    thresholds["takeover_duration_enabled"]
+                    and thresholds["takeover_duration_max_s"] is not None
+                    and duration_s > thresholds["takeover_duration_max_s"] + 1.0e-6
+                )
             ):
                 active_takeover_interlock_rows.append(row)
         motor_outputs = [

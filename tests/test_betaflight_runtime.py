@@ -4,6 +4,7 @@ import struct
 import tempfile
 import time
 import unittest
+from dataclasses import replace
 from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
@@ -36,7 +37,12 @@ from vision_guidance.betaflight_runtime import (
     reorder_msp_rc_to_set_raw_rc,
     resolve_control_authorization,
 )
-from vision_guidance.flight_control import RcCommand
+from vision_guidance.flight_control import (
+    GuidanceSetpoint,
+    RcCommand,
+    RcCommandMapper,
+    RcMappingConfig,
+)
 
 
 class _Adapter:
@@ -405,6 +411,172 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertEqual(handover.apply(1.0, 1500), 1100)
         self.assertEqual(handover.apply(1.2, 1500), 1300)
         self.assertEqual(handover.apply(1.4, 1500), 1500)
+
+    def test_worker_limits_throttle_around_takeover_reference(self):
+        adapter = _Adapter()
+        adapter.telemetry = replace(
+            adapter.telemetry,
+            rc_channels=(1500, 1500, 1500, 1275, 1800, 1200, 1300, 1400),
+        )
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                override_channels_mask=7,
+                throttle_handover_s=0.0,
+                throttle_relative_limit_us=40,
+                throttle_reference_min_us=1200,
+                throttle_reference_max_us=1400,
+                throttle_command_min_us=1000,
+                throttle_command_max_us=1500,
+            ),
+        )
+        worker._poll(1.0)
+        worker.stage(
+            RcCommand(1.0, (1600, 1400, 1500, 1500, 1000, 2000, 2000, 2000), True),
+            authorized=True,
+            override_active=True,
+        )
+
+        worker._publish(1.01)
+
+        self.assertEqual(adapter.sent[-1][:4], (1600, 1400, 1315, 1500))
+        snapshot = worker.snapshot(1.01).throttle_handover
+        self.assertEqual(snapshot.source_us, 1275)
+        self.assertEqual(snapshot.requested_target_us, 1500)
+        self.assertEqual(snapshot.target_us, 1315)
+        self.assertEqual(snapshot.lower_limit_us, 1235)
+        self.assertEqual(snapshot.upper_limit_us, 1315)
+        self.assertTrue(snapshot.target_limited)
+
+    def test_worker_handover_uses_unslewed_mapper_target(self):
+        adapter = _Adapter()
+        adapter.telemetry = replace(
+            adapter.telemetry,
+            rc_channels=(1500, 1500, 1500, 1278, 1000, 1000, 2000, 1000),
+        )
+        mapper = RcCommandMapper(
+            RcMappingConfig(
+                channel_map="AETR1234",
+                throttle_min_us=1000,
+                throttle_hover_us=1275,
+                throttle_max_us=1500,
+                neutral_throttle_us=1000,
+                max_delta_us_per_s=100.0,
+            )
+        )
+        mapper.neutral(1.0)
+        command = mapper.map_setpoint(
+            GuidanceSetpoint(timestamp=1.01, thrust=0.5, source="guidance_eval")
+        )
+        self.assertLess(command.channels[2], 1100)
+        self.assertEqual(command.target_channels[2], 1275)
+
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                override_channels_mask=15,
+                throttle_handover_s=0.8,
+                throttle_relative_limit_us=40,
+                throttle_reference_min_us=1200,
+                throttle_reference_max_us=1400,
+                throttle_command_min_us=1000,
+                throttle_command_max_us=1500,
+            ),
+        )
+        worker._poll(1.0)
+        worker.stage(command, authorized=True, override_active=True)
+
+        outputs = []
+        for timestamp in (1.01, 1.21, 1.41, 1.61, 1.81):
+            worker._publish(timestamp)
+            outputs.append(adapter.sent[-1][2])
+
+        snapshot = worker.snapshot(1.81).throttle_handover
+        self.assertEqual(snapshot.source_us, 1278)
+        self.assertEqual(snapshot.requested_target_us, 1275)
+        self.assertEqual(snapshot.target_us, 1275)
+        self.assertFalse(snapshot.target_limited)
+        self.assertEqual(outputs[0], 1278)
+        self.assertEqual(outputs[-1], 1275)
+        self.assertGreaterEqual(min(outputs), 1275)
+
+    def test_worker_applies_dedicated_throttle_slew_after_handover(self):
+        adapter = _Adapter()
+        adapter.telemetry = replace(
+            adapter.telemetry,
+            rc_channels=(1500, 1500, 1500, 1275, 1000, 1000, 2000, 1000),
+        )
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                override_channels_mask=15,
+                throttle_handover_s=0.0,
+                throttle_slew_limit_us_per_s=600.0,
+                throttle_reference_min_us=1200,
+                throttle_reference_max_us=1400,
+                throttle_command_min_us=1200,
+                throttle_command_max_us=1500,
+            ),
+        )
+        worker._poll(1.0)
+        worker.stage(
+            RcCommand(
+                1.0,
+                (1500, 1500, 1275, 1500, 1000, 1000, 2000, 1000),
+                True,
+                target_channels=(1500, 1500, 1275, 1500, 1000, 1000, 2000, 1000),
+            ),
+            authorized=True,
+            override_active=True,
+        )
+        worker._publish(1.0)
+        worker.stage(
+            RcCommand(
+                1.1,
+                (1500, 1500, 1500, 1500, 1000, 1000, 2000, 1000),
+                True,
+                target_channels=(1500, 1500, 1500, 1500, 1000, 1000, 2000, 1000),
+            ),
+            authorized=True,
+            override_active=True,
+        )
+
+        worker._publish(1.1)
+
+        snapshot = worker.snapshot(1.1)
+        self.assertEqual(adapter.sent[-1][2], 1335)
+        self.assertTrue(snapshot.throttle_slew_limited)
+        self.assertEqual(snapshot.throttle_slew_output_us, 1335)
+
+    def test_worker_rejects_algorithm_for_out_of_range_throttle_reference(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                override_channels_mask=7,
+                throttle_relative_limit_us=40,
+                throttle_reference_min_us=1200,
+                throttle_reference_max_us=1400,
+                throttle_command_min_us=1000,
+                throttle_command_max_us=1500,
+                prefill_enabled=True,
+                prefill_min_frames=1,
+            ),
+        )
+        worker._poll(1.0)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.001)
+        worker.stage(
+            RcCommand(1.0, (1600, 1400, 1275, 1500, 1000, 2000, 2000, 2000), True),
+            output_enabled=True,
+            algorithm_authorized=True,
+            override_active=True,
+        )
+
+        worker._publish(1.01)
+
+        self.assertEqual(worker.snapshot(1.01).publish_mode, "throttle_reference_out_of_range")
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
 
     def test_worker_never_sends_without_authorization(self):
         adapter = _Adapter()

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from .betaflight_intercept_controller import (
+    InterceptPhase,
     VelocityEstablishingPngController,
     VelocityEstablishingPngInput,
     VelocityEstablishingPngOutput,
@@ -56,7 +57,10 @@ class VelocityEstablishingPngRuntime:
         attitude_R_IB: np.ndarray | None,
         attitude_valid: bool,
         kinematics: VehicleKinematicState,
+        engagement_active: bool = True,
     ) -> VelocityEstablishingRuntimeResult:
+        if not engagement_active and self.controller.phase == InterceptPhase.ABORT:
+            self.controller.reset()
         source_result = vision_result
         if (
             vision_result is not None
@@ -101,6 +105,8 @@ class VelocityEstablishingPngRuntime:
                 tracking_reason=tracking_reason,
             )
         )
+        if not engagement_active and controller_output.phase == InterceptPhase.ABORT:
+            self.controller.reset()
         quality = 0.0 if los is None else float(los.quality)
         guidance = GuidanceEval(
             timestamp=float(timestamp_s),

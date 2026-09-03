@@ -148,6 +148,38 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
         self.assertEqual(changed.controller.phase, InterceptPhase.ABORT)
         self.assertEqual(changed.controller.reason, "track_id_changed")
 
+    def test_standby_abort_resets_and_reacquires_fresh_tracking(self):
+        runtime = self._runtime()
+        runtime.update(
+            timestamp_s=1.0,
+            vision_result=_vision(1.0),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=False,
+        )
+        stale = runtime.update(
+            timestamp_s=1.36,
+            vision_result=None,
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=False,
+        )
+        recovered = runtime.update(
+            timestamp_s=1.4,
+            vision_result=_vision(1.4),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=False,
+        )
+
+        self.assertEqual(stale.controller.phase, InterceptPhase.ABORT)
+        self.assertEqual(runtime.controller.phase, InterceptPhase.ACCELERATE)
+        self.assertTrue(recovered.result.guidance.valid)
+        self.assertEqual(recovered.controller.reason, "active")
+
     def test_msp_kinematics_uses_filtered_velocity_and_oldest_sample_age(self):
         runtime = self._runtime("msp_kinematics")
         output = runtime.update(

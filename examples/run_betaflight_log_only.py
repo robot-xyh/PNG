@@ -108,7 +108,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 18
+LOG_SCHEMA_VERSION = 19
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -259,6 +259,76 @@ class EdgeEventLogger:
         self._stream.close()
 
 
+class DurableCsvLogger:
+    """Bound CSV data loss and sync safety-critical state transitions."""
+
+    def __init__(self, path: Path, fields: list[str], *, flush_interval_s: float = 1.0):
+        interval = float(flush_interval_s)
+        if not np.isfinite(interval) or interval <= 0.0:
+            raise ValueError("logging.csv_flush_interval_s must be finite and positive")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self.path = path
+        self.flush_interval_s = interval
+        self._stream = path.open("w", newline="")
+        self._writer = csv.DictWriter(self._stream, fieldnames=fields)
+        self._last_flush_s: float | None = None
+        self._last_transition_state: tuple[Any, ...] | None = None
+        self._closed = False
+        self._writer.writeheader()
+        self.sync()
+
+    def write_row(
+        self,
+        row: dict[str, Any],
+        *,
+        timestamp_s: float,
+        transition_state: tuple[Any, ...],
+    ) -> None:
+        self._writer.writerow(row)
+        now = float(timestamp_s)
+        state = tuple(transition_state)
+        transition = (
+            self._last_transition_state is not None
+            and state != self._last_transition_state
+        )
+        self._last_transition_state = state
+        if transition:
+            self.sync()
+            self._last_flush_s = now
+        elif (
+            self._last_flush_s is None
+            or now < self._last_flush_s
+            or now - self._last_flush_s >= self.flush_interval_s
+        ):
+            self.flush()
+            self._last_flush_s = now
+
+    def flush(self) -> None:
+        if not self._closed:
+            self._stream.flush()
+
+    def sync(self) -> None:
+        if self._closed:
+            return
+        self._stream.flush()
+        os.fsync(self._stream.fileno())
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        try:
+            self.sync()
+        finally:
+            self._stream.close()
+            self._closed = True
+
+    def __enter__(self) -> "DurableCsvLogger":
+        return self
+
+    def __exit__(self, exc_type, exc, traceback) -> None:
+        self.close()
+
+
 class PostDisarmTail:
     """Track a valid ARM-to-DISARM edge and retain a fixed logging tail."""
 
@@ -384,7 +454,11 @@ class DetectionCsvSource:
         row = self.rows[self.index]
         row_ts = _float_or_none(row.get("exposure_ts"))
         if row_ts is not None and row_ts > elapsed_s:
-            return None, {"detector_source": "csv", "detector_reject_reason": "csv_waiting"}
+            return None, {
+                "detector_source": "csv",
+                "detector_reject_reason": "csv_waiting",
+                "perception_new_result": 0,
+            }
         self.index += 1
         detection = FrameDetection(
             frame_id=int(float(row.get("frame_id") or frame_id)),
@@ -398,7 +472,11 @@ class DetectionCsvSource:
             track_id=int(float(row.get("track_id") or 1)),
             score=float(row.get("score") or 1.0),
         )
-        return detection, {"detector_source": "csv", "detector_reject_reason": ""}
+        return detection, {
+            "detector_source": "csv",
+            "detector_reject_reason": "",
+            "perception_new_result": 1,
+        }
 
 
 class OpenCvCameraSource:
@@ -1164,6 +1242,7 @@ def main() -> None:
             f"isolated_rknn={','.join(str(cpu) for cpu in rknn_cpu_affinity) or '-'}"
         )
     config = _load_config(args.config)
+    _validate_runtime_policy(config, args)
     web_values = dict(config.get("telemetry_web", {}))
     if args.disable_web_preview:
         preview_values = dict(web_values.get("preview", {}))
@@ -1195,7 +1274,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     intrinsics = _camera_intrinsics(config)
     camera_R_BC = _camera_mount(config, require_control_ready=control_output_requested)
     camera_calibration = _camera_calibration_metadata(config, camera_R_BC)
-    rc_mapper = RcCommandMapper(_rc_mapping_config(config))
+    rc_mapping_config = _rc_mapping_config(config)
+    rc_mapper = RcCommandMapper(rc_mapping_config)
     command_shaper_config = GuidanceCommandShaperConfig.from_mapping(
         dict(config.get("guidance_command", {}))
     )
@@ -1218,17 +1298,128 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     )
     kinematics_estimator = BetaflightKinematicEstimator(kinematics_config)
     bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
-    if control_output_requested and bench_scope == "noprop_bench":
+    flight_scope = str(dict(config.get("flight_profile", {})).get("scope", ""))
+    if control_output_requested and bench_scope in {"noprop_bench", "prop_rig_active"}:
         if not motor_interlock_config.enabled or not motor_interlock_config.latch_until_disarm:
             raise RuntimeError(
-                "noprop_bench control requires a latched safety.motor_output_interlock"
+                f"{bench_scope} control requires a latched safety.motor_output_interlock"
             )
         if msp_runtime_config.motor_poll_hz <= 0.0:
-            raise RuntimeError("noprop_bench motor interlock requires msp_runtime.motor_poll_hz")
-        if not takeover_duration_config.enabled or not takeover_duration_config.latch_until_disarm:
-            raise RuntimeError(
-                "noprop_bench control requires a latched safety.takeover_duration_interlock"
+            raise RuntimeError(f"{bench_scope} motor interlock requires msp_runtime.motor_poll_hz")
+        if not takeover_duration_config.enabled:
+            raise RuntimeError(f"{bench_scope} control requires a takeover-duration interlock")
+        if bench_scope == "noprop_bench" and not takeover_duration_config.latch_until_disarm:
+            raise RuntimeError("noprop_bench control requires a latched takeover-duration interlock")
+    if control_output_requested and bench_scope == "prop_rig_active":
+        if msp_runtime_config.override_channels_mask != 15:
+            raise RuntimeError("prop_rig_active requires override_channels_mask=15")
+        if takeover_duration_config.max_duration_s > 100.0:
+            raise RuntimeError("prop_rig_active takeover duration cannot exceed 100 s")
+        if takeover_duration_config.latch_until_disarm:
+            raise RuntimeError("prop_rig_active repeated pulses must rearm on RC7 release")
+        if takeover_duration_config.rearm_release_s < 0.5:
+            raise RuntimeError("prop_rig_active RC7 release rearm dwell must be at least 0.5 s")
+        if motor_interlock_config.max_output_us > 1500:
+            raise RuntimeError("prop_rig_active motor output limit cannot exceed 1500 us")
+        if motor_interlock_config.max_spread_us > 250:
+            raise RuntimeError("prop_rig_active motor spread limit cannot exceed 250 us")
+        if motor_interlock_config.violation_grace_s > 1.0:
+            raise RuntimeError("prop_rig_active motor spread grace cannot exceed 1 s")
+        if motor_interlock_config.telemetry_timeout_s > 0.25:
+            raise RuntimeError("prop_rig_active motor telemetry timeout cannot exceed 0.25 s")
+        if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
+            raise RuntimeError("prop_rig_active requires safety.min_vbat_v >= 20 V")
+    if control_output_requested and flight_scope == "flight_active_1s":
+        guidance_cfg = dict(config.get("guidance", {}))
+        if guidance_cfg.get("velocity_source") != "msp_kinematics":
+            raise RuntimeError("flight_active_1s requires velocity_source=msp_kinematics")
+        if msp_runtime_config.override_channels_mask != 15:
+            raise RuntimeError("flight_active_1s requires four-channel mask 15")
+        if not takeover_duration_config.enabled or takeover_duration_config.max_duration_s > 1.0:
+            raise RuntimeError("flight_active_1s requires a takeover limit no greater than 1 s")
+        if not takeover_duration_config.latch_until_disarm:
+            raise RuntimeError("flight_active_1s takeover limit must latch until DISARM")
+        if msp_runtime_config.throttle_relative_limit_us <= 0:
+            raise RuntimeError("flight_active_1s requires relative throttle limiting")
+        if msp_runtime_config.throttle_relative_limit_us > 40:
+            raise RuntimeError("flight_active_1s relative throttle limit cannot exceed 40 us")
+        if msp_runtime_config.throttle_command_max_us > 1500:
+            raise RuntimeError("flight_active_1s throttle command cannot exceed 1500 us")
+        if msp_runtime_config.throttle_handover_s < 0.8:
+            raise RuntimeError("flight_active_1s throttle handover must last at least 0.8 s")
+        if rc_mapping_config.throttle_max_us > 1500:
+            raise RuntimeError("flight_active_1s RC throttle mapping cannot exceed 1500 us")
+        if rc_mapping_config.yaw_command_limit_deg_s != 0.0:
+            raise RuntimeError("flight_active_1s must leave Yaw under pilot control")
+        if any(
+            limit is None or limit > 3.0
+            for limit in (
+                rc_mapping_config.roll_command_limit_deg_s,
+                rc_mapping_config.pitch_command_limit_deg_s,
             )
+        ):
+            raise RuntimeError("flight_active_1s Roll/Pitch limits cannot exceed 3 deg/s")
+        if not bool(safety_cfg.get("require_acro_rate_mode", False)):
+            raise RuntimeError("flight_active_1s requires Acro/Rate mode")
+        if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
+            raise RuntimeError("flight_active_1s requires safety.min_vbat_v >= 20 V")
+    if control_output_requested and flight_scope == "flight_active_supervised":
+        guidance_cfg = dict(config.get("guidance", {}))
+        velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
+        thrust_cfg = command_shaper_config.accel_tilt_rate.thrust_feedforward
+        if guidance_cfg.get("velocity_source") != "msp_kinematics":
+            raise RuntimeError("flight_active_supervised requires velocity_source=msp_kinematics")
+        if msp_runtime_config.override_channels_mask != 15:
+            raise RuntimeError("flight_active_supervised requires four-channel mask 15")
+        if (
+            takeover_duration_config.enabled
+            or takeover_duration_config.max_duration_s is not None
+            or takeover_duration_config.latch_until_disarm
+            or takeover_duration_config.rearm_release_s != 0.0
+        ):
+            raise RuntimeError(
+                "flight_active_supervised requires an explicitly disabled duration interlock"
+            )
+        if msp_runtime_config.throttle_relative_limit_us != 0:
+            raise RuntimeError("flight_active_supervised forbids relative throttle limiting")
+        if (
+            msp_runtime_config.throttle_reference_min_us != 1200
+            or msp_runtime_config.throttle_reference_max_us != 1400
+            or msp_runtime_config.throttle_command_min_us != 1200
+            or msp_runtime_config.throttle_command_max_us != 1500
+            or not 0.0 < msp_runtime_config.throttle_slew_limit_us_per_s <= 600.0
+        ):
+            raise RuntimeError("flight_active_supervised throttle envelope mismatch")
+        if (
+            rc_mapping_config.throttle_min_us != 1200
+            or rc_mapping_config.throttle_hover_us != 1275
+            or rc_mapping_config.throttle_max_us != 1500
+            or rc_mapping_config.yaw_command_limit_deg_s != 0.0
+        ):
+            raise RuntimeError("flight_active_supervised RC throttle/Yaw mapping mismatch")
+        if any(
+            limit is None or limit > 60.0
+            for limit in (
+                rc_mapping_config.roll_command_limit_deg_s,
+                rc_mapping_config.pitch_command_limit_deg_s,
+            )
+        ):
+            raise RuntimeError("flight_active_supervised Roll/Pitch limits cannot exceed 60 deg/s")
+        if (
+            float(guidance_cfg.get("max_guidance_accel_mps2", float("inf"))) > 7.0
+            or float(velocity_cfg.get("total_accel_limit_m_s2", float("inf"))) > 7.0
+        ):
+            raise RuntimeError("flight_active_supervised total guidance acceleration exceeds 7 m/s2")
+        if (
+            not thrust_cfg.enabled
+            or thrust_cfg.model != "measured_load_factor"
+            or thrust_cfg.calibration_id != "LOG00062_1275_1500"
+        ):
+            raise RuntimeError("flight_active_supervised requires measured LOG00062 thrust mapping")
+        if not bool(safety_cfg.get("require_acro_rate_mode", False)):
+            raise RuntimeError("flight_active_supervised requires Acro/Rate mode")
+        if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
+            raise RuntimeError("flight_active_supervised requires safety.min_vbat_v >= 20 V")
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
@@ -1303,6 +1494,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     meta_path = _meta_path(log_path)
     logging_cfg = dict(config.get("logging", {}))
     platform_health_hz = float(logging_cfg.get("platform_health_hz", 1.0))
+    csv_flush_interval_s = float(logging_cfg.get("csv_flush_interval_s", 1.0))
     platform_health = (
         None
         if platform_health_hz <= 0.0
@@ -1409,9 +1601,11 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         platform_health.start()
     gc_pause_monitor.start()
     try:
-        with log_path.open("w", newline="") as stream:
-            writer = csv.DictWriter(stream, fieldnames=fields)
-            writer.writeheader()
+        with DurableCsvLogger(
+            log_path,
+            fields,
+            flush_interval_s=csv_flush_interval_s,
+        ) as csv_log:
             while True:
                 loop_start = time.monotonic()
                 if (
@@ -1514,6 +1708,17 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     attitude_age_s is not None
                     and attitude_age_s <= float(safety_cfg.get("attitude_timeout_s", 0.5))
                 )
+                armed = armed_from_telemetry(telemetry, box_ids)
+                override_available = MSP_OVERRIDE_PERMANENT_ID in box_ids
+                override_active = bool(
+                    telemetry is not None
+                    and telemetry.status is not None
+                    and box_mode_active(
+                        telemetry.status.mode_flags,
+                        box_ids,
+                        MSP_OVERRIDE_PERMANENT_ID,
+                    )
+                )
                 result = fusion_state.result
                 if intercept_runtime is not None:
                     runtime_result = intercept_runtime.update(
@@ -1526,6 +1731,13 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         ),
                         attitude_valid=attitude_synced,
                         kinematics=kinematic_state,
+                        engagement_active=bool(
+                            control_output_requested
+                            and authorization.approved
+                            and authorization.config_conflict_free
+                            and armed
+                            and override_active
+                        ),
                     )
                     result = runtime_result.result
                     detector_stats.update(
@@ -1558,7 +1770,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     else physical_rc_age_s is not None
                     and physical_rc_age_s <= msp_runtime_config.physical_rc_timeout_s
                 )
-                armed = armed_from_telemetry(telemetry, box_ids)
                 tail_started = post_disarm_tail.update(
                     loop_start,
                     armed if telemetry_fresh else None,
@@ -1588,6 +1799,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     armed=armed,
                     motor_outputs=None if telemetry is None else telemetry.motor_outputs,
                     telemetry_age_s=motor_age_s,
+                    timestamp=loop_start,
                 )
                 detector_stats.update(
                     motor_interlock_ok=int(motor_interlock_state.ok),
@@ -1604,22 +1816,17 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         else motor_interlock_state.output_spread_us
                     ),
                 )
-                override_available = MSP_OVERRIDE_PERMANENT_ID in box_ids
-                override_active = bool(
-                    telemetry is not None
-                    and telemetry.status is not None
-                    and box_mode_active(telemetry.status.mode_flags, box_ids, MSP_OVERRIDE_PERMANENT_ID)
+                takeover_requested = bool(override_active)
+                actual_algorithm_publication = bool(
+                    worker_snapshot is not None
+                    and worker_snapshot.publish_mode == "algorithm"
+                    and worker_snapshot.last_publish_command_active
                 )
                 takeover_duration_state = takeover_duration_interlock.update(
                     timestamp=loop_start,
                     armed=armed,
-                    takeover_active=bool(
-                        control_output_requested
-                        and authorization.approved
-                        and authorization.config_conflict_free
-                        and override_available
-                        and override_active
-                    ),
+                    takeover_requested=takeover_requested,
+                    control_active=actual_algorithm_publication,
                 )
                 detector_stats.update(
                     takeover_duration_interlock_ok=int(takeover_duration_state.ok),
@@ -1631,8 +1838,24 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         if takeover_duration_state.max_duration_s is None
                         else takeover_duration_state.max_duration_s
                     ),
+                    takeover_duration_remaining_s=(
+                        ""
+                        if takeover_duration_state.remaining_s is None
+                        else takeover_duration_state.remaining_s
+                    ),
+                    takeover_requested=int(takeover_duration_state.takeover_requested),
+                    takeover_control_active=int(takeover_duration_state.control_active),
+                    takeover_release_elapsed_s=takeover_duration_state.release_elapsed_s,
                 )
                 aux_enabled = _aux_enabled(telemetry, safety_cfg, override_active=override_active)
+                if bool(safety_cfg.get("require_acro_rate_mode", False)):
+                    aux_enabled = bool(
+                        aux_enabled
+                        and telemetry is not None
+                        and telemetry.status is not None
+                        and not box_mode_active(telemetry.status.mode_flags, box_ids, 1)
+                        and not box_mode_active(telemetry.status.mode_flags, box_ids, 2)
+                    )
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
                 prefill_ready = bool(
@@ -1861,7 +2084,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     channel_count=rc_mapper.config.channel_count,
                     guidance_body_frd=guidance_body_frd,
                 )
-                writer.writerow(row)
+                csv_log.write_row(
+                    row,
+                    timestamp_s=loop_start,
+                    transition_state=(
+                        int(armed),
+                        int(override_active),
+                        str(decision.state.value),
+                        "" if worker_snapshot is None else worker_snapshot.publish_mode,
+                    ),
+                )
                 rows_written += 1
                 web_service.publish(
                     telemetry_payload_from_log_row(
@@ -1931,6 +2163,59 @@ def _load_config(path: str) -> dict[str, Any]:
     config_path = Path(path).expanduser()
     with config_path.open("r") as stream:
         return json.load(stream)
+
+
+def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -> None:
+    values = config.get("runtime_policy")
+    if values is None:
+        return
+    if not isinstance(values, dict):
+        raise RuntimeError("runtime_policy must be a mapping")
+
+    allowed = values.get("allowed_control_modes")
+    if not isinstance(allowed, list) or not allowed:
+        raise RuntimeError("runtime_policy.allowed_control_modes must be a non-empty list")
+    allowed_modes = tuple(str(value).strip() for value in allowed)
+    if any(value not in {"log_only", "msp_raw_rc"} for value in allowed_modes):
+        raise RuntimeError("runtime_policy.allowed_control_modes contains an unsupported mode")
+    if args.control_mode not in allowed_modes:
+        raise RuntimeError(
+            f"configuration forbids control mode {args.control_mode!r}; allowed={allowed_modes}"
+        )
+
+    allow_control_permitted = bool(values.get("allow_control_flag_permitted", False))
+    if bool(args.allow_control) and not allow_control_permitted:
+        raise RuntimeError("configuration forbids --allow-control")
+
+    output_permitted = bool(values.get("msp_set_raw_rc_permitted", False))
+    if args.control_mode == "msp_raw_rc" and bool(args.allow_control) and not output_permitted:
+        raise RuntimeError("configuration forbids MSP_SET_RAW_RC output")
+
+    bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
+    flight_scope = str(dict(config.get("flight_profile", {})).get("scope", ""))
+    active_scope = flight_scope or bench_scope
+    if (
+        args.control_mode == "msp_raw_rc"
+        and bool(args.allow_control)
+        and active_scope in {
+            "prop_rig_active",
+            "flight_active_1s",
+            "flight_active_supervised",
+        }
+    ):
+        if getattr(args, "detector_source", "") != "rknn_bytetrack":
+            raise RuntimeError(f"{active_scope} requires --detector-source rknn_bytetrack")
+        if not bool(getattr(args, "isolate_rknn_process", False)):
+            raise RuntimeError(f"{active_scope} requires --isolate-rknn-process")
+        main_cpus = _parse_cpu_affinity(getattr(args, "main_cpu_affinity", ""))
+        rknn_cpus = _parse_cpu_affinity(getattr(args, "rknn_cpu_affinity", ""))
+        if not main_cpus or not rknn_cpus:
+            raise RuntimeError(f"{active_scope} requires explicit main and RKNN CPU affinity")
+        _validate_cpu_affinity_plan(
+            main_cpus,
+            rknn_cpus,
+            isolate_rknn_process=True,
+        )
 
 
 def _guidance_evaluator(
@@ -2057,9 +2342,12 @@ def _velocity_establishing_runtime(
     if str(guidance_values.get("law", "ttc_png")).strip().lower() != "velocity_establishing_png":
         return None
     controller_config, velocity_source = _velocity_establishing_config(guidance_values)
-    if velocity_source == "bench_zero_velocity" and bench_scope != "noprop_bench":
+    if velocity_source == "bench_zero_velocity" and bench_scope not in {
+        "noprop_bench",
+        "prop_rig_active",
+    }:
         raise RuntimeError(
-            "bench_zero_velocity is restricted to bench_profile.scope='noprop_bench'"
+            "bench_zero_velocity is restricted to an explicitly approved bench scope"
         )
     return VelocityEstablishingPngRuntime(
         VelocityEstablishingPngController(controller_config),
@@ -2516,9 +2804,15 @@ def _msp_log_stats(
         "msp_consecutive_send_error_count": "",
         "throttle_handover_source_us": "",
         "throttle_handover_target_us": "",
+        "throttle_handover_requested_target_us": "",
+        "throttle_handover_lower_limit_us": "",
+        "throttle_handover_upper_limit_us": "",
+        "throttle_handover_target_limited": "",
         "throttle_handover_alpha": "",
         "throttle_handover_output_us": "",
         "throttle_handover_active": "",
+        "throttle_slew_limited": "",
+        "throttle_slew_output_us": "",
     }
     for label, command in MSP_COMMAND_LOG_SPECS:
         command_stats = stats.for_command(command)
@@ -2593,9 +2887,15 @@ def _msp_log_stats(
             msp_consecutive_send_error_count=worker_snapshot.consecutive_send_error_count,
             throttle_handover_source_us=handover.source_us,
             throttle_handover_target_us=handover.target_us,
+            throttle_handover_requested_target_us=handover.requested_target_us,
+            throttle_handover_lower_limit_us=handover.lower_limit_us,
+            throttle_handover_upper_limit_us=handover.upper_limit_us,
+            throttle_handover_target_limited=int(handover.target_limited),
             throttle_handover_alpha=handover.alpha,
             throttle_handover_output_us=handover.output_us,
             throttle_handover_active=int(handover.active),
+            throttle_slew_limited=int(worker_snapshot.throttle_slew_limited),
+            throttle_slew_output_us=worker_snapshot.throttle_slew_output_us,
         )
     return values
 
@@ -2966,9 +3266,15 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_consecutive_send_error_count",
         "throttle_handover_source_us",
         "throttle_handover_target_us",
+        "throttle_handover_requested_target_us",
+        "throttle_handover_lower_limit_us",
+        "throttle_handover_upper_limit_us",
+        "throttle_handover_target_limited",
         "throttle_handover_alpha",
         "throttle_handover_output_us",
         "throttle_handover_active",
+        "throttle_slew_limited",
+        "throttle_slew_output_us",
         "rc_sent_all",
         "telemetry_fresh",
         "attitude_synced",
@@ -3024,6 +3330,10 @@ def _log_fields(channel_count: int) -> list[str]:
         "takeover_duration_interlock_latched",
         "takeover_duration_s",
         "takeover_duration_limit_s",
+        "takeover_duration_remaining_s",
+        "takeover_requested",
+        "takeover_control_active",
+        "takeover_release_elapsed_s",
         "rc_in_count",
         "rc_in_all",
         "detector_source",
@@ -3197,6 +3507,11 @@ def _log_fields(channel_count: int) -> list[str]:
         "sp_pitch_rate_deg_s",
         "sp_yaw_rate_deg_s",
         "sp_thrust",
+        "command_thrust_model",
+        "command_thrust_required_specific_force_mps2",
+        "command_thrust_load_factor_raw_g",
+        "command_thrust_raw",
+        "command_thrust_limited",
         "rc_active",
         "rc_reason",
         "map_requested_roll_rate_deg_s",
@@ -3455,9 +3770,23 @@ def _log_row(
         "msp_consecutive_send_error_count": detector_stats.get("msp_consecutive_send_error_count", ""),
         "throttle_handover_source_us": detector_stats.get("throttle_handover_source_us", ""),
         "throttle_handover_target_us": detector_stats.get("throttle_handover_target_us", ""),
+        "throttle_handover_requested_target_us": detector_stats.get(
+            "throttle_handover_requested_target_us", ""
+        ),
+        "throttle_handover_lower_limit_us": detector_stats.get(
+            "throttle_handover_lower_limit_us", ""
+        ),
+        "throttle_handover_upper_limit_us": detector_stats.get(
+            "throttle_handover_upper_limit_us", ""
+        ),
+        "throttle_handover_target_limited": detector_stats.get(
+            "throttle_handover_target_limited", ""
+        ),
         "throttle_handover_alpha": _stats_float(detector_stats, "throttle_handover_alpha", precision=6),
         "throttle_handover_output_us": detector_stats.get("throttle_handover_output_us", ""),
         "throttle_handover_active": detector_stats.get("throttle_handover_active", ""),
+        "throttle_slew_limited": detector_stats.get("throttle_slew_limited", ""),
+        "throttle_slew_output_us": detector_stats.get("throttle_slew_output_us", ""),
         "rc_sent_all": _channels_field(detector_stats.get("msp_last_sent_channels", ())),
         "telemetry_fresh": int(telemetry_fresh),
         "attitude_synced": int(attitude_synced),
@@ -3527,6 +3856,14 @@ def _log_row(
         ),
         "takeover_duration_limit_s": _stats_float(
             detector_stats, "takeover_duration_limit_s", precision=6
+        ),
+        "takeover_duration_remaining_s": _stats_float(
+            detector_stats, "takeover_duration_remaining_s", precision=6
+        ),
+        "takeover_requested": detector_stats.get("takeover_requested", ""),
+        "takeover_control_active": detector_stats.get("takeover_control_active", ""),
+        "takeover_release_elapsed_s": _stats_float(
+            detector_stats, "takeover_release_elapsed_s", precision=6
         ),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),
@@ -3747,6 +4084,17 @@ def _log_row(
         "sp_pitch_rate_deg_s": f"{setpoint.pitch_rate_deg_s:.6f}",
         "sp_yaw_rate_deg_s": f"{setpoint.yaw_rate_deg_s:.6f}",
         "sp_thrust": f"{setpoint.thrust:.6f}",
+        "command_thrust_model": setpoint.thrust_model,
+        "command_thrust_required_specific_force_mps2": _format_optional_float(
+            setpoint.thrust_required_specific_force_mps2, precision=6
+        ),
+        "command_thrust_load_factor_raw_g": _format_optional_float(
+            setpoint.thrust_load_factor_raw_g, precision=6
+        ),
+        "command_thrust_raw": _format_optional_float(
+            setpoint.thrust_command_raw, precision=6
+        ),
+        "command_thrust_limited": int(setpoint.thrust_command_limited),
         "rc_active": int(rc_command.active),
         "rc_reason": rc_command.reason,
         "map_requested_roll_rate_deg_s": _sequence_field(rc_command.requested_rates_deg_s, 0),

@@ -46,11 +46,11 @@
   },
   "kinematic_state": {
     "log_only_source": "msp_raw_gps+msp_altitude",
-    "log_only_config": "config/betaflight.rk3588.kinematics_log_only.example.json",
+    "log_only_config": "config/betaflight.rk3588.velocity_png.flight_log_only.json",
     "gps_poll_hz": 5.0,
     "altitude_poll_hz": 5.0,
     "velocity_filter_tau_s": 0.25,
-    "formal_control_source": null,
+    "formal_control_source_candidate": "msp_kinematics",
     "formal_control_requires_second_uart_or_independent_gnss": true,
     "state_noise_model_fitted_from_flight_log": false,
     "control_input_authorized": false
@@ -72,8 +72,11 @@
     "velocity_timeout_s": 0.5,
     "los_prediction_max_s": 0.15,
     "fov_constraint_half_angle_deg": 0.0,
-    "offline_only": true,
-    "msp_set_raw_rc_connected": false
+    "offline_only": false,
+    "production_log_only_config": "config/betaflight.rk3588.velocity_png.flight_log_only.json",
+    "noprop_fault_config": "config/betaflight.rk3588.velocity_png.noprop_fault.json",
+    "limited_flight_config": "config/betaflight.rk3588.velocity_png.flight_limited.json",
+    "msp_set_raw_rc_connected_for_noprop_only": true
   },
   "guidance_command": {
     "mapping_type": "accel_tilt_rate",
@@ -91,7 +94,7 @@
   "rc_ownership": {
     "current_noprop_override_channels_mask": 15,
     "roll_pitch_only_candidate_mask": 3,
-    "selected_override_channels_mask": null,
+    "selected_override_channels_mask": 3,
     "manual_throttle_required_for_first_flight_candidate": true,
     "manual_yaw_required_for_first_flight_candidate": true,
     "expert_review_complete": false
@@ -173,9 +176,14 @@
       "target_stale_failure_rate",
       "worst_minimum_range_m"
     ],
-    "production_runner_integration_complete": false,
-    "msp_set_raw_rc_connected": false,
-    "independent_manual_takeover_verified": false,
+    "production_runner_integration_complete": true,
+    "msp_set_raw_rc_connected_for_noprop_only": true,
+    "noprop_fault_core_validation_completed": true,
+    "noprop_fault_evidence": [
+      "logs/deployment_archives/schema14_noprop_exit_matrix_20260829.tar.gz",
+      "logs/deployment_archives/schema14_takeover_timeout_active_retry_20260829_210708.tar.gz"
+    ],
+    "independent_manual_takeover_verified": true,
     "process_loss_behavior_verified_while_armed": false,
     "receiver_loss_behavior_verified": false,
     "tethered_hover_completed": false,
