@@ -1,4 +1,4 @@
-# Betaflight/PNG 飞手人工飞行 LOG_ONLY 测试卡（2026-08-31，更新至 2026-09-02）
+# Betaflight/PNG 飞手人工飞行 LOG_ONLY 测试卡（2026-08-31，更新至 2026-09-03）
 
 > 当前离线评估 `release_passed=false`。本卡只允许飞手人工控制，Orange Pi 运行 Python
 > `LOG_ONLY` 采集。全程禁止 RC7/MSP OVERRIDE 接管、`--allow-control`、自主逼近、碰撞航线和
@@ -42,8 +42,15 @@ LOG_ONLY复测：静止20 s为单一ID且confirmed/LOS均100%，连续水平段�
 预算和实测中央漏检突发模型评估3000条轨迹。两个场景的初始可见总体命中率为96.92%/97.31%，
 FOV可行命中率为89.38%/86.54%，均超过新定义的初期80%聚合目标，故
 `initial_performance_target_passed=true`。但这只是离线模型结果，不是实飞命中率；完整门槛仍因
-FOV连续性、陈旧失败率和最差距离失败，`release_passed=false`。速度建立型控制器仍为offline-only，
-尚未接入生产runner或MSP输出，所以本测试卡继续只允许人工飞行和`LOG_ONLY`。
+FOV连续性、陈旧失败率和最差距离失败，`release_passed=false`。
+
+2026-09-03又在全部拆桨、机体固定和6S供电下，把速度建立型控制器接入Python runner与
+`MSP_SET_RAW_RC`，完成纵向双向电机混控验证。初始`pitch_rate_sign=+1`使机头目标产生错误抬头
+响应；改为`pitch_rate_sign=-1`后，机头目标使后电机高于前电机、机尾目标使前电机高于后电机，
+两轮严格审计均通过且MSP写入错误为0。这只关闭无桨视觉到电机的物理方向，不能证明带桨闭环
+稳定性。当前仍没有可运行且获批的带桨控制配置，也没有带桨批准工具/manifest；候选参数文件继续
+保持`runnable=false`、`control_authorized=false`和`propeller_flight_authorized=false`。因此本卡
+当前可执行部分仍只允许人工飞行和`LOG_ONLY`。
 
 ## 1. 本次启动哪个程序
 
@@ -53,18 +60,57 @@ FOV连续性、陈旧失败率和最差距离失败，`release_passed=false`。�
 /home/orangepi/png_betaflight_python/examples/run_betaflight_log_only.py
 ```
 
-使用配置：
+正式F00/F03/F04只使用最终VM LOG_ONLY配置：
 
 ```text
-config/betaflight.rk3588.kinematics_log_only.example.json
+config/betaflight.rk3588.velocity_png.flight_log_only.json
 ```
 
 该配置读取 Betaflight MSP、GPS、气压高度、姿态、相机和 RKNN/ByteTrack，同时计算候选
-LOS/TTC/PNG 诊断，但不发送 `MSP_SET_RAW_RC`。不要启动以下程序：
+`msp_kinematics + velocity_establishing_png + accel_tilt_rate`诊断，但其`runtime_policy`只接受
+`log_only`且拒绝`--allow-control`，因此不发送`MSP_SET_RAW_RC`。旧的
+`betaflight.rk3588.kinematics_log_only.example.json`只保留作TTC/运动学历史参考，不用于最终VM
+外场数据科目。
+
+不要启动以下程序：
 
 - `src` 中的 C++ `bf_flight` 或 `bf_flight_png`
 - 带 `--control-mode msp_raw_rc` 或 `--allow-control` 的命令
 - `png-betaflight-log-only.service`（本次使用前台命令，便于立即发现错误和正常停止）
+
+### 1.1 带桨候选配置的三层边界
+
+后续实现必须形成三个用途分离的文件，不允许把无桨批准文件或配置直接改名用于带桨：
+
+|配置层|用途|RC输出|当前状态|
+|---|---|---:|---|
+|飞行候选LOG_ONLY|室外F00/F03/F04，记录最终VM候选|始终为0|已实现：`config/betaflight.rk3588.velocity_png.flight_log_only.json`|
+|候选无桨故障注入|复现未来控制配置并验证失效行为|仅拆桨、限时|配置已实现；复用既有无桨故障证据，不安排整套重跑：`config/betaflight.rk3588.velocity_png.noprop_fault.json`|
+|低权限带桨控制|通过全部前置项后的短脉冲闭环|Roll/Pitch候选|文件已形成但禁止主动运行：`config/betaflight.rk3588.velocity_png.flight_limited.json`|
+
+飞行候选LOG_ONLY至少必须固定以下合同：
+
+- `guidance.law=velocity_establishing_png`、`velocity_source=msp_kinematics`；
+- `guidance_command.mapping_type=accel_tilt_rate`；
+- `roll_rate_sign=+1`、`pitch_rate_sign=-1`；
+- 悬停油门标定值`1275 us`只记录为候选参数；LOG_ONLY不得发送该值；
+- `control_authorization.enabled=false`且运行命令不得包含`--allow-control`；
+- 相机`R_BC`、RKNN模型、Betaflight Rate profile及MSP RAW_IMU转换与已归档证据一致；
+- 使用真实GPS/NED速度、气压高度和状态年龄，不得使用无桨配置中的`bench_zero_velocity`。
+
+LOG_ONLY可记录完整候选参数（当前候选`N=3`、`Vm=10 m/s`、总加速度上限`7 m/s2`、Rate上限
+`60 deg/s`），因为它不输出控制。未来首次主动控制必须另用低权限值起步，不得把LOG_ONLY上限
+直接当作首次带桨指令上限。
+
+三份配置均包含`runtime_policy`硬门禁。飞行候选LOG_ONLY和低权限带桨文件只接受
+`--control-mode log_only`，并拒绝`--allow-control`；候选无桨故障文件才允许
+`msp_raw_rc + --allow-control`，且仍必须通过哈希绑定的`noprop_bench`批准。不能删除或手工修改
+这些门禁来缩短现场流程。
+
+正式主动控制还必须解决单UART调度：推荐把50 Hz控制发送与GPS/高度遥测拆到两条已验证串口；
+备选方案是用更高波特率和实测审计证明单UART同时工作时SET平均速率不低于49 Hz、P99.9间隔不
+超过40 ms、最大间隔不超过60 ms且ACK不超过250 ms。下一次纯LOG_ONLY没有RC发送竞争，可以
+继续用当前单UART采集。
 
 ## 2. 人员、场地与硬边界
 
@@ -97,7 +143,8 @@ LQ、Wi-Fi、网页和 Orange Pi 均不是飞行安全链路。任何计算机�
 - [ ] ARM 和 MSP OVERRIDE 使用两个独立物理开关
 - [ ] 当前实测 RC5约`1000`进入ARM区，RC5约`2000`才是DISARM；RC7人工侧、油门最低
 - [ ] 不依赖遥控器开关标签或操作者口述判断ARM状态，启动前必须在8080页面确认`armed=false`
-- [ ] `msp_override_channels_mask=15` 已记录，但本次 RC7 始终不得拨入接管侧
+- [ ] 当前`msp_override_channels_mask=15`已记录；本次LOG_ONLY因零RC写入而保持现状，RC7始终
+  不得拨入接管侧
 - [ ] 遥控 failsafe、DISARM 和人工飞行模式由飞手独立验证
 - [ ] `diff all`、`dump all`、Rates/PID/Mode/Receiver 页面截图已归档
 - [ ] Blackbox SD 卡 Ready、剩余空间足够，已记下起始日志编号
@@ -118,6 +165,40 @@ LQ、Wi-Fi、网页和 Orange Pi 均不是飞行安全链路。任何计算机�
 转动台架 R00-R03 对本次“飞手人工控制 + LOG_ONLY”是推荐的数据质量验证，不是 P00 的强制
 前置。进入任何主动 RC7/PNG 控制之前，R00-R03 或等效客观外参/时延/轴向验证必须完成。R04
 带桨台架怠速始终为可选项，详见 `doc/BETAFLIGHT_ROTARY_RIG_TEST_PLAN.md`。
+
+### 3.3 首次低权限候选的RC所有权（非本次执行项）
+
+首次带桨候选推荐只把Roll/Pitch交给程序，Throttle/Yaw继续由飞手控制，对应飞控和运行配置
+同时使用`msp_override_channels_mask=3`。候选参数表已把`selected_override_channels_mask`固定为
+`3`，但专家评审和独立带桨批准完成前不得修改飞控后直接带桨接管。若最终仍决定使用`mask=15`，
+则本节飞手操作和故障证据全部不适用，必须按四主通道均被接管重新评审。
+
+修改mask只能在拆桨状态进行。修改后必须重新导出`diff all`/`dump all`、采集快照，并让配置、
+飞控CLI和批准manifest三个位置完全一致。`mask=3`时RC7状态对应关系为：
+
+|RC7状态|Roll/Pitch|Throttle/Yaw|ARM|
+|---|---|---|---|
+|人工侧|飞手|飞手|RC5|
+|接管侧|PNG程序|飞手|RC5|
+|程序异常后|飞手先退出RC7再恢复控制|始终由飞手控制|RC5|
+
+### 3.4 已完成的无桨故障证据
+
+无桨故障模式不再安排整套重复测试。以下既有归档继续作为公共安全机制证据：
+
+- `schema14_noprop_exit_matrix_20260829.tar.gz`：人工退出、目标丢失退出和超时锁存复位均审计通过；
+- `schema14_takeover_timeout_active_retry_20260829_210708.tar.gz`：连续接管约3秒后自动撤销算法发布，
+  审计通过；
+- schema 15主动无桨记录：实际触发`1200 us/150 us`电机输出联锁并返回passthrough，作为联锁触发
+  证据保留，但该架次整体审计失败，不能改写为通过。
+
+上述证据采自旧`mask=15/bench_zero_velocity`配置，可复用于退出、目标失效、持续时间和电机联锁
+这些公共机制，不要求为新增配置重做整套动作。仓库没有成功归档armed状态`SIGKILL`、RXLOSS和
+MSP/UART断链，因此这些项目保持“未形成证据”，但不再作为下一次人工LOG_ONLY F00/F03/F04的
+执行项。若以后批准带桨主动控制，是否补做由独立飞行安全评审决定，不能口头记为已通过。
+
+新增候选无桨配置只作为`mask=3 + msp_kinematics`复现/回归文件。若确需再次运行，仍须全部拆桨，
+并让飞控CLI、全新快照、配置和`noprop_bench`批准manifest中的mask一致；旧批准文件不能直接复用。
 
 ## 4. 现场上电顺序
 
@@ -151,7 +232,7 @@ cd /home/orangepi/png_betaflight_python
 
 pwd
 test -d .git && git rev-parse --short HEAD || printf '%s\n' 'repository_commit=UNAVAILABLE'
-sha256sum config/betaflight.rk3588.kinematics_log_only.example.json
+sha256sum config/betaflight.rk3588.velocity_png.flight_log_only.json
 ls -l /dev/ttyS1
 fuser -v /dev/ttyS1
 pgrep -af 'run_betaflight_log_only|bf_flight|bf_flight_png|debugd'
@@ -163,7 +244,7 @@ df -h .
 - [ ] `pwd` 是 `/home/orangepi/png_betaflight_python`
 - [ ] 当前板端是无`.git`导出目录，出现`repository_commit=UNAVAILABLE`属已知状态；必须依靠配置
   SHA256、meta内的源引用和PC端归档追溯版本
-- [ ] 配置 SHA256 是 `b9118cc9ad0ebfb82fe0ecf2ace74f26602d6ca15bb7f0a5fd1546c5632a3c81`
+- [ ] 配置 SHA256 是 `a40e92cae80b0cd03b14b77bfdd7714592fbd2d719fd044816a9e295be45c2ff`
 - [ ] `/dev/ttyS1` 存在；`fuser` 没有显示占用进程
 - [ ] `pgrep` 没有显示旧 runner、C++ 或 debugd 进程
 - [ ] 磁盘可用空间大于 10 GB，Orange Pi 温度起始低于 70 C
@@ -185,7 +266,7 @@ LOG_DIR="logs/flight_20260831"
 mkdir -p "$LOG_DIR"
 
 python3 -u examples/run_betaflight_log_only.py \
-  --config config/betaflight.rk3588.kinematics_log_only.example.json \
+  --config config/betaflight.rk3588.velocity_png.flight_log_only.json \
   --duration-s 900 --stop-after-disarm-s 10 --rate-hz 50 \
   --log-dir "$LOG_DIR" --log-prefix "$RUN_ID" \
   --control-mode log_only \
@@ -373,14 +454,25 @@ ARM 后页面 `armed=1` 是正常的，但必须仍为 `state=LOG_ONLY`、`overr
 ## 10. 每个飞行科目的通用操作
 
 1. 每个科目都重新执行第 5-7 节，并使用对应 `TEST_ID` 启动新日志。
-2. 观察员确认飞行区和计划间距；操作员报告日志状态；飞手最后决定是否 ARM。
-3. 飞手人工起飞，RC7 全程保持人工侧，不允许为了“看算法效果”拨入接管。
-4. 飞机进入稳定等待点后，飞手做一次轻柔、清晰的“向右 yaw 后回正”作为 CSV/Blackbox/视频
+2. 发射机选择正确模型；油门最低，RC5约`2000`处于DISARM侧，RC7保持已在Configurator确认的
+   人工侧。计划后续主动候选时使用已验证的Acro/Rate；本卡LOG_ONLY若因飞手能力改用其他人工
+   模式，必须在架次记录中写明，飞行中不临时切换模式。
+3. 观察员确认飞行区、两机等待点、错开航线和计划间距；操作员报告日志状态；飞手最后决定
+   是否ARM。飞手只看飞机与空域，不看8080网页，遥测由操作员口头报告。
+4. 拦截机飞手人工ARM和起飞，RC7全程保持人工侧，不允许为了“看算法效果”拨入接管。目标机
+   只有在拦截机到达稳定等待点、观察员明确允许后才可从独立起降区起飞。
+5. 飞机进入稳定等待点后，飞手做一次轻柔、清晰的“向右 yaw 后回正”作为 CSV/Blackbox/视频
    对齐标记。观察员喊 `开始` 后才执行科目。
-5. 观察员按顺序喊动作，飞手或目标机飞手完成后回答 `动作结束`；每段之间稳定 5 秒。
-6. 科目结束再做一次同样的 yaw 标记，随后人工返航和落地。
-7. 落地先 DISARM，程序继续记录至少 10 秒，再按第 16 节停止。
-8. 首日每个核心科目后都要断电检查和离线复核，不连续飞多个科目共用一份日志。
+6. 观察员按顺序喊动作，飞手或目标机飞手完成后回答 `动作结束`；每段之间稳定 5 秒。拦截机
+   飞手不得追踪目标、不得按网页检测框修正，也不得低头寻找精确油门值。
+7. 科目结束再做一次同样的yaw标记。双机科目必须由目标机先沿预定退出路线离开并降落，拦截机
+   再人工返航和落地。
+8. 拦截机落地、油门最低后，RC5拨到约`2000`的DISARM侧；确认桨停，程序继续记录至少10秒，
+   再按第16节停止。
+9. 首日每个核心科目后都要断电检查和离线复核，不连续飞多个科目共用一份日志。
+
+本卡中的计算机、LQ和网页均不是飞行安全链路。任何程序退出、网页冻结或网络中断都不改变
+RC7人工侧；飞手继续人工控制并按观察员口令安全降落，不在空中等待SSH修复。
 
 ## 11. F01 单机人工悬停基线
 
@@ -539,9 +631,13 @@ LOG_ONLY架次只需自然监测，不设置额外动作。1.8 m也不是同步�
 
 1. `TEST_ID=F00_SKY_GROUND`：上视相机对准实际测试空域，无目标，静止记录60秒；缓慢改变机头
    朝向四次，每次稳定10秒，覆盖不同天空、光照和地面边缘进入画面的情况。
-2. `TEST_ID=F00_SKY_HOVER`：人工稳定悬停60秒，无目标机；不根据网页修正姿态。
-3. 记录太阳相对方位、云量、曝光、相机画面边缘遮挡和所有进入画面的非目标物。
-4. 只统计`perception_new_result=1`的新结果，不能把50 Hz主循环重复行当成独立检测。
+2. `TEST_ID=F00_SKY_HOVER`：目标机不上电或留在地面。拦截机飞手人工起飞到等待点，固定位置和
+   航向并稳定10秒；操作员喊开始后悬停60秒，不根据网页修正姿态，也不故意做快速横滚、俯仰
+   或大角度转向。
+3. 操作员喊结束后，拦截机人工降落、油门最低并DISARM；继续记录10秒尾段。
+4. 记录太阳相对方位、云量、曝光、相机画面边缘遮挡和所有进入画面的非目标物；出现飞机、鸟或
+   不明飞行物时，由观察员记录时间和现场类别。
+5. 只统计`perception_new_result=1`的新结果，不能把50 Hz主循环重复行当成独立检测。
 
 LOG_ONLY数据有效的共同门禁仍是零RC写入和零链路错误。进一步进入主动控制评审的负样本门禁为：
 
@@ -609,23 +705,36 @@ F03/F04的检测、ByteTrack、图像中心、LOS符号、结果年龄和出框�
 
 令 `TEST_ID=F03`。
 
-1. 拦截机由飞手人工定点；目标机进入已批准的上方偏置等待点。
-2. 目标机稳定悬停 3 段，每段 20 秒，段间改变少量位置但不缩小批准间距。
-3. 拦截机飞手只做保持，不追踪目标，不根据网页修正飞行。
+1. 拦截机先由飞手人工起飞，在较低等待点保持固定位置和航向；目标机尚不进入测试几何。
+2. 观察员允许后，目标机从独立起降区起飞并进入已批准的上方偏置等待点。必须同时保持水平和
+   垂直安全间距，不得位于拦截机正上方。
+3. 两机稳定后，观察员喊第一段开始。目标机稳定悬停20秒，拦截机飞手只做正常人工保持，不追踪
+   目标、不根据网页修正飞行。
+4. 每段结束后，目标机沿预定安全方向改变少量位置，稳定5秒；共记录3段，每段20秒，不缩小
+   批准间距。
+5. 三段完成后目标机先退出并降落，拦截机随后人工降落并DISARM。
 
 通过：连续可见段confirmed比例至少95%，同一连续段ID switch为0，结果年龄P95小于100 ms，
 最大值不持续超过120 ms；并且相对F00负样本能明确区分“真实目标有效候选”和“无目标拒绝”。
+如果本架次还要评价最终`velocity_establishing_png`候选，则拦截机必须至少6星、原点锁定、
+`kinematics_valid=1`且GPS/高度年龄不超过0.5秒；否则只能登记视觉跟踪结果。
 
 ### F04 目标横穿
 
 令 `TEST_ID=F04`。
 
-1. 拦截机人工定点，目标机按与碰撞线错开的平行路线低速左到右横穿 3 次。
-2. 再按相同路线右到左横穿 3 次，每次之间回到等待点并稳定 5 秒。
-3. 观察员持续确认两机水平和垂直间距。
+1. 拦截机飞手人工保持位置和固定航向；测试过程中不主动追随目标机。固定航向用于保持机体/画面
+   左右与地面路线的对应关系。
+2. 目标机进入左侧等待点并稳定5秒。观察员确认路线与碰撞线错开后，喊“左到右第一次开始”；
+   目标机以低速、近似恒速沿预定平行路线横穿，到右侧等待点后稳定5秒。
+3. 左到右共3次，再按同一路线右到左3次。每次都从等待点开始，不临时改变高度，不向拦截机
+   靠近，也不从拦截机正上方近距通过。
+4. 观察员持续确认两机水平和垂直间距。第六次完成后目标机先退出并降落，拦截机随后人工降落并
+   DISARM。
 
 通过：图像横向中心和 LOS 符号随横穿方向反转；连续可见段无持续 ID 跳变；出框时数据明确
-失效而不是继续使用旧目标。
+失效而不是继续使用旧目标。评价最终速度建立型候选时，运动学门禁与F03相同；GPS无效的架次
+只能关闭纯视觉横穿和LOS符号，不能关闭最终VM/NED候选。
 
 ### F05 距离和尺度变化诊断
 
@@ -648,6 +757,29 @@ F03/F04的检测、ByteTrack、图像中心、LOS符号、结果年龄和出框�
 
 通过：出框期间不输出旧目标测量；重入有明确 reacquire/track 事件；连续可见段稳定。出框后
 重新分配 track ID 可以接受，但必须在 events 和报告中明确，不能记为同一连续跟踪段。
+
+### 13.2 未来低权限带桨候选的飞手操作（当前未批准）
+
+本节只定义故障注入、F00/F03/F04和独立带桨批准全部通过后的飞手接口，不是本卡当前可执行
+命令。预期使用`mask=3`：RC7人工侧时四轴均由飞手控制；RC7接管侧时程序只控制Roll/Pitch，
+Throttle/Yaw和RC5 ARM仍由飞手控制。若最终mask不是3，必须废止本节并重新评审。
+
+1. 发射机选择正确模型，油门最低，RC5在DISARM侧，RC7在人工侧；整个架次使用已验证的
+   Acro/Rate，不把飞行模式切换与RC7切换同时进行。
+2. 程序必须先启动。操作员确认GPS/NED、相机、MSP、预填充、配置哈希和独立飞行批准均通过后，
+   才报告“候选就绪”；网页本身不是安全授权。
+3. 飞手在RC7人工侧ARM、人工起飞并稳定悬停至少10秒；目标保持明确水平/垂直安全偏置。
+4. 操作员报告目标稳定后，飞手保持当前油门和Yaw，RC7接管约0.5秒；接管期间不要操作
+   Roll/Pitch并期待生效，因为这两个通道由程序拥有。
+5. 飞手将RC7拨回人工侧，立即用四轴稳定飞机并人工降落。落地分析CSV与Blackbox通过后，下一
+   架次才可扩大到1秒，之后最多2秒；每架次只进行一个新时长，不连续试探。
+6. 任何目标丢失、程序/网页/LQ异常、姿态异常或飞手不确定时，第一动作是RC7回人工侧，随后
+   人工稳定和降落，不等待程序恢复。RC5 DISARM通常只在落地、油门最低后执行；空中仅按飞手
+   已批准的紧急处置规则使用。
+
+首次主动候选总加速度上限不超过`1 m/s2`、Roll/Pitch不超过`3 deg/s`，油门和Yaw不得由程序
+接管。0.5/1/2秒短脉冲关闭闭环方向、退出和小权限响应后，仍须先做非碰撞伴飞/横穿，不能直接
+进入碰撞航线或拦截试验。
 
 ## 14. 实时监看与立即终止条件
 
@@ -695,9 +827,28 @@ F03/F04的检测、ByteTrack、图像中心、LOS符号、结果年龄和出框�
 10. `F05`：可选尺度变化
 11. `F06`：可选边缘、丢失和重捕获
 
-如果当日时间或电池不足，优先完成G00、F00_SKY_GROUND、P00、F01、F02和F03；不要通过缩短
-复核或减小双机间距赶进度。2026-09-01的F00-A静态背景结果可以支持继续人工LOG_ONLY采集，但
-飞机非目标事件、四航向覆盖和F00_SKY_HOVER仍未关闭；后续F03-F06不得宣称主动控制就绪。
+按截至2026-09-03的现有证据，G00/F02、外参、gyro轴向、软件链路时延和无桨电机方向不再安排
+重复专项动作。下一次外场的最小执行序列收敛为：
+
+1. 在PC复核最终速度建立型飞行候选LOG_ONLY配置
+   `config/betaflight.rk3588.velocity_png.flight_log_only.json`、单元测试和配置SHA256，并同步至
+   Orange Pi；不在现场编辑JSON。
+2. 现场先做`P00`正常怠速检查；全程仍为LOG_ONLY和RC7人工侧。
+3. `F00_SKY_HOVER`：无目标机，拦截机人工稳定悬停60秒。
+4. 离线快速核对F00没有持续confirmed假目标且RC写入为0；不通过时仍可按风险评审采集F03/F04，
+   但不得形成主动控制批准。
+5. `F03`：双机安全偏置静止目标3段，每段20秒。
+6. `F04`：错开平行路线左右各横穿3次；条件允许时把边缘出框/重入并入末段，但不缩小安全间距。
+7. 每个科目使用独立进程、CSV和Blackbox；目标机先退出，拦截机后降落，每架次保留10秒DISARM
+   尾段并立即审计。
+
+本次外场不执行RC7接管、故障注入或命中试验。既有无桨故障证据按3.4节复用，不在外场前重复；
+这不改变本次LOG_ONLY数据采集，也不构成带桨主动控制批准。
+
+如果当日时间或电池不足，优先完成P00、F00_SKY_HOVER和F03；F04可以推迟，不重复G00/F02或
+推力脉冲。不要通过缩短复核或减小双机间距赶进度。2026-09-01的F00-A静态背景结果可以支持
+继续人工LOG_ONLY采集，但非目标航空器抑制和F00_SKY_HOVER仍未关闭；后续F03/F04也不得宣称
+主动控制就绪。
 推力包线不得为了“完成P2/P3”临时增加架次；现有LOG00062已经越过旧P3计划值，后续优先分析
 既有平滑过渡数据和横向人工动作，而不是继续增加油门。
 
@@ -797,6 +948,278 @@ python3 tools/analyze_betaflight_blackbox_flight.py \
 阈值用于离线选段，不是下一架次的飞行目标。必须联合检查`thrust_envelope.windows`、
 `endpoint_transients`和原始曲线；再按第11.2节的实际油门区间分箱，并把上升/回落和落地段分开。
 
+### 16.1 下一阶段步骤4：外场LOG_ONLY离线分析
+
+本步骤在P00、F00_SKY_HOVER、F03和F04全部结束、两机均已落地DISARM后执行。当前阶段不运行
+Monte Carlo，也不根据单个指标现场放开主动控制。
+
+1. 先按本节前述流程归档每个科目的主机CSV、meta、events、console、原始BFL、解码CSV和哈希。
+   F00、F03和F04必须是三个独立`RUN_ID`，不得从一份长日志中人工切出后冒充独立架次。
+2. 对每份主机CSV运行只读合同审计：
+
+```bash
+cd /home/linux/Documents/PNG-betaflight-upward-camera
+
+python3 tools/analyze_betaflight_noprop_log.py --csv "$F00_CSV"
+python3 tools/analyze_betaflight_noprop_log.py --csv "$F03_CSV"
+python3 tools/analyze_betaflight_noprop_log.py --csv "$F04_CSV"
+```
+
+3. 三份审计都必须满足`passed=true`，并逐项确认：`control_mode=log_only`、`allow_control=0`、
+   `publish=disabled`，全部SET_RAW_RC attempt/write/success/ACK计数为0，MSP、parser、camera和worker
+   无持续错误。任何一份出现RC写入都封存整日数据，不进入步骤4.5。
+4. 只用`perception_new_result=1`的新推理结果统计感知，禁止把50 Hz主循环保持的重复行计作新检测：
+   F00不得出现持续confirmed假目标；F03每个20秒连续可见段confirmed至少95%、同段ID switch为0、
+   结果年龄P95小于100 ms；F04左右横穿的图像中心、LOS和候选Roll/Pitch符号必须反转，出框后旧
+   目标须在配置超时内失效。
+5. 检查最终VM输入。F03/F04用于评价速度建立型PNG时，必须同时满足至少6星、
+   `kinematics_origin_locked=1`、`kinematics_valid=1`，GPS/高度年龄不超过0.5秒；
+   `intercept_valid=1`段不得出现NaN/Inf，`intercept_total_accel`不得超过`7 m/s2`，候选Rate不得
+   超过`60 deg/s`。GPS不满足时只保留纯视觉结论。
+6. 将对应主机CSV与Blackbox/BFL运行第16节对齐工具，确认日志确属同一架次、ARM窗口和姿态/油门
+   时序一致。无法唯一配对的日志不得用于放开控制。
+7. 形成一页离线结论，逐项写`通过/失败/无证据`，记录具体文件和SHA256。此处只更新漏检、延迟、
+   LOS、运动学和命令包线证据；暂不运行Monte Carlo，也不宣称真实命中率。
+
+步骤4通过只表示实测输入可供候选控制器计算，不表示飞控会正确执行候选过载。
+
+### 16.2 下一阶段步骤4.5：虚拟框分级理论过载验证
+
+本步骤绕过YOLO/ByteTrack，把确定性的虚拟识别框送入与飞行候选相同的LOS、速度建立型PNG、
+`R_IB`和`accel_tilt_rate`链路。实际运行最终VM的`7 m/s2`上限，再从同一批输出复算
+`1/3/5/7 m/s2`四级载荷。它验证公式、符号、限幅和数值稳定性，不测量真实机体过载。
+
+安全条件：拦截机全部拆桨、DISARM、RC7人工侧、油门最低，Configurator关闭；不需要6S，USB或
+稳定信号电源即可。由于最终配置坚持`velocity_source=msp_kinematics`，仍应在室外保持GPS至少6星、
+原点锁定且运动学有效。网页预览黑屏是正常的，因为检测来自CSV而非相机。
+
+1. 在PC生成60秒、30 Hz的连续虚拟框。轨迹依次包含中心静止、左右横穿、前后横穿、对角横穿、
+   快速压力段和末尾静止，全程使用同一`track_id`且不故意插入丢失，避免触发ABORT锁存：
+
+```bash
+cd /home/linux/Documents/PNG-betaflight-upward-camera
+
+mkdir -p logs/virtual_bbox_load
+python3 tools/generate_betaflight_virtual_bbox_sequence.py \
+  --output logs/virtual_bbox_load/virtual_bbox_60s.csv
+```
+
+2. 将代码和生成的CSV同步到Orange Pi。确认飞控串口空闲后，在Orange Pi运行；命令中不得出现
+   `--allow-control`或`msp_raw_rc`：
+
+```bash
+cd /home/orangepi/png_betaflight_python
+
+STAMP=$(date +%Y%m%d_%H%M%S)
+RUN_ID="VM_VIRTUAL_LOAD_${STAMP}"
+LOG_DIR="logs/virtual_bbox_load"
+mkdir -p "$LOG_DIR"
+
+python3 -u examples/run_betaflight_log_only.py \
+  --config config/betaflight.rk3588.velocity_png.flight_log_only.json \
+  --duration-s 65 --rate-hz 50 \
+  --log-dir "$LOG_DIR" --log-prefix "$RUN_ID" \
+  --control-mode log_only \
+  --detector-source csv \
+  --detections-csv "$LOG_DIR/virtual_bbox_60s.csv" \
+  --disable-web-preview \
+  2>&1 | tee "$LOG_DIR/${RUN_ID}_console.log"
+```
+
+3. 运行期间保持飞机静止、DISARM、RC7人工侧。页面必须一直是`Safety=LOG_ONLY`、
+   `Publish=disabled`、SET_RAW_RC为0；`kinematics_valid`变为0、runner退出或任一RC写入计数增加时
+   立即作废本轮。65秒后让程序自然退出。
+4. 找到新CSV并复制回PC，然后执行理论载荷审计：
+
+```bash
+cd /home/linux/Documents/PNG-betaflight-upward-camera
+
+python3 tools/analyze_betaflight_virtual_bbox_load.py \
+  --csv "$VIRTUAL_LOAD_CSV" \
+  --load-levels-mps2 1,3,5,7 \
+  --mass-kg 2.412
+
+REPORT="${VIRTUAL_LOAD_CSV%.csv}_virtual_load.json"
+jq '{passed, config_contract, safety, actual_command, staged_load_profiles, violations}' "$REPORT"
+```
+
+5. 载荷因子按NED坐标计算：
+
+```text
+n = ||a_cmd_ned - [0, 0, g]|| / g
+g = 9.80665 m/s2
+```
+
+理论方向无关范围和纯水平指令参考如下。该表不是实测飞机过载：
+
+|加速度限幅|方向无关理论范围|纯水平指令载荷|
+|---:|---:|---:|
+|1 m/s2|0.898-1.102 g|1.005 g|
+|3 m/s2|0.694-1.306 g|1.046 g|
+|5 m/s2|0.490-1.510 g|1.123 g|
+|7 m/s2|0.286-1.714 g|1.229 g|
+
+6. 通过条件：报告`passed=true`；有效拦截行不少于10；实际总加速度始终不超过`7 m/s2`且压力段
+   达到至少`6.3 m/s2`；左右框与期望Roll正相关，前后框与期望Pitch负相关；Roll/Pitch候选Rate
+   不超过`60 deg/s`；全部SET_RAW_RC计数为0；全程无NaN/Inf。四级报告应分别给出P50/P95/P99/
+   最大载荷和按2.412 kg换算的理论所需推力。
+
+步骤4.5允许把数学链推到最多`7 m/s2`，但不得把低权限带桨候选从`1 m/s2`提高到`7 m/s2`。
+虚拟框不经过YOLO、不产生真实加速度，也不证明电机、桨、机架或飞控能够实现报告中的载荷。
+
+### 16.3 下一阶段步骤5：低权限带桨闭环（当前禁止执行）
+
+当前`config/betaflight.rk3588.velocity_png.flight_limited.json`的`runtime_policy`只允许LOG_ONLY，
+`control_authorization.enabled=false`，因此现在不能用它发送控制。只有以下项目全部有客观证据后，
+才能另行生成独立带桨批准文件和现场命令：
+
+- 步骤4的F00/F03/F04离线审计通过；
+- 步骤4.5虚拟框理论过载审计通过；
+- 飞控CLI、运行配置和批准manifest都固定`msp_override_channels_mask=3`；
+- 双UART方案通过，或高波特率单UART实测达到平均发送不低于49 Hz、P99.9间隔不超过40 ms、最大
+  间隔不超过60 ms、ACK年龄不超过250 ms；
+- 独立带桨配置仍限制总加速度`1 m/s2`、Roll/Pitch `3 deg/s`，Throttle/Yaw不属于程序；
+- 飞手、观察员、操作员和安全负责人完成逐项评审，现场天气、空域和双机间距获批。
+
+满足上述门槛后，每个接管时长必须使用独立架次、独立日志和落地复核，不能在一次飞行中连续扩大：
+
+1. 第1架次只做`0.5 s`；第1架次日志和Blackbox通过后，第2架次才做`1.0 s`；再次通过后，第3
+   架次最多`2.0 s`。任何一架次失败都停止扩大。
+2. 飞手选择已验证的Acro/Rate，RC5在DISARM侧、RC7人工侧、油门最低。程序必须在ARM前启动；
+   操作员确认配置/批准哈希、GPS/NED、相机、MSP、50 Hz发送准备和目标安全偏置后报告“候选就绪”。
+3. 飞手在RC7人工侧ARM、人工起飞并稳定悬停至少10秒。飞手始终控制Throttle/Yaw；不得同时切换
+   飞行模式与RC7。
+4. 观察员确认无碰撞航线后，操作员口令“允许短接管”。飞手保持当前Throttle/Yaw，把RC7拨入
+   接管侧；该短窗口内Roll/Pitch由程序拥有，飞手不要用Roll/Pitch杆抵消程序。
+5. 到达本架次批准时长或飞手感觉任何异常时，飞手第一动作是RC7回人工侧，立即恢复四轴人工
+   控制。不要等待网页、程序或操作员确认恢复。
+6. 目标机先沿预定路线退出；拦截机人工落地、油门最低后DISARM。保留至少10秒日志尾段并归档，
+   不在空中SSH、重启程序或修改配置。
+7. 每架次离线确认：只有Roll/Pitch被覆盖，Throttle/Yaw与物理杆一致；总加速度不超过`1 m/s2`，
+   Roll/Pitch不超过`3 deg/s`；SET平均发送和最大间隔满足门槛且错误为0；退出RC7后立即恢复人工；
+   CSV与Blackbox中的姿态响应方向一致且无异常超调、油门跳变、885 us断流或持续目标陈旧。
+
+三次短脉冲全部通过只关闭低权限接管、退出和小信号方向，不批准碰撞航线。后续仍先做安全偏置的
+非碰撞伴飞/横穿，再根据实测响应单独评审是否扩大权限；本阶段不运行Monte Carlo。
+
+### 16.4 监督飞行候选：明日约1秒非碰撞接管
+
+本节使用独立的`config/betaflight.rk3588.velocity_png.flight_supervised.json`，不修改也不覆盖历史
+`flight_active_1s`和第16.3节的`flight_limited`。该候选已完成离线单元测试和确定性虚拟框检查，
+但仓库中不预置可用批准文件；必须在测试当天连接实际飞控、6S和GPS后重新采集快照并生成批准。
+
+固定参数如下：四通道mask为15，Yaw固定1500 us；Roll/Pitch上限60 deg/s，倾角包络35 deg，
+总制导加速度上限7 m/s2；油门按实测`LOG00062_1275_1500`映射为1200/1275/1500 us并限制变化率
+为600 us/s。监督配置不设接管时长上限，RC7保持接管且全部实时安全门控健康时可持续发布；RC7
+回人工侧、目标或状态失效仍会立即停止算法发布。明日首轮仍建议由飞手把实际接管控制在约1秒。
+
+#### A. 代码和飞控配置确认
+
+1. 将当前提交完整同步到Orange Pi，确认以下文件存在且SHA256与PC一致：
+
+```bash
+config/betaflight.rk3588.velocity_png.flight_supervised.json
+tools/create_betaflight_flight_supervised_approval.py
+examples/run_betaflight_log_only.py
+```
+
+2. 飞控CLI必须保持`msp_override_channels_mask = 15`，MSP OVERRIDE为
+   `aux 2 50 2 1700 2100 0 0`；Rate profile 0必须为RC Rate 1.00、Super 0.70、Expo 0。
+   若当天修改了任何CLI项，执行`save`、重启飞控，再重新导出完整`diff all`和`dump all`。
+3. 生成快照前关闭Configurator，RC5置DISARM、RC7置人工侧、油门最低。飞机置于开阔地，连接
+   6S并等待GPS至少6星；快照期间禁止ARM。
+
+#### B. 当天快照和批准
+
+在Orange Pi仓库根目录执行，`DIFF_ALL`和`DUMP_ALL`替换为当天导出的实际文件：
+
+```bash
+cd /home/orangepi/png_betaflight_python
+
+python3 tools/capture_betaflight_snapshot.py \
+  --config config/betaflight.rk3588.velocity_png.flight_supervised.json \
+  --include-kinematics \
+  --duration-s 5 --rate-hz 5 \
+  --cli-diff-all "$DIFF_ALL" \
+  --cli-dump-all "$DUMP_ALL"
+```
+
+记录命令打印的`logs/betaflight_snapshots/<时间>/manifest.json`。旧快照若没有
+`capture.include_kinematics=true`不得复用。新快照必须无采集错误，并至少包含3行同时满足
+`gps_fix>=1`、`gps_satellites>=6`和`vbat_v>=20`的数据。
+
+仅在人工复核快照、CLI和机体身份均正确后生成批准，输出路径必须与配置中的
+`control_authorization.approval_manifest`完全一致：
+
+```bash
+python3 tools/create_betaflight_flight_supervised_approval.py \
+  --snapshot "$SNAPSHOT_MANIFEST" \
+  --config config/betaflight.rk3588.velocity_png.flight_supervised.json \
+  --output logs/betaflight_velocity_png_flight_supervised_approval.json \
+  --operator orangepi \
+  --acknowledge-supervised-flight
+```
+
+工具失败时不得手工编辑批准JSON。修改配置、重新导出CLI或更换飞控后，原批准哈希立即作废，必须
+重新执行本小节。
+
+#### C. 启动和地面确认
+
+安装桨叶前后均按飞手检查单复核旋向、紧固件、电池、重心和控制方向。两机航线必须保持安全偏置，
+本轮不规划碰撞。程序必须在ARM前启动：
+
+```bash
+cd /home/orangepi/png_betaflight_python
+
+STAMP=$(date +%Y%m%d_%H%M%S)
+RUN_ID="FLIGHT_SUPERVISED_1S_${STAMP}"
+LOG_DIR="logs/flight_supervised"
+mkdir -p "$LOG_DIR"
+
+python3 -u examples/run_betaflight_log_only.py \
+  --config config/betaflight.rk3588.velocity_png.flight_supervised.json \
+  --duration-s 300 --stop-after-disarm-s 10 --rate-hz 50 \
+  --log-dir "$LOG_DIR" --log-prefix "$RUN_ID" \
+  --control-mode msp_raw_rc --allow-control \
+  --detector-source rknn_bytetrack \
+  --isolate-rknn-process \
+  --main-cpu-affinity 6,7 \
+  --rknn-cpu-affinity 4,5 \
+  2>&1 | tee "$LOG_DIR/${RUN_ID}_console.log"
+```
+
+程序应打印浏览器遥测地址。ARM前确认`authorization_reason=approved`，飞控身份和参数哈希匹配，
+相机/RKNN/MSP无错误，GPS至少6星、原点已锁定、`kinematics_valid=1`，物理RC新鲜，Acro/Rate已选。
+主动配置会发送预填充/人工直通SET_RAW_RC，因此其计数不应为0；只有RC7接管且所有门控通过时，
+`publish_mode`才允许变为`algorithm`。
+
+#### D. 飞手动作
+
+1. RC7保持人工侧，飞手ARM、人工Acro起飞，在安全高度稳定悬停至少10秒；此时四轴均由飞手控制。
+2. 目标机进入预定的安全偏置位置。观察员确认两机即使保持当前航迹也不会相撞，操作员确认目标
+   `confirmed`、`guidance/intercept_valid=1`且没有持续陈旧数据。
+3. 操作员口令“允许1秒接管”。飞手保持姿态，不同时切飞行模式；把RC7拨入接管侧约1秒，然后
+   主动拨回人工侧。接管期间Yaw由程序固定中位，Roll/Pitch/Throttle使用候选输出。
+4. 飞手不等待网页反馈；任何异常的第一动作都是RC7回人工侧，随即人工稳定。RC7失效时立即按既定
+   飞手应急程序终止，不在空中SSH、重启或改配置。
+5. 首架次只允许这一次约1秒接管。目标机先退出，拦截机人工落地；油门最低、DISARM后保持程序运行
+   10秒，让`--stop-after-disarm-s 10`自然收尾并执行CSV同步。
+
+#### E. 落地判定
+
+先归档主机CSV/meta/events/console、原始BFL、解码CSV和SHA256，再决定是否安排下一架次。至少检查：
+
+- `authorization_reason=approved`，ACTIVE只出现在RC7高且目标/运动学/电压/ACK/看门狗均有效的区间；
+- 实际`publish_mode=algorithm`约1秒；时限遥测显示`disabled/unlimited`，退出后恢复人工直通；
+- SET_RAW_RC平均发送率不低于49 Hz，无连续写入/ACK/parser错误，最大间隔和ACK年龄满足配置合同；
+- 油门交接从物理值开始，`requested_target_us`、交接目标和`throttle_slew_output_us`可解释，不再出现
+  旧日志中的1278到1238 us反向下掉，最终油门保持在1200至1500 us；
+- Roll/Pitch不超过60 deg/s，倾角包络不超过35 deg，总制导加速度不超过7 m/s2，Yaw保持1500 us；
+- 目标丢失、GPS/姿态/RC/ACK陈旧或看门狗失败时不继续发布算法命令；DISARM后日志尾段完整。
+
+上述项目通过只表示可继续进行安全偏置的短时监督闭环，不证明真实拦截命中率达到80%，也不批准
+碰撞航线或无人监督接管。无限时长仅表示没有固定软件倒计时，不会绕过其余实时门控。
+
 ## 17. 数据有效性判定
 
 所有科目的共同硬门禁：
@@ -835,6 +1258,8 @@ LOS，室外F03-F06才覆盖真实天空、风和远距离尺度下的YOLO+ByteT
 |F03_USB_BENCH|`F03_USB_HANDHELD_STATIC_20260902_205100`|USB；拆桨；DISARM|179.97 s|静止区间confirmed 99.90%；单一ID；P95 145.79 ms|审计通过；RC写入0；MSP错误0|△跟踪通过；100 ms时延门槛失败；不替代双机F03|
 |F04_USB_BENCH|`F04_USB_HANDHELD_CROSSING_RETRY_20260902_205751`|USB；拆桨；DISARM|123.82 s|6次跨区；`corr(x,lambda_I_y)=-0.9989`；首趟ID重建；P95 156.69 ms|审计通过；RC写入0；MSP错误0|△运动/LOS/出框失效通过；连续性及时延失败；不替代双机F04|
 |VM_FINAL_CHAIN_INDOOR|`VM_FINAL_CHAIN_INDOOR_120S_20260902_214423`|USB；拆桨；DISARM|119.99 s|静止20 s全有效；水平连续段3次反转且ID=2；一次纵向往返；P95 84.56 ms|审计通过；RC写入0；MSP/RKNN错误0|室内实现链路通过；不证明动力闭环或拦截命中|
+|VELOCITY_PNG_NOPROP_MOTOR|`VELOCITY_PNG_MOTOR_NOSE_SIGNFIX_RETRY`；`VELOCITY_PNG_NOPROP_SELFTEST`|6S；全部拆桨并固定|ACTIVE 1.532 / 1.445 s|机头目标后电机高70.5 us；机尾目标前电机高42.5 us|两轮审计通过；MSP写入错误0|双向Pitch物理混控通过；固定`pitch_rate_sign=-1`；不批准带桨|
+|NOPROP_FAULT_HISTORY|`schema14_noprop_exit_matrix_20260829`；`schema14_takeover_timeout_active_retry_20260829_210708`|6S；全部拆桨并固定|ACTIVE 0.952 s；超时3.006 s|人工退出、目标丢失、3秒截止及锁存复位通过|归档SHA256见迁移记录|核心无桨故障证据复用；SIGKILL/RXLOSS/MSP断链未形成成功归档，不宣称通过|
 |INTERCEPT_HW_MC100|离线3000条；2场景x15工况x100 seeds|不适用|40 s/条仿真|总体命中96.92%/97.31%；FOV可行89.38%/86.54%|归档及逐文件SHA256已生成|初期80%聚合性能目标通过；完整release失败；未测实机命中率|
 |F03_INDOOR|||||□通过 □失败|纯视觉，不替代室外F03|
 |F04_INDOOR|||||□通过 □失败|纯视觉，不替代室外F04|
