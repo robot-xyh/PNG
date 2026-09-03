@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 13
+WEB_SCHEMA_VERSION = 14
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -191,6 +191,12 @@ def telemetry_payload_from_log_row(
                 "latched": _boolean(row.get("takeover_duration_interlock_latched")),
                 "active_duration_s": _number(row.get("takeover_duration_s")),
                 "max_duration_s": _number(row.get("takeover_duration_limit_s")),
+                "remaining_s": _number(row.get("takeover_duration_remaining_s")),
+                "takeover_requested": _boolean(row.get("takeover_requested")),
+                "control_active": _boolean(row.get("takeover_control_active")),
+                "release_elapsed_s": _number(row.get("takeover_release_elapsed_s")),
+                "rearm_waiting": _text(row.get("takeover_duration_interlock_reason"))
+                in {"takeover_rearm_wait", "takeover_release_required"},
             },
             "physical_rc_fresh": _boolean(row.get("physical_rc_fresh")),
             "watchdog_ok": _boolean(row.get("watchdog_ok")),
@@ -389,9 +395,19 @@ def telemetry_payload_from_log_row(
             "throttle_handover": {
                 "source_us": _integer(row.get("throttle_handover_source_us")),
                 "target_us": _integer(row.get("throttle_handover_target_us")),
+                "requested_target_us": _integer(
+                    row.get("throttle_handover_requested_target_us")
+                ),
+                "lower_limit_us": _integer(row.get("throttle_handover_lower_limit_us")),
+                "upper_limit_us": _integer(row.get("throttle_handover_upper_limit_us")),
+                "target_limited": _boolean(row.get("throttle_handover_target_limited")),
                 "output_us": _integer(row.get("throttle_handover_output_us")),
                 "alpha": _number(row.get("throttle_handover_alpha")),
                 "active": _boolean(row.get("throttle_handover_active")),
+            },
+            "throttle_slew": {
+                "limited": _boolean(row.get("throttle_slew_limited")),
+                "output_us": _integer(row.get("throttle_slew_output_us")),
             },
         },
         "vision": {
@@ -570,6 +586,17 @@ def telemetry_payload_from_log_row(
                 ("sp_roll_rate_deg_s", "sp_pitch_rate_deg_s", "sp_yaw_rate_deg_s"),
             ),
             "thrust": _number(row.get("sp_thrust")),
+            "thrust_feedforward": {
+                "model": _text(row.get("command_thrust_model")),
+                "required_specific_force_mps2": _number(
+                    row.get("command_thrust_required_specific_force_mps2")
+                ),
+                "load_factor_raw_g": _number(
+                    row.get("command_thrust_load_factor_raw_g")
+                ),
+                "raw_thrust": _number(row.get("command_thrust_raw")),
+                "limited": _boolean(row.get("command_thrust_limited")),
+            },
             "shaping": {
                 "valid": _boolean(row.get("shaping_valid")),
                 "reason": _text(row.get("shaping_reason")),

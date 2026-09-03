@@ -195,6 +195,14 @@
           <div class="metric"><label>Sent AETR</label><output id="sentFrame">--</output></div>
           <div class="metric"><label>Command R/P/Y</label><output id="commandRates">--</output></div>
           <div class="metric"><label>Command thrust</label><output id="commandThrust">--</output></div>
+          <div class="metric"><label>Thrust model / load</label><output id="thrustModelLoad">--</output></div>
+          <div class="metric"><label>Specific force / raw</label><output id="thrustForceRaw">--</output></div>
+          <div class="metric"><label>Takeover actual / left</label><output id="takeoverTiming">--</output></div>
+          <div class="metric"><label>Takeover request / publish</label><output id="takeoverState">--</output></div>
+          <div class="metric"><label>RC7 rearm</label><output id="takeoverRearm">--</output></div>
+          <div class="metric"><label>Throttle request / target</label><output id="throttleTargets">--</output></div>
+          <div class="metric"><label>Throttle bounds</label><output id="throttleBounds">--</output></div>
+          <div class="metric"><label>Throttle output / slew</label><output id="throttleSlew">--</output></div>
           <div class="metric"><label>Command mapping</label><output id="commandMapping">--</output></div>
           <div class="metric"><label>Target attitude R/P</label><output id="targetAttitude">--</output></div>
           <div class="metric"><label>Current attitude R/P</label><output id="currentAttitude">--</output></div>
@@ -350,6 +358,9 @@
       watchdog_expired: "Guidance watchdog expired",
       aux_disabled: "RC7/AUX gate is disabled",
       target_invalid: "Tracking has not produced valid guidance",
+      takeover_duration_exceeded: "Actual algorithm publication limit reached",
+      takeover_release_required: "Release RC7 before another takeover",
+      takeover_rearm_wait: "Waiting for RC7-low rearm dwell",
       active: "Algorithm command is being published"
     });
     let latest = null;
@@ -400,8 +411,12 @@
       const attitudeMapping = command.attitude_mapping || {};
       const entryHandoff = shaping.entry_handoff || {};
       const tiltEnvelope = shaping.tilt_envelope || {};
+      const thrustFeedforward = command.thrust_feedforward || {};
       const msp = data.msp || {};
       const rc = data.rc || {};
+      const takeover = safety.takeover_duration_interlock || {};
+      const throttleHandover = rc.throttle_handover || {};
+      const throttleSlew = rc.throttle_slew || {};
       const state = text(safety.state);
       const publish = text(safety.publish_mode);
       const reason = safety.reason || "unknown";
@@ -446,6 +461,40 @@
       setMetric("sentFrame", formatChannels(rc.sent_us, rc.wire_order));
       setMetric("commandRates", formatVector(command.rate_deg_s));
       setMetric("commandThrust", number(command.thrust, 3));
+      setMetric(
+        "thrustModelLoad",
+        `${text(thrustFeedforward.model)} / ${number(thrustFeedforward.load_factor_raw_g, 2, " g")}${thrustFeedforward.limited ? " LIMITED" : ""}`
+      );
+      setMetric(
+        "thrustForceRaw",
+        `${number(thrustFeedforward.required_specific_force_mps2, 2, " m/s2")} / ${number(thrustFeedforward.raw_thrust, 3)}`
+      );
+      setMetric(
+        "takeoverTiming",
+        takeover.reason === "disabled" && takeover.max_duration_s == null
+          ? "NO LIMIT / UNLIMITED"
+          : `${number(takeover.active_duration_s, 2, " s")} / ${number(takeover.remaining_s, 2, " s")}`
+      );
+      setMetric(
+        "takeoverState",
+        `${boolText(takeover.takeover_requested, "REQUEST", "IDLE")} / ${boolText(takeover.control_active, "ALGORITHM", "NO OUTPUT")}`
+      );
+      setMetric(
+        "takeoverRearm",
+        `${takeover.rearm_waiting ? "WAIT" : "READY"} / ${number(takeover.release_elapsed_s, 2, " s")}`
+      );
+      setMetric(
+        "throttleTargets",
+        `${number(throttleHandover.requested_target_us, 0, " us")} / ${number(throttleHandover.target_us, 0, " us")}${throttleHandover.target_limited ? " LIMITED" : ""}`
+      );
+      setMetric(
+        "throttleBounds",
+        `${number(throttleHandover.lower_limit_us, 0)} .. ${number(throttleHandover.upper_limit_us, 0)} us`
+      );
+      setMetric(
+        "throttleSlew",
+        `${number(throttleSlew.output_us, 0, " us")} / ${throttleSlew.limited === true ? "LIMITED" : throttleSlew.limited === false ? "CLEAR" : "--"}`
+      );
       setMetric("commandMapping", text(command.mapping_type));
       setMetric("targetAttitude", formatVector(attitudeMapping.desired_deg, 2));
       setMetric("currentAttitude", formatVector(attitudeMapping.current_deg, 2));

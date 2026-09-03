@@ -76,6 +76,14 @@ class BetaflightWebTest(unittest.TestCase):
             "mspParserErrors",
             "shaperInputRates",
             "shaperOutputRates",
+            "thrustModelLoad",
+            "thrustForceRaw",
+            "takeoverTiming",
+            "takeoverState",
+            "takeoverRearm",
+            "throttleTargets",
+            "throttleBounds",
+            "throttleSlew",
             "commandMapping",
             "targetAttitude",
             "currentAttitude",
@@ -101,6 +109,7 @@ class BetaflightWebTest(unittest.TestCase):
             self.assertIn(f'id="{element_id}"', dashboard)
         self.assertIn('["rc", "physical_us", 0]', dashboard)
         self.assertIn('setGate("gateTtc", true, "BYPASS", "BYPASS")', dashboard)
+        self.assertIn("NO LIMIT / UNLIMITED", dashboard)
         self.assertNotIn('id="targetPill"', dashboard)
 
     def test_config_validates_network_and_preview_bounds(self):
@@ -245,6 +254,24 @@ class BetaflightWebTest(unittest.TestCase):
             "takeover_duration_interlock_latched": "0",
             "takeover_duration_s": "1.25",
             "takeover_duration_limit_s": "3.0",
+            "takeover_duration_remaining_s": "1.75",
+            "takeover_requested": "1",
+            "takeover_control_active": "1",
+            "takeover_release_elapsed_s": "0.0",
+            "throttle_handover_source_us": "1278",
+            "throttle_handover_requested_target_us": "1500",
+            "throttle_handover_target_us": "1500",
+            "throttle_handover_lower_limit_us": "1200",
+            "throttle_handover_upper_limit_us": "1500",
+            "throttle_handover_target_limited": "0",
+            "throttle_handover_output_us": "1335",
+            "throttle_slew_limited": "1",
+            "throttle_slew_output_us": "1335",
+            "command_thrust_model": "measured_load_factor",
+            "command_thrust_required_specific_force_mps2": "12.0",
+            "command_thrust_load_factor_raw_g": "1.223",
+            "command_thrust_raw": "0.581",
+            "command_thrust_limited": "1",
             "track_id": "7",
             "detection_score": "0.75",
             "detector_best_score": "0.22",
@@ -354,6 +381,11 @@ class BetaflightWebTest(unittest.TestCase):
                 "latched": False,
                 "active_duration_s": 1.25,
                 "max_duration_s": 3.0,
+                "remaining_s": 1.75,
+                "takeover_requested": True,
+                "control_active": True,
+                "release_elapsed_s": 0.0,
+                "rearm_waiting": False,
             },
         )
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
@@ -394,6 +426,20 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(shaping["tilt_envelope"]["softcap_factor"], [0.5, 1.0])
         self.assertEqual(shaping["tilt_envelope"]["level_weight"], [0.0, 0.25])
         self.assertFalse(shaping["tilt_envelope"]["hardcap_active"])
+        self.assertEqual(
+            payload["command"]["thrust_feedforward"],
+            {
+                "model": "measured_load_factor",
+                "required_specific_force_mps2": 12.0,
+                "load_factor_raw_g": 1.223,
+                "raw_thrust": 0.581,
+                "limited": True,
+            },
+        )
+        self.assertEqual(payload["rc"]["throttle_handover"]["requested_target_us"], 1500)
+        self.assertEqual(payload["rc"]["throttle_handover"]["lower_limit_us"], 1200)
+        self.assertTrue(payload["rc"]["throttle_slew"]["limited"])
+        self.assertEqual(payload["rc"]["throttle_slew"]["output_us"], 1335)
         self.assertEqual(
             payload["host"]["python_gc"],
             {
