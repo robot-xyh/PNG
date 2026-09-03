@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "evidence_id": "BETAFLIGHT_INTERCEPT_HARDWARE_MC100_20260902",
+  "scope": "offline_hardware_informed_monte_carlo",
+  "model_trial_count": 3000,
+  "cases_per_scenario": 15,
+  "trials_per_case": 100,
+  "decision": {
+    "initial_performance_target": 0.8,
+    "initial_performance_target_scope": "aggregate initially-visible overall and FOV-feasible hit rates in every required latency scenario",
+    "initial_performance_target_passed": true,
+    "full_release_passed": false,
+    "actual_flight_hit_rate_measured": false,
+    "active_control_authorized": false
+  },
+  "scenarios": [
+    {
+      "name": "measured_software_p95",
+      "perception_latency_s": 0.084556,
+      "initially_visible_trials": 1300,
+      "hit_count": 1260,
+      "hit_rate": 0.9692307692307692,
+      "hit_rate_wilson95": [0.9583732670922144, 0.9773233176010446],
+      "fov_feasible_hit_count": 1162,
+      "fov_feasible_hit_rate": 0.8938461538461538,
+      "fov_feasible_hit_rate_wilson95": [0.8759256136942983, 0.9094459459170927],
+      "target_stale_failure_rate": 0.03076923076923077,
+      "worst_minimum_range_m": 4.233521297535712,
+      "full_release_scenario_passed": false
+    },
+    {
+      "name": "conservative_physical_p95_budget",
+      "perception_latency_s": 0.154139,
+      "initially_visible_trials": 1300,
+      "hit_count": 1265,
+      "hit_rate": 0.9730769230769231,
+      "hit_rate_wilson95": [0.9627876356481814, 0.9805785931819074],
+      "fov_feasible_hit_count": 1125,
+      "fov_feasible_hit_rate": 0.8653846153846154,
+      "fov_feasible_hit_rate_wilson95": [0.8457505910874429, 0.8828656019114064],
+      "target_stale_failure_rate": 0.026923076923076925,
+      "worst_minimum_range_m": 5.178171105182859,
+      "full_release_scenario_passed": false
+    }
+  ],
+  "candidate": {
+    "controller": "candidate_velocity_hold_variable_thrust",
+    "navigation_constant": 3.0,
+    "fixed_vm_m_s": 10.0,
+    "total_acceleration_limit_m_s2": 7.0,
+    "tilt_limit_deg": 35.0,
+    "body_rate_limit_deg_s": 60.0,
+    "fov_centering_gain_s2": 16.0,
+    "fov_centering_acceleration_limit_m_s2": 7.0,
+    "los_prediction_limit_s": 0.15,
+    "acquire_consecutive_frames": 1,
+    "production_runner_connected": false,
+    "msp_output_connected": false
+  },
+  "full_release_blockers": {
+    "initially_visible_fov_hit_rate_min_required": 0.9,
+    "target_stale_failure_rate_max_required": 0.01,
+    "worst_minimum_range_m_max_required": 1.0,
+    "worst_case_id": "U06",
+    "worst_case_note": "Positive 8 m lateral offset produced 60-65% hit and 33-35% FOV-feasible hit rates depending on latency scenario."
+  },
+  "inputs": {
+    "vision_test_id": "VM_FINAL_CHAIN_INDOOR_120S_20260902_214423",
+    "vision_archive": "logs/indoor_vm_final_chain/VM_FINAL_CHAIN_INDOOR_120S_20260902_214423.tar.gz",
+    "vision_archive_sha256": "aac68d2c28e46a597ee82ea65c14b576a2fa4ef8652379e2e4820596ab2af261",
+    "software_result_age_p95_s": 0.084556,
+    "screen_to_camera_return_p95_s": 0.069583,
+    "conservative_physical_latency_budget_s": 0.154139,
+    "camera_half_fov_deg": [30.9, 24.9],
+    "in_frame_dropout_burst_start_probability": 0.00128,
+    "in_frame_dropout_burst_lengths_frames": [2]
+  },
+  "artifacts": {
+    "config": "config/betaflight.intercept_eval.hardware_20260902.json",
+    "config_sha256": "936b181fe9ec687e5dc2df126bafc9a0846ce45c70b94ffbcbd2922031eee7ac",
+    "report": "logs/betaflight_intercept_hardware_20260902/betaflight_intercept_hardware_mc100_20260902.json",
+    "report_sha256": "763efabf5de59cee7ab7826b1313e63f0973dd9eea647c054956b94ca4f40786",
+    "trials_csv": "logs/betaflight_intercept_hardware_20260902/betaflight_intercept_hardware_mc100_20260902.csv",
+    "trials_csv_sha256": "cab3c152dc25da4507bebebafa3459c009c0d41d99e2b9736f443a88aa0beb6f",
+    "archive": "logs/deployment_archives/betaflight_intercept_hardware_mc100_20260902.tar.gz",
+    "archive_sha256": "f799548c2251d1e02ce53535b7e582f014e7f5295d9f7afdfd9a77a275210c40"
+  },
+  "limitations": [
+    "The percentages are Monte Carlo model results, not measured flight interception rates.",
+    "The initial target is aggregate across equally weighted initially-visible cases and is not a per-case guarantee.",
+    "Cases U03 and U14 start outside the measured rectangular camera FOV and are excluded from initially-visible rates.",
+    "Point-mass dynamics, first-order body-rate response, vision noise, wind, and GPS noise remain approximations.",
+    "Passing the initial target does not authorize MSP output, propeller flight, or collision-course testing."
+  ]
+}

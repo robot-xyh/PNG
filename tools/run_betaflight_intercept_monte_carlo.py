@@ -28,6 +28,7 @@ from vision_guidance.betaflight_png_sim import (  # noqa: E402
     MATRIX15_CASES,
     START_PROFILES,
     ClosedLoopSimulationConfig,
+    MatrixCase,
     simulate_case,
 )
 
@@ -75,12 +76,14 @@ def main() -> None:
         raise SystemExit("base_seed must be non-negative")
     criteria = InterceptionAcceptanceCriteria(**dict(spec.get("acceptance", {})))
     base_simulation = _simulation_values(spec.get("simulation", {}))
+    cases = _cases(spec.get("cases"))
     tasks = _build_tasks(
         base_simulation=base_simulation,
         scenarios=scenarios,
         evaluations=evaluations,
         trials_per_case=trials_per_case,
         base_seed=base_seed,
+        cases=cases,
     )
 
     if args.workers == 1:
@@ -93,6 +96,9 @@ def main() -> None:
     required_summaries = [
         summary for summary in summaries if summary["required_for_release"]
     ]
+    initial_performance_target = _initial_performance_verdict(
+        spec.get("initial_performance"), required_summaries
+    )
     report = {
         "schema_version": 1,
         "purpose": "matrix15 stochastic interception release evaluation",
@@ -103,10 +109,12 @@ def main() -> None:
             "The candidate uses the production LOS filter and delayed/noisy own velocity, but its noise model is not fitted to flight data.",
         ],
         "source_config": str(Path(args.config).expanduser().resolve()),
+        "evidence": dict(spec.get("evidence", {})),
         "base_seed": base_seed,
         "trials_per_case": trials_per_case,
         "worker_count": args.workers,
-        "case_count": len(MATRIX15_CASES),
+        "case_count": len(cases),
+        "cases": [dict(vars(case)) for case in cases],
         "row_count": len(rows),
         "simulation": base_simulation,
         "acceptance": criteria.to_dict(),
@@ -114,6 +122,12 @@ def main() -> None:
         "evaluations": evaluations,
         "summaries": summaries,
         "required_summary_count": len(required_summaries),
+        "initial_performance_target": initial_performance_target,
+        "initial_performance_target_passed": (
+            None
+            if initial_performance_target is None
+            else bool(initial_performance_target["passed"])
+        ),
         "release_passed": bool(required_summaries)
         and all(bool(summary["passed"]) for summary in required_summaries),
     }
@@ -134,6 +148,11 @@ def main() -> None:
             f"passed={int(bool(summary['passed']))} "
             f"required={int(bool(summary['required_for_release']))}"
         )
+    if initial_performance_target is not None:
+        print(
+            "initial_performance_target_passed="
+            f"{int(bool(initial_performance_target['passed']))}"
+        )
     print(f"release_passed={int(report['release_passed'])}")
     print(f"output={output_path}")
     print(f"csv={csv_path}")
@@ -146,6 +165,7 @@ def _build_tasks(
     evaluations: list[dict[str, object]],
     trials_per_case: int,
     base_seed: int,
+    cases: Iterable[MatrixCase] = MATRIX15_CASES,
 ) -> list[dict[str, object]]:
     tasks = []
     for scenario in scenarios:
@@ -166,7 +186,7 @@ def _build_tasks(
             for trial_index in range(trials_per_case):
                 trial_seed = (base_seed + scenario_seed + trial_index) & 0xFFFFFFFF
                 trial_simulation = {**simulation, "random_seed": trial_seed}
-                for case in MATRIX15_CASES:
+                for case in cases:
                     tasks.append(
                         {
                             "scenario_name": scenario_name,
@@ -268,6 +288,88 @@ def _mapping_list(spec: Mapping[str, object], key: str) -> list[dict[str, object
         value["name"] = name
         values.append(value)
     return values
+
+
+def _cases(raw: object) -> tuple[MatrixCase, ...]:
+    if raw is None:
+        return MATRIX15_CASES
+    if not isinstance(raw, list) or not raw:
+        raise ValueError("cases must be a non-empty list")
+    cases = []
+    case_ids = set()
+    allowed = {field.name for field in fields(MatrixCase)}
+    for item in raw:
+        if not isinstance(item, Mapping):
+            raise ValueError("every cases entry must be an object")
+        unknown = sorted(set(item) - allowed)
+        if unknown:
+            raise ValueError(f"unknown case fields: {', '.join(unknown)}")
+        case = MatrixCase(**dict(item))
+        if case.case_id in case_ids:
+            raise ValueError(f"duplicate case_id: {case.case_id}")
+        case_ids.add(case.case_id)
+        cases.append(case)
+    return tuple(cases)
+
+
+def _initial_performance_verdict(
+    raw: object,
+    required_summaries: list[Mapping[str, object]],
+) -> dict[str, object] | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, Mapping):
+        raise ValueError("initial_performance must be an object")
+    allowed = {
+        "initially_visible_hit_rate_min",
+        "initially_visible_fov_hit_rate_min",
+        "description",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(f"unknown initial_performance fields: {', '.join(unknown)}")
+    try:
+        threshold = float(raw["initially_visible_hit_rate_min"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError(
+            "initial_performance.initially_visible_hit_rate_min must be numeric"
+        ) from exc
+    if not 0.0 <= threshold <= 1.0:
+        raise ValueError(
+            "initial_performance.initially_visible_hit_rate_min must be in [0, 1]"
+        )
+    thresholds = {"initially_visible_hit_rate": threshold}
+    if "initially_visible_fov_hit_rate_min" in raw:
+        try:
+            fov_threshold = float(raw["initially_visible_fov_hit_rate_min"])
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                "initial_performance.initially_visible_fov_hit_rate_min must be numeric"
+            ) from exc
+        if not 0.0 <= fov_threshold <= 1.0:
+            raise ValueError(
+                "initial_performance.initially_visible_fov_hit_rate_min must be in [0, 1]"
+            )
+        thresholds["initially_visible_fov_hit_rate"] = fov_threshold
+    checks = {}
+    for metric, metric_threshold in thresholds.items():
+        observed = [float(summary[metric]) for summary in required_summaries]
+        observed_minimum = min(observed) if observed else None
+        checks[metric] = {
+            "operator": ">=",
+            "threshold": metric_threshold,
+            "observed_minimum": observed_minimum,
+            "passed": bool(observed)
+            and all(value >= metric_threshold for value in observed),
+        }
+    return {
+        "scope": "required_for_release_summaries",
+        "summary_count": len(required_summaries),
+        "checks": checks,
+        "passed": all(bool(check["passed"]) for check in checks.values()),
+        "description": str(raw.get("description", "")),
+        "does_not_imply_release": True,
+    }
 
 
 def _select_named(

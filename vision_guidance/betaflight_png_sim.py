@@ -86,12 +86,16 @@ class ClosedLoopSimulationConfig:
     collision_radius_m: float = 1.0
     near_hit_radius_m: float = 1.5
     camera_half_fov_deg: float = 60.0
+    camera_horizontal_half_fov_deg: float = 0.0
+    camera_vertical_half_fov_deg: float = 0.0
     perception_latency_s: float = 0.0
     perception_rate_hz: float = 0.0
     perception_stale_timeout_s: float = 0.35
     perception_fov_gate_enabled: bool = False
     random_seed: int = 0
     measurement_dropout_probability: float = 0.0
+    measurement_dropout_burst_start_probability: float = 0.0
+    measurement_dropout_burst_lengths: tuple[int, ...] = ()
     los_angle_noise_std_deg: float = 0.0
     relative_velocity_noise_std_m_s: float = 0.0
     wind_accel_std_m_s2: float = 0.0
@@ -105,6 +109,11 @@ class ClosedLoopSimulationConfig:
     los_filter_process_lambda_dot: float = 5.0e-3
     los_filter_measurement_noise: float = 5.0e-3
     los_filter_innovation_reject: float = 0.25
+    candidate_png_track_speed_ratio: float = 0.8
+    candidate_acquire_consecutive_frames: int = 5
+    candidate_los_prediction_max_s: float = 0.0
+    candidate_fixed_vm_m_s: float = 0.0
+    candidate_fov_constraint_half_angle_deg: float = 0.0
 
     def __post_init__(self) -> None:
         positive = (
@@ -154,6 +163,11 @@ class ClosedLoopSimulationConfig:
             "kinematic_velocity_noise_std_m_s",
             "los_filter_process_lambda",
             "los_filter_process_lambda_dot",
+            "candidate_los_prediction_max_s",
+            "candidate_fixed_vm_m_s",
+            "camera_horizontal_half_fov_deg",
+            "camera_vertical_half_fov_deg",
+            "candidate_fov_constraint_half_angle_deg",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
@@ -162,6 +176,14 @@ class ClosedLoopSimulationConfig:
             raise ValueError("tilt limits must be below 90 degrees")
         if self.camera_half_fov_deg >= 180.0:
             raise ValueError("camera half FOV must be below 180 degrees")
+        rectangular_fov = (
+            float(self.camera_horizontal_half_fov_deg),
+            float(self.camera_vertical_half_fov_deg),
+        )
+        if any(value < 0.0 or value >= 90.0 for value in rectangular_fov):
+            raise ValueError("rectangular camera half FOV values must be in [0, 90)")
+        if (rectangular_fov[0] > 0.0) != (rectangular_fov[1] > 0.0):
+            raise ValueError("both rectangular camera half FOV values must be configured")
         if self.perception_latency_s > self.perception_stale_timeout_s:
             raise ValueError("perception latency cannot exceed the stale timeout")
         if isinstance(self.random_seed, bool) or int(self.random_seed) != self.random_seed:
@@ -171,6 +193,25 @@ class ClosedLoopSimulationConfig:
         dropout_probability = float(self.measurement_dropout_probability)
         if not math.isfinite(dropout_probability) or not 0.0 <= dropout_probability <= 1.0:
             raise ValueError("measurement_dropout_probability must be in [0, 1]")
+        burst_probability = float(self.measurement_dropout_burst_start_probability)
+        if not math.isfinite(burst_probability) or not 0.0 <= burst_probability <= 1.0:
+            raise ValueError(
+                "measurement_dropout_burst_start_probability must be in [0, 1]"
+            )
+        burst_lengths = tuple(self.measurement_dropout_burst_lengths)
+        if any(
+            isinstance(length, bool)
+            or not isinstance(length, (int, np.integer))
+            or int(length) <= 0
+            for length in burst_lengths
+        ):
+            raise ValueError("measurement_dropout_burst_lengths must contain positive integers")
+        if burst_probability > 0.0 and not burst_lengths:
+            raise ValueError(
+                "measurement_dropout_burst_lengths are required when burst dropout is enabled"
+            )
+        if burst_probability > 0.0 and dropout_probability > 0.0:
+            raise ValueError("independent and burst measurement dropout cannot both be enabled")
         kinematic_dropout_probability = float(self.kinematic_dropout_probability)
         if not 0.0 <= kinematic_dropout_probability <= 1.0:
             raise ValueError("kinematic_dropout_probability must be in [0, 1]")
@@ -180,6 +221,17 @@ class ClosedLoopSimulationConfig:
             raise ValueError("minimum thrust cannot exceed maximum thrust")
         if self.collision_radius_m > self.near_hit_radius_m:
             raise ValueError("collision radius cannot exceed near-hit radius")
+        if not 0.0 < float(self.candidate_png_track_speed_ratio) <= 1.0:
+            raise ValueError("candidate_png_track_speed_ratio must be in (0, 1]")
+        if self.candidate_fov_constraint_half_angle_deg >= 90.0:
+            raise ValueError("candidate_fov_constraint_half_angle_deg must be below 90")
+        if (
+            isinstance(self.candidate_acquire_consecutive_frames, bool)
+            or int(self.candidate_acquire_consecutive_frames)
+            != self.candidate_acquire_consecutive_frames
+            or int(self.candidate_acquire_consecutive_frames) < 1
+        ):
+            raise ValueError("candidate_acquire_consecutive_frames must be a positive integer")
 
 
 @dataclass(frozen=True)
@@ -319,7 +371,11 @@ def simulate_case(
         [forward, case.lateral_offset_m, -case.altitude_offset_m], dtype=float
     )
     target_velocity = np.array([0.0, case.target_speed_m_s, 0.0], dtype=float)
-    fixed_vm = float(case.speed_ratio * case.target_speed_m_s)
+    fixed_vm = float(
+        cfg.candidate_fixed_vm_m_s
+        if cfg.candidate_fixed_vm_m_s > 0.0
+        else case.speed_ratio * case.target_speed_m_s
+    )
     initial_los = _normalized(target_position - interceptor_position)
     interceptor_velocity = (
         _velocity_reference(initial_los, fixed_vm, cfg)
@@ -354,8 +410,13 @@ def simulate_case(
                 fov_centering_accel_limit_m_s2=cfg.upward_centering_accel_limit_m_s2,
                 total_accel_limit_m_s2=cfg.total_accel_limit_m_s2,
                 vertical_speed_reference_limit_m_s=cfg.vertical_speed_reference_limit_m_s,
+                png_track_speed_ratio=cfg.candidate_png_track_speed_ratio,
+                acquire_consecutive_frames=cfg.candidate_acquire_consecutive_frames,
                 detection_timeout_s=cfg.perception_stale_timeout_s,
                 velocity_timeout_s=cfg.kinematic_stale_timeout_s,
+                los_prediction_max_s=cfg.candidate_los_prediction_max_s,
+                gravity_m_s2=cfg.gravity_m_s2,
+                fov_constraint_half_angle_deg=cfg.candidate_fov_constraint_half_angle_deg,
             )
         )
         if controller_mode == "candidate_velocity_hold_variable_thrust"
@@ -406,7 +467,11 @@ def simulate_case(
         )
     )
     maximum_off_axis_deg = initial_off_axis_deg
-    initial_target_in_fov = initial_off_axis_deg <= cfg.camera_half_fov_deg
+    initial_target_in_fov = _target_in_fov(
+        initial_los,
+        _rotation_matrix_frd(roll_rad, pitch_rad, yaw_rad),
+        cfg,
+    )
     target_continuously_in_fov = initial_target_in_fov
     pending_measurements: deque[_DelayedMeasurement] = deque()
     last_measurement: _DelayedMeasurement | None = None
@@ -415,6 +480,7 @@ def simulate_case(
     measurement_delivered_count = 0
     measurement_fov_reject_count = 0
     measurement_dropout_count = 0
+    measurement_dropout_remaining = 0
     maximum_measurement_angle_error_deg = 0.0
     maximum_relative_velocity_error_m_s = 0.0
     wind_accel_m_s2 = np.zeros(3, dtype=float)
@@ -484,6 +550,7 @@ def simulate_case(
                 float(np.clip(np.dot(truth_los, -body_down_axis), -1.0, 1.0))
             )
         )
+        truth_target_in_fov = _target_in_fov(truth_los, R_IB, cfg)
 
         capture_times: list[float] = []
         if cfg.perception_rate_hz <= 0.0:
@@ -497,15 +564,30 @@ def simulate_case(
             measurement_capture_count += 1
             if (
                 cfg.perception_fov_gate_enabled
-                and truth_off_axis_deg > cfg.camera_half_fov_deg
+                and not truth_target_in_fov
             ):
                 measurement_fov_reject_count += 1
                 continue
-            if (
-                cfg.measurement_dropout_probability > 0.0
+            dropped = False
+            if measurement_dropout_remaining > 0:
+                measurement_dropout_remaining -= 1
+                dropped = True
+            elif (
+                cfg.measurement_dropout_burst_start_probability > 0.0
                 and float(dropout_rng.random())
-                < cfg.measurement_dropout_probability
+                < cfg.measurement_dropout_burst_start_probability
             ):
+                burst_lengths = tuple(cfg.measurement_dropout_burst_lengths)
+                burst_index = int(dropout_rng.integers(0, len(burst_lengths)))
+                burst_length = int(burst_lengths[burst_index])
+                measurement_dropout_remaining = burst_length - 1
+                dropped = True
+            elif (
+                cfg.measurement_dropout_probability > 0.0
+                and float(dropout_rng.random()) < cfg.measurement_dropout_probability
+            ):
+                dropped = True
+            if dropped:
                 measurement_dropout_count += 1
                 continue
             (
@@ -822,10 +904,10 @@ def simulate_case(
         counters["tilt"] += int(tilt_saturated)
         counters["rate"] += int(rate_saturated)
         counters["thrust"] += int(thrust_saturated)
-        counters["fov"] += int(off_axis_deg <= cfg.camera_half_fov_deg)
+        updated_target_in_fov = _target_in_fov(updated_los, R_IB, cfg)
+        counters["fov"] += int(updated_target_in_fov)
         target_continuously_in_fov = bool(
-            target_continuously_in_fov
-            and off_axis_deg <= cfg.camera_half_fov_deg
+            target_continuously_in_fov and updated_target_in_fov
         )
         maximum_off_axis_deg = max(maximum_off_axis_deg, off_axis_deg)
         maximum_speed = max(maximum_speed, float(np.linalg.norm(interceptor_velocity)))
@@ -948,6 +1030,35 @@ def _validate_case(case: MatrixCase) -> None:
         raise ValueError("lateral offset cannot exceed horizontal range")
     if not math.isfinite(case.lateral_offset_m):
         raise ValueError("lateral offset must be finite")
+
+
+def _target_in_fov(
+    los_ned: np.ndarray,
+    R_IB: np.ndarray,
+    config: ClosedLoopSimulationConfig,
+) -> bool:
+    los_body = np.asarray(R_IB, dtype=float).T @ np.asarray(los_ned, dtype=float)
+    if (
+        config.camera_horizontal_half_fov_deg > 0.0
+        and config.camera_vertical_half_fov_deg > 0.0
+    ):
+        camera_forward = -float(los_body[2])
+        if camera_forward <= 0.0:
+            return False
+        horizontal_deg = math.degrees(
+            math.atan2(abs(float(los_body[1])), camera_forward)
+        )
+        vertical_deg = math.degrees(
+            math.atan2(abs(float(los_body[0])), camera_forward)
+        )
+        return bool(
+            horizontal_deg <= config.camera_horizontal_half_fov_deg
+            and vertical_deg <= config.camera_vertical_half_fov_deg
+        )
+    off_axis_deg = math.degrees(
+        math.acos(float(np.clip(np.dot(los_body, [0.0, 0.0, -1.0]), -1.0, 1.0)))
+    )
+    return off_axis_deg <= config.camera_half_fov_deg
 
 
 def _simulation_rngs(

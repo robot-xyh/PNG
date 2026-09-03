@@ -155,6 +155,73 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         self.assertGreaterEqual(result.maximum_measurement_age_s, 0.2)
         self.assertLess(result.maximum_measurement_age_s, 0.24)
 
+    def test_empirical_burst_dropout_uses_configured_run_lengths(self):
+        config = ClosedLoopSimulationConfig(
+            duration_s=1.0,
+            dt_s=0.01,
+            perception_rate_hz=30.0,
+            measurement_dropout_burst_start_probability=1.0,
+            measurement_dropout_burst_lengths=(2,),
+        )
+        result = simulate_case(
+            MATRIX15_CASES[0],
+            controller_mode="fixed_thrust",
+            start_profile="hover",
+            config=config,
+        )
+
+        self.assertEqual(result.measurement_dropout_count, result.measurement_capture_count)
+        self.assertEqual(result.measurement_delivered_count, 0)
+        self.assertEqual(result.measurement_dropout_fraction, 1.0)
+
+    def test_burst_dropout_configuration_is_explicit_and_validated(self):
+        with self.assertRaisesRegex(ValueError, "burst_lengths are required"):
+            ClosedLoopSimulationConfig(
+                measurement_dropout_burst_start_probability=0.1,
+            )
+        with self.assertRaisesRegex(ValueError, "cannot both be enabled"):
+            ClosedLoopSimulationConfig(
+                measurement_dropout_probability=0.1,
+                measurement_dropout_burst_start_probability=0.1,
+                measurement_dropout_burst_lengths=(1,),
+            )
+        with self.assertRaisesRegex(ValueError, "positive integers"):
+            ClosedLoopSimulationConfig(
+                measurement_dropout_burst_lengths=(0,),
+            )
+
+    def test_candidate_acquisition_count_is_configurable(self):
+        common = dict(
+            duration_s=0.25,
+            dt_s=0.01,
+            perception_rate_hz=30.0,
+            kinematic_rate_hz=30.0,
+            kinematic_latency_s=0.0,
+            kinematic_dropout_probability=0.0,
+            kinematic_velocity_noise_std_m_s=0.0,
+        )
+        fast = simulate_case(
+            MATRIX15_CASES[0],
+            controller_mode="candidate_velocity_hold_variable_thrust",
+            start_profile="hover",
+            config=ClosedLoopSimulationConfig(
+                **common,
+                candidate_acquire_consecutive_frames=1,
+            ),
+        )
+        slow = simulate_case(
+            MATRIX15_CASES[0],
+            controller_mode="candidate_velocity_hold_variable_thrust",
+            start_profile="hover",
+            config=ClosedLoopSimulationConfig(
+                **common,
+                candidate_acquire_consecutive_frames=10,
+            ),
+        )
+
+        self.assertGreater(fast.maximum_control_accel_m_s2, 0.0)
+        self.assertLess(slow.maximum_control_accel_m_s2, fast.maximum_control_accel_m_s2)
+
     def test_fov_gate_does_not_supply_truth_los_for_unseen_target(self):
         case = MatrixCase("out_of_fov", 40.0, 0.0, 1.0, 0.1)
         config = ClosedLoopSimulationConfig(
@@ -178,6 +245,49 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
             result.measurement_fov_reject_count, result.measurement_capture_count
         )
         self.assertEqual(result.outcome_reason, "initial_target_out_of_fov")
+
+    def test_rectangular_fov_uses_hardware_vertical_limit(self):
+        case = MatrixCase("hardware_fov", 40.0, 0.0, 30.0, 1.0)
+        legacy = simulate_case(
+            case,
+            controller_mode="fixed_thrust",
+            start_profile="hover",
+            config=ClosedLoopSimulationConfig(duration_s=0.05),
+        )
+        hardware = simulate_case(
+            case,
+            controller_mode="fixed_thrust",
+            start_profile="hover",
+            config=ClosedLoopSimulationConfig(
+                duration_s=0.05,
+                camera_horizontal_half_fov_deg=30.9,
+                camera_vertical_half_fov_deg=24.9,
+            ),
+        )
+
+        self.assertTrue(legacy.initial_target_in_fov)
+        self.assertFalse(hardware.initial_target_in_fov)
+
+    def test_candidate_fixed_vm_does_not_depend_on_target_truth_speed(self):
+        config = ClosedLoopSimulationConfig(
+            duration_s=0.05,
+            candidate_fixed_vm_m_s=10.0,
+        )
+        slow = simulate_case(
+            MatrixCase("slow", 10.0, 0.0, 30.0, 3.0),
+            controller_mode="candidate_velocity_hold_variable_thrust",
+            start_profile="hover",
+            config=config,
+        )
+        fast = simulate_case(
+            MatrixCase("fast", 10.0, 0.0, 30.0, 7.0),
+            controller_mode="candidate_velocity_hold_variable_thrust",
+            start_profile="hover",
+            config=config,
+        )
+
+        self.assertEqual(slow.fixed_vm_m_s, 10.0)
+        self.assertEqual(fast.fixed_vm_m_s, 10.0)
 
     def test_rejects_latency_above_stale_timeout(self):
         with self.assertRaisesRegex(ValueError, "latency cannot exceed"):

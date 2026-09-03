@@ -1,0 +1,136 @@
+{
+  "schema_version": 1,
+  "base_seed": 20260902,
+  "trials_per_case": 100,
+  "evidence": {
+    "vision_test_id": "VM_FINAL_CHAIN_INDOOR_120S_20260902_214423",
+    "vision_archive": "logs/indoor_vm_final_chain/VM_FINAL_CHAIN_INDOOR_120S_20260902_214423.tar.gz",
+    "vision_archive_sha256": "aac68d2c28e46a597ee82ea65c14b576a2fa4ef8652379e2e4820596ab2af261",
+    "software_result_age_p95_s": 0.084556,
+    "screen_to_camera_return_p95_s": 0.069583,
+    "conservative_physical_latency_budget_s": 0.154139,
+    "in_frame_dropout_burst_start_probability": 0.00128,
+    "in_frame_dropout_burst_lengths_frames": [
+      2
+    ],
+    "dynamic_edge_dropout_burst_lengths_frames": [
+      2,
+      1,
+      1,
+      1,
+      8,
+      5
+    ],
+    "dynamic_edge_dropouts_modeled_by_fov_gate": true,
+    "camera_intrinsics_source": "config/betaflight.rk3588.kinematics_log_only.example.json",
+    "camera_image_size_px": [
+      640,
+      512
+    ],
+    "camera_focal_length_px": [
+      530.8443137411823,
+      532.2954942356003
+    ],
+    "camera_principal_point_px": [
+      321.02786894123255,
+      247.25731946583392
+    ]
+  },
+  "simulation": {
+    "dt_s": 0.01,
+    "duration_s": 40.0,
+    "navigation_constant": 3.0,
+    "guidance_accel_limit_m_s2": 20.0,
+    "upward_centering_gain_s2": 16.0,
+    "upward_centering_accel_limit_m_s2": 7.0,
+    "speed_hold_gain_s_inv": 1.2,
+    "speed_hold_accel_limit_m_s2": 8.0,
+    "total_accel_limit_m_s2": 7.0,
+    "max_roll_tilt_deg": 35.0,
+    "max_pitch_tilt_deg": 35.0,
+    "attitude_kp_s_inv": 4.0,
+    "max_roll_rate_deg_s": 60.0,
+    "max_pitch_rate_deg_s": 60.0,
+    "body_rate_command_delay_s": 0.011,
+    "body_rate_response_tau_s": 0.04,
+    "camera_horizontal_half_fov_deg": 30.9,
+    "camera_vertical_half_fov_deg": 24.9,
+    "perception_rate_hz": 30.0,
+    "perception_stale_timeout_s": 0.35,
+    "perception_fov_gate_enabled": true,
+    "measurement_dropout_burst_start_probability": 0.00128,
+    "measurement_dropout_burst_lengths": [
+      2
+    ],
+    "kinematic_rate_hz": 5.0,
+    "kinematic_stale_timeout_s": 0.5,
+    "candidate_fixed_vm_m_s": 10.0,
+    "candidate_png_track_speed_ratio": 0.8,
+    "candidate_acquire_consecutive_frames": 1,
+    "candidate_los_prediction_max_s": 0.15,
+    "candidate_fov_constraint_half_angle_deg": 0.0,
+    "los_filter_process_lambda_dot": 0.02
+  },
+  "acceptance": {
+    "initially_visible_hit_rate_min": 0.95,
+    "initially_visible_fov_hit_rate_min": 0.90,
+    "target_stale_failure_rate_max": 0.01,
+    "mean_measurement_valid_fraction_min": 0.90,
+    "mean_kinematic_valid_fraction_min": 0.90,
+    "worst_minimum_range_m_max": 1.0,
+    "mean_tilt_saturation_fraction_max": 0.10,
+    "mean_rate_saturation_fraction_max": 0.10
+  },
+  "initial_performance": {
+    "initially_visible_hit_rate_min": 0.80,
+    "initially_visible_fov_hit_rate_min": 0.80,
+    "description": "Initial offline hardware-model performance target only. Both overall and FOV-feasible hit rates must pass. Passing does not authorize MSP output, propeller flight, or interception flight."
+  },
+  "cases": [
+    {"case_id": "U01", "horizontal_range_m": 10.0, "lateral_offset_m": -3.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U02", "horizontal_range_m": 6.0, "lateral_offset_m": -3.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U03", "horizontal_range_m": 14.0, "lateral_offset_m": -3.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U04", "horizontal_range_m": 10.0, "lateral_offset_m": 0.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U05", "horizontal_range_m": 10.0, "lateral_offset_m": -8.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U06", "horizontal_range_m": 10.0, "lateral_offset_m": 8.0, "altitude_offset_m": 30.0, "target_speed_m_s": 5.0},
+    {"case_id": "U07", "horizontal_range_m": 8.0, "lateral_offset_m": -3.0, "altitude_offset_m": 20.0, "target_speed_m_s": 5.0},
+    {"case_id": "U08", "horizontal_range_m": 14.0, "lateral_offset_m": -3.0, "altitude_offset_m": 40.0, "target_speed_m_s": 5.0},
+    {"case_id": "U09", "horizontal_range_m": 8.0, "lateral_offset_m": -3.0, "altitude_offset_m": 30.0, "target_speed_m_s": 3.0},
+    {"case_id": "U10", "horizontal_range_m": 8.0, "lateral_offset_m": -3.0, "altitude_offset_m": 30.0, "target_speed_m_s": 7.0},
+    {"case_id": "U11", "horizontal_range_m": 13.0, "lateral_offset_m": -3.0, "altitude_offset_m": 35.0, "target_speed_m_s": 3.0},
+    {"case_id": "U12", "horizontal_range_m": 13.0, "lateral_offset_m": -3.0, "altitude_offset_m": 35.0, "target_speed_m_s": 7.0},
+    {"case_id": "U13", "horizontal_range_m": 15.0, "lateral_offset_m": -10.0, "altitude_offset_m": 40.0, "target_speed_m_s": 7.0},
+    {"case_id": "U14", "horizontal_range_m": 14.0, "lateral_offset_m": 8.0, "altitude_offset_m": 30.0, "target_speed_m_s": 7.0},
+    {"case_id": "U15", "horizontal_range_m": 6.0, "lateral_offset_m": 5.0, "altitude_offset_m": 20.0, "target_speed_m_s": 3.0}
+  ],
+  "scenarios": [
+    {
+      "name": "measured_software_p95",
+      "perception_latency_s": 0.084556,
+      "los_angle_noise_std_deg": 0.25,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25,
+      "kinematic_latency_s": 0.209,
+      "kinematic_velocity_noise_std_m_s": 0.25,
+      "kinematic_dropout_probability": 0.0
+    },
+    {
+      "name": "conservative_physical_p95_budget",
+      "perception_latency_s": 0.154139,
+      "los_angle_noise_std_deg": 0.25,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25,
+      "kinematic_latency_s": 0.209,
+      "kinematic_velocity_noise_std_m_s": 0.25,
+      "kinematic_dropout_probability": 0.0
+    }
+  ],
+  "evaluations": [
+    {
+      "name": "candidate_velocity_hold_variable_thrust",
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "start_profile": "hover",
+      "required_for_release": true
+    }
+  ]
+}

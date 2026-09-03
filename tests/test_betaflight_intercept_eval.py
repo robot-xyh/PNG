@@ -1,6 +1,10 @@
 import unittest
 
-from tools.run_betaflight_intercept_monte_carlo import _build_tasks
+from tools.run_betaflight_intercept_monte_carlo import (
+    _build_tasks,
+    _cases,
+    _initial_performance_verdict,
+)
 from vision_guidance.betaflight_intercept_eval import (
     InterceptionAcceptanceCriteria,
     evaluate_interception_results,
@@ -13,6 +17,75 @@ from vision_guidance.betaflight_png_sim import (
 
 
 class BetaflightInterceptionEvaluationTest(unittest.TestCase):
+    def test_initial_performance_verdict_is_separate_from_release(self):
+        summaries = [
+            {
+                "initially_visible_hit_rate": 0.9692,
+                "initially_visible_fov_hit_rate": 0.8654,
+            },
+            {
+                "initially_visible_hit_rate": 0.9731,
+                "initially_visible_fov_hit_rate": 0.8938,
+            },
+        ]
+        verdict = _initial_performance_verdict(
+            {
+                "initially_visible_hit_rate_min": 0.80,
+                "initially_visible_fov_hit_rate_min": 0.80,
+                "description": "initial model-performance target",
+            },
+            summaries,
+        )
+
+        self.assertIsNotNone(verdict)
+        self.assertTrue(verdict["passed"])
+        self.assertAlmostEqual(
+            verdict["checks"]["initially_visible_hit_rate"]["observed_minimum"],
+            0.9692,
+        )
+        self.assertAlmostEqual(
+            verdict["checks"]["initially_visible_fov_hit_rate"][
+                "observed_minimum"
+            ],
+            0.8654,
+        )
+        self.assertTrue(verdict["does_not_imply_release"])
+
+        failing = _initial_performance_verdict(
+            {"initially_visible_hit_rate_min": 0.98}, summaries
+        )
+        self.assertFalse(failing["passed"])
+        with self.assertRaisesRegex(ValueError, "must be in"):
+            _initial_performance_verdict(
+                {"initially_visible_hit_rate_min": 1.1}, summaries
+            )
+        with self.assertRaisesRegex(ValueError, "must be numeric"):
+            _initial_performance_verdict(
+                {
+                    "initially_visible_hit_rate_min": 0.8,
+                    "initially_visible_fov_hit_rate_min": "invalid",
+                },
+                summaries,
+            )
+
+    def test_explicit_case_matrix_is_validated(self):
+        cases = _cases(
+            [
+                {
+                    "case_id": "U01",
+                    "horizontal_range_m": 10.0,
+                    "lateral_offset_m": 0.0,
+                    "altitude_offset_m": 30.0,
+                    "target_speed_m_s": 5.0,
+                }
+            ]
+        )
+
+        self.assertEqual(len(cases), 1)
+        self.assertEqual(cases[0].case_id, "U01")
+        with self.assertRaisesRegex(ValueError, "duplicate case_id"):
+            _cases([dict(vars(cases[0])), dict(vars(cases[0]))])
+
     def test_scenario_seed_is_stable_between_full_and_subset_runs(self):
         target = {"name": "target", "perception_latency_s": 0.1}
         evaluations = [
