@@ -1,0 +1,230 @@
+{
+  "schema_version": 1,
+  "test_id": "F02_HISTORICAL_REUSE_20260902",
+  "analysis_date": "2026-09-02",
+  "inputs": {
+    "blackbox_bfl": {
+      "path": "logs/blackbox_import/LOG00065.BFL",
+      "sha256": "526a166be3f0963efbd7e9fda342fb41f235683d51b0f145d6a2b53de82a9e93"
+    },
+    "host_csv": {
+      "path": "logs/flight_20260902/ACRO_RATE_MAP_01_20260902_114542_20260902_114544.csv",
+      "sha256": "ef48220a5e86139edbb288864708dc226b0cec11371152981ba296491f6d87e9"
+    },
+    "altitude_retest_bundle": {
+      "path": "logs/outdoor_g00/ALTITUDE_RETEST_20260901_142540_bundle.tar.gz",
+      "sha256": "66afd65e08692dd6e8711e81222c837b14f20e0b11da050ba675a6681e4d8349"
+    },
+    "pre_correction_cardinal_bundle": {
+      "path": "logs/yaw_cardinal_remote/YAW_CARDINAL_NOPROP_20260902_162057.tar.gz",
+      "sha256": "5f1f2ee92a727cdbab29efaa66f4d633a6e0f219366c9da61858b2a1cd80483a"
+    },
+    "post_correction_static_bundle": {
+      "path": "logs/yaw_power_retest_remote/YAW_USB_STATIC_20260902_203319.tar.gz",
+      "sha256": "c8f4cac6a182aa745f4508119a25ef8537135198b6adea64a0e958188242cba8"
+    },
+    "pre_correction_cli_export": {
+      "path": "logs/BTFL_cli_20260902_013722_MICOAIR743V2.txt",
+      "sha256": "4e0c84c56f5f5a9d6a375b4aa59acde85bf5a868024bc0b22a1544a2b42e90f1"
+    },
+    "post_correction_configuration_snapshot": {
+      "path": "logs/betaflight_config_20260902/betaflight_snapshot_20260902_204718/manifest.json",
+      "sha256": "946d21748490aef9c6a4762e60594ca85b9b309f56fa24a820f1094533e88107"
+    },
+    "blackbox_decoder_commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "blackbox_rotation_decode_mode": "raw",
+    "gps_velned_numeric_scale_m_s_per_unit": 0.01
+  },
+  "blackbox": {
+    "duration_s": 55.81397,
+    "decoded_csv_rows": 45476,
+    "gps_frame_count": 528,
+    "gps_satellite_range": [19, 23],
+    "gps_frame_interval_ms": {
+      "p50": 100.035,
+      "p95": 138.214,
+      "p99": 209.678,
+      "max": 803.45
+    },
+    "exact_native_packet_loss_rate_available": false
+  },
+  "host_blackbox_alignment": {
+    "host_minus_blackbox_s": 245.294,
+    "host_blackbox_overlap_s": 30.211521,
+    "blackbox_without_host_csv_s": 25.602449,
+    "combined_rc_rmse_us": 1.444704,
+    "roll_rc_correlation": 0.99942939,
+    "pitch_rc_correlation": 0.99962132
+  },
+  "host_gps_quality": {
+    "full_csv_rows": 13687,
+    "fix": 2,
+    "satellite_range": [20, 23],
+    "origin_locked_rows": 13665,
+    "kinematics_valid_rows": 13665,
+    "log00065_overlap_rows": 1503,
+    "log00065_overlap_origin_locked_fraction": 1.0,
+    "log00065_overlap_kinematics_valid_fraction": 1.0,
+    "msp_raw_gps_age_ms": {
+      "p50": 109.755,
+      "p95": 209.008,
+      "p99": 225.381,
+      "max": 242.285
+    },
+    "msp_altitude_age_ms": {
+      "p50": 109.173,
+      "p95": 208.957,
+      "p99": 227.045,
+      "max": 250.903
+    },
+    "msp_request_error_max": 0,
+    "msp_set_raw_rc_attempt_max": 0
+  },
+  "horizontal_segmentation": {
+    "rule": "operator-confirmed action order; continuous primary-axis run with abs(primary_velocity) >= 0.5 m/s",
+    "position_projection": "local tangent approximation using WGS84 equatorial radius",
+    "uses_distinct_gps_frames": true
+  },
+  "horizontal_segments": [
+    {
+      "action": "left",
+      "expected_body_axis": "negative_right",
+      "ned_direction": "+E",
+      "time_s": [8.38476, 10.426813],
+      "gps_frames": 21,
+      "primary_displacement_m": 5.11062,
+      "cross_displacement_m": -1.380362,
+      "primary_velocity_m_s": {"p10": 1.29, "median": 2.61, "p90": 3.62},
+      "cross_velocity_m_s": {"p10": -1.19, "median": -0.53, "p90": -0.24, "abs_p95": 1.27},
+      "primary_same_sign_fraction": 1.0,
+      "cross_to_primary_median_ratio": 0.203065
+    },
+    {
+      "action": "right",
+      "expected_body_axis": "positive_right",
+      "ned_direction": "-E",
+      "time_s": [16.560791, 19.055009],
+      "gps_frames": 26,
+      "primary_displacement_m": -6.259996,
+      "cross_displacement_m": -0.935084,
+      "primary_velocity_m_s": {"p10": -3.475, "median": -2.585, "p90": -1.15},
+      "cross_velocity_m_s": {"p10": -1.01, "median": -0.335, "p90": 0.285, "abs_p95": 1.135},
+      "primary_same_sign_fraction": 1.0,
+      "cross_to_primary_median_ratio": 0.129594
+    },
+    {
+      "action": "forward",
+      "expected_body_axis": "positive_forward",
+      "ned_direction": "-N",
+      "time_s": [25.760354, 28.374152],
+      "gps_frames": 27,
+      "primary_displacement_m": -9.473289,
+      "cross_displacement_m": 1.139114,
+      "primary_velocity_m_s": {"p10": -5.3, "median": -3.66, "p90": -1.288},
+      "cross_velocity_m_s": {"p10": 0.186, "median": 0.53, "p90": 0.728, "abs_p95": 0.74},
+      "primary_same_sign_fraction": 1.0,
+      "cross_to_primary_median_ratio": 0.144809
+    },
+    {
+      "action": "back",
+      "expected_body_axis": "negative_forward",
+      "ned_direction": "+N",
+      "time_s": [36.962403, 38.858595],
+      "gps_frames": 20,
+      "primary_displacement_m": 5.677294,
+      "cross_displacement_m": 0.164197,
+      "primary_velocity_m_s": {"p10": 1.441, "median": 3.045, "p90": 4.18},
+      "cross_velocity_m_s": {"p10": -0.074, "median": 0.155, "p90": 0.253, "abs_p95": 0.3365},
+      "primary_same_sign_fraction": 1.0,
+      "cross_to_primary_median_ratio": 0.050903
+    }
+  ],
+  "vertical_segments": {
+    "g00_altitude_retest": {
+      "duration_s": 299.998379,
+      "rows": 14863,
+      "armed": false,
+      "gps_fix": 2,
+      "gps_satellite_range": [20, 25],
+      "kinematics_valid_fraction": 0.99818,
+      "operator_reported_nominal_lift_m": 1.8,
+      "operator_reference_is_synchronized_external_truth": false,
+      "approximate_action_intervals_s": [[93.0, 111.0], [200.0, 213.0]],
+      "local_altitude_response_m": [1.795, 1.78],
+      "response_mean_m": 1.7875,
+      "response_range_m": 0.015,
+      "response_range_over_mean_fraction": 0.008392,
+      "global_position_d_range_m": [-4.72, 0.18],
+      "global_range_is_invalid_as_single_lift_amplitude": true,
+      "msp_vario_all_zero": true,
+      "filtered_v_d_all_zero": true,
+      "audit_passed": true,
+      "msp_set_raw_rc_attempt_max": 0
+    },
+    "takeoff": {
+      "time_s": [3.562832, 7.954004],
+      "gps_frames": 44,
+      "gps_altitude_delta_m": 3.5,
+      "baro_altitude_delta_m": 3.97,
+      "gps_v_d_m_s": {"p10": -1.3, "median": -0.8, "p90": -0.399},
+      "expected_sign_fraction": 1.0,
+      "host_unique_altitude_samples": 21,
+      "host_baro_altitude_delta_m": 3.51,
+      "host_vertical_speed_up_m_s_median": 0.5,
+      "host_raw_v_d_m_s_median": -0.5
+    },
+    "landing": {
+      "time_s": [49.156804, 54.964192],
+      "gps_frames": 59,
+      "gps_altitude_delta_m": -4.4,
+      "baro_altitude_delta_m": -6.83,
+      "gps_v_d_m_s": {"p10": 0.432, "median": 0.76, "p90": 1.064},
+      "expected_sign_fraction": 0.983051
+    },
+    "prescribed_approximately_two_meter_repeated_maneuver_performed": true,
+    "operational_height_response_repeatability_pass": true,
+    "powered_vertical_velocity_sign_pass": true,
+    "absolute_height_accuracy_calibrated": false
+  },
+  "heading_composition": {
+    "pre_correction_relation": "yaw_old_deg = wrap_360(279.744 - physical_heading_deg)",
+    "old_flight_yaw_deg_range": [89.0, 95.0],
+    "reconstructed_physical_heading_deg_range": [184.744, 190.744],
+    "evaluation_heading_deg": 188.0,
+    "body_velocity_from_segment_medians_m_s": {
+      "left": {"forward": 0.1616, "right": -2.658361, "main_sign_correct": true},
+      "right": {"forward": 0.691502, "right": 2.51322, "main_sign_correct": true},
+      "forward": {"forward": 3.550619, "right": -1.034216, "main_sign_correct": true},
+      "back": {"forward": -3.036938, "right": 0.270291, "main_sign_correct": true}
+    },
+    "post_correction_configuration": {
+      "align_mag": "CW270FLIP",
+      "mag_calibration": [-38, 127, -132],
+      "mag_declination_tenths_deg": -33
+    },
+    "post_correction_cardinal_order_operator_confirmed": true,
+    "post_correction_usb_static_yaw_deg": 181.0,
+    "same_run_post_correction_powered_heading_and_gps_available": false,
+    "body_axis_sign_robust_over_reconstructed_heading_range": true,
+    "minimum_main_axis_heading_margin_deg_approx": 74.0,
+    "dedicated_post_correction_handheld_rerun_required": false,
+    "powered_magnetic_interference_quantified": false
+  },
+  "verdict": {
+    "powered_horizontal_ned_signs": "pass_direct",
+    "horizontal_position_trends": "pass_direct",
+    "msp_state_freshness": "pass_direct_overlap",
+    "powered_vertical_sign": "pass_direct_natural_takeoff_landing",
+    "repeated_approximately_two_meter_maneuver": "pass_direct_g00_altitude_retest",
+    "operational_height_scale_and_repeatability": "pass_composed",
+    "metrological_absolute_height_accuracy": "not_calibrated",
+    "corrected_r_ib_horizontal_sign": "pass_composed_offline_replay",
+    "same_run_corrected_dynamic_r_ib": "not_available_not_a_standalone_f02_gate",
+    "overall_f02": "functional_pass_historical_cross_run_evidence",
+    "dedicated_horizontal_f02_rerun_required": false,
+    "dedicated_vertical_f02_rerun_required": false,
+    "dedicated_corrected_r_ib_rerun_required": false,
+    "powered_magnetic_interference_monitoring_required_in_next_routine_log_only_flight": true,
+    "active_control_release_approved": false
+  }
+}

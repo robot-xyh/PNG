@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "test_date": "2026-09-02",
+  "safety": {
+    "control_mode": "log_only",
+    "armed_seen": false,
+    "publish_modes": ["disabled"],
+    "set_raw_rc_attempt_max": 0,
+    "msp_request_error_max": 0
+  },
+  "flight_controller_archive": {
+    "diff_all_sha256": "4fb86d60c213f7fbc26fa4c9bb96e03f190f699d27da156715685bcf2ad3062d",
+    "dump_all_sha256": "eb8de617eec88ee88305a09ca05a5ea2343c1244356d00ae96ab437b0d224e09",
+    "snapshot_manifest_sha256": "946d21748490aef9c6a4762e60594ca85b9b309f56fa24a820f1094533e88107",
+    "approval_sha256": "777317949d9c9cb9ed2a6d969fe038b772d5cff7d4869d1ac4777c3db2901d37",
+    "msp_override_permanent_id": 50,
+    "msp_override_channels_mask": 15,
+    "align_mag": "CW270FLIP",
+    "mag_calibration": [-38, 127, -132],
+    "mag_declination_tenths_deg": -33
+  },
+  "historical_reuse": {
+    "pilot_log_only_flight": "passed",
+    "gps_north_east_sign": "passed",
+    "corrected_heading_r_ib_dynamic": "not_tested",
+    "reason": "LOG00065 was recorded before the CW270FLIP magnetometer correction"
+  },
+  "f03_usb_handheld_static": {
+    "csv": "F03_USB_HANDHELD_STATIC_20260902_205100.csv",
+    "duration_s": 179.973,
+    "audit_passed": true,
+    "static_interval_s": [0.8, 107.25],
+    "new_result_count": 2050,
+    "selected_measurement_ratio": 0.993170732,
+    "confirmed_ratio": 0.99902439,
+    "los_valid_ratio": 0.992682927,
+    "track_ids": [1],
+    "result_age_ms": {
+      "p50": 95.489,
+      "p95": 145.791,
+      "max": 189.266
+    },
+    "tracking_gate_passed": true,
+    "latency_100ms_gate_passed": false
+  },
+  "f04_usb_handheld_crossing": {
+    "csv": "F04_USB_HANDHELD_CROSSING_RETRY_20260902_205751.csv",
+    "duration_s": 123.82,
+    "audit_passed": true,
+    "motion_interval_s": [20.9, 70.75],
+    "side_transition_count": 6,
+    "x_norm_min": -0.843027,
+    "x_norm_max": 0.680463,
+    "selected_measurement_ratio": 0.958203,
+    "confirmed_ratio": 0.967607,
+    "los_valid_ratio": 0.956113,
+    "stable_track_32_interval_s": [25.863, 70.699],
+    "stable_track_32_side_transitions": 5,
+    "bbox_x_to_lambda_i_y_correlation": -0.998868198,
+    "last_pre_exit_measurement_s": 70.699,
+    "first_invalid_s": 70.749,
+    "first_reacquired_detection_s": 74.761,
+    "first_reacquired_los_valid_s": 74.811,
+    "result_age_ms": {
+      "p50": 101.221,
+      "p95": 156.69,
+      "max": 188.549
+    },
+    "motion_and_los_sign_passed": true,
+    "continuous_tracking_gate_passed": false,
+    "latency_100ms_gate_passed": false
+  },
+  "latency_diagnosis": {
+    "usb_power_is_supported_cause": false,
+    "camera_failed_frames": 0,
+    "worker_errors": 0,
+    "kernel_power_or_usb_reset_warnings": 0,
+    "camera_read_p95_ms": [9.423, 11.531],
+    "rknn_total_p95_ms": [6.333, 6.385],
+    "tracker_update_p95_ms": [0.924, 1.348],
+    "fusion_wait_p95_ms": [100.124, 100.161],
+    "runner_rate_hz": 20.0,
+    "perception_rate_hz": 30.0,
+    "attitude_poll_hz": 20.0,
+    "primary_cause": "20 Hz consumer and attitude cadence with deferred timestamp fusion"
+  },
+  "evidence_archive": {
+    "path": "logs/deployment_archives/USB_VISION_F03_F04_20260902_205100.tar.gz",
+    "sha256": "18b9dc51714b44c18435117a23dccc54200834cf4b5b2e534905640d86122c82"
+  },
+  "release_passed": false
+}
