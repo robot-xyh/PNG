@@ -445,6 +445,45 @@ class BetaflightLoggingTest(unittest.TestCase):
                 }
             )
 
+    def test_velocity_establishing_guidance_is_explicit_and_bench_scoped(self):
+        config = json.loads(
+            (
+                Path(__file__).resolve().parents[1]
+                / "config/betaflight.rk3588.noprop.velocity_establishing.example.json"
+            ).read_text()
+        )
+        evaluator, metadata = runner._guidance_evaluator(config)
+        runtime = runner._velocity_establishing_runtime(
+            config,
+            intrinsics=runner._camera_intrinsics(config),
+            bench_scope="noprop_bench",
+        )
+
+        self.assertEqual(type(evaluator).__name__, "FixedVmGuidanceEvaluator")
+        self.assertEqual(metadata["law"], "velocity_establishing_png")
+        self.assertEqual(metadata["velocity_source"], "bench_zero_velocity")
+        self.assertEqual(metadata["fixed_gain"], 30.0)
+        self.assertIsNotNone(runtime)
+        command_metadata = runner._guidance_command_frame_metadata(config)
+        self.assertEqual(
+            command_metadata["accel_tilt_rate"]["pitch_rate_sign"],
+            -1.0,
+        )
+
+        with self.assertRaisesRegex(RuntimeError, "restricted"):
+            runner._velocity_establishing_runtime(
+                config,
+                intrinsics=runner._camera_intrinsics(config),
+                bench_scope="flight_candidate",
+            )
+
+        excessive = json.loads(json.dumps(config))
+        excessive["guidance"]["velocity_establishing_png"][
+            "total_accel_limit_m_s2"
+        ] = 1.1
+        with self.assertRaisesRegex(RuntimeError, "must not exceed"):
+            runner._guidance_evaluator(excessive)
+
     def test_guidance_command_frames_are_explicit_and_body_frd(self):
         metadata = runner._guidance_command_frame_metadata(
             {
@@ -806,7 +845,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 17)
+            self.assertEqual(data["log_schema_version"], 18)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 

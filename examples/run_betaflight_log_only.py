@@ -44,6 +44,15 @@ from vision_guidance.betaflight_kinematics import (  # noqa: E402
     KinematicEstimatorConfig,
     VehicleKinematicState,
 )
+from vision_guidance.betaflight_intercept_controller import (  # noqa: E402
+    VelocityEstablishingPngConfig,
+    VelocityEstablishingPngController,
+    VelocityEstablishingPngOutput,
+)
+from vision_guidance.betaflight_intercept_runtime import (  # noqa: E402
+    VELOCITY_SOURCES,
+    VelocityEstablishingPngRuntime,
+)
 from vision_guidance.betaflight_runtime import (  # noqa: E402
     MSP_OVERRIDE_PERMANENT_ID,
     BetaflightMspIoWorker,
@@ -99,7 +108,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 17
+LOG_SCHEMA_VERSION = 18
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -1263,6 +1272,18 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
     guidance_evaluator, guidance_metadata = _guidance_evaluator(config)
     guidance_metadata.update(_guidance_command_frame_metadata(config))
+    intercept_runtime = _velocity_establishing_runtime(
+        config,
+        intrinsics=intrinsics,
+        bench_scope=bench_scope,
+    )
+    if (
+        intercept_runtime is not None
+        and guidance_metadata["command_mapping_type"] != "accel_tilt_rate"
+    ):
+        raise RuntimeError(
+            "velocity_establishing_png requires guidance_command.mapping_type='accel_tilt_rate'"
+        )
     pipeline = PureVisionGuidancePipeline(
         intrinsics=intrinsics,
         R_BC=camera_R_BC,
@@ -1310,7 +1331,11 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "config": asdict(msp_runtime_config),
             "raw_imu_gyro_conversion": gyro_converter.metadata(),
         },
-        kinematics={"config": asdict(kinematics_config), "control_connected": False},
+        kinematics={
+            "config": asdict(kinematics_config),
+            "control_connected": intercept_runtime is not None,
+            "guidance_velocity_source": guidance_metadata.get("velocity_source"),
+        },
         attitude_fusion={
             "max_wait_s": deferred_fusion.max_wait_s,
             "max_pending": deferred_fusion.max_pending,
@@ -1467,7 +1492,49 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
                 detector_stats.update(_guidance_log_stats(guidance_metadata))
                 detector_stats.update(_kinematics_log_stats(kinematic_state, telemetry))
+                telemetry_age_s = (
+                    worker_snapshot.telemetry_age_s
+                    if worker_snapshot is not None
+                    else None
+                    if last_telemetry_s is None
+                    else max(0.0, loop_start - last_telemetry_s)
+                )
+                attitude_age_s = (
+                    worker_snapshot.attitude_age_s
+                    if worker_snapshot is not None
+                    else None
+                    if last_attitude_s is None
+                    else max(0.0, loop_start - last_attitude_s)
+                )
+                telemetry_fresh = bool(
+                    telemetry_age_s is not None
+                    and telemetry_age_s <= float(safety_cfg.get("telemetry_timeout_s", 0.5))
+                )
+                attitude_synced = bool(
+                    attitude_age_s is not None
+                    and attitude_age_s <= float(safety_cfg.get("attitude_timeout_s", 0.5))
+                )
                 result = fusion_state.result
+                if intercept_runtime is not None:
+                    runtime_result = intercept_runtime.update(
+                        timestamp_s=loop_start,
+                        vision_result=result,
+                        attitude_R_IB=(
+                            None
+                            if telemetry is None or telemetry.attitude is None
+                            else telemetry.attitude.R_IB
+                        ),
+                        attitude_valid=attitude_synced,
+                        kinematics=kinematic_state,
+                    )
+                    result = runtime_result.result
+                    detector_stats.update(
+                        _velocity_establishing_log_stats(
+                            runtime_result.controller,
+                            velocity_source=runtime_result.velocity_source,
+                            velocity_reason=runtime_result.velocity_reason,
+                        )
+                    )
                 guidance = None if result is None else result.guidance
                 if guidance is not None and guidance.valid:
                     watchdog.kick(loop_start)
@@ -1477,19 +1544,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     loop_start,
                 )
 
-                telemetry_age_s = (
-                    worker_snapshot.telemetry_age_s
-                    if worker_snapshot is not None
-                    else None if last_telemetry_s is None else max(0.0, loop_start - last_telemetry_s)
-                )
-                attitude_age_s = (
-                    worker_snapshot.attitude_age_s
-                    if worker_snapshot is not None
-                    else None if last_attitude_s is None else max(0.0, loop_start - last_attitude_s)
-                )
                 watchdog_age_s = watchdog.age_s(loop_start)
-                telemetry_fresh = telemetry_age_s is not None and telemetry_age_s <= float(safety_cfg.get("telemetry_timeout_s", 0.5))
-                attitude_synced = attitude_age_s is not None and attitude_age_s <= float(safety_cfg.get("attitude_timeout_s", 0.5))
                 voltage_ok = _voltage_ok(telemetry, safety_cfg)
                 watchdog_ok = watchdog.fresh(loop_start)
                 physical_rc_age_s = (
@@ -1728,6 +1783,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "entry_handoff_active": int(shaping.entry_active),
                         "tilt_hardcap_active": int(shaping.hardcap_active),
                         "track_id": None if detection is None else detection.track_id,
+                        "intercept_phase": detector_stats.get("intercept_phase", ""),
+                        "intercept_reason": detector_stats.get("intercept_reason", ""),
                         "telemetry_fresh": int(telemetry_fresh),
                         "attitude_synced": int(attitude_synced),
                         "motor_interlock_ok": int(motor_interlock_state.ok),
@@ -1894,6 +1951,8 @@ def _guidance_evaluator(
             "fixed_gain": None,
             "max_guidance_accel_mps2": max_norm,
             "ttc_required": True,
+            "velocity_source": None,
+            "velocity_establishing_png": None,
         }
     if law == "fixed_vm_png":
         navigation_constant = _positive_guidance_value(values, "navigation_constant")
@@ -1910,9 +1969,103 @@ def _guidance_evaluator(
             "fixed_gain": evaluator.fixed_gain,
             "max_guidance_accel_mps2": max_norm,
             "ttc_required": False,
+            "velocity_source": None,
+            "velocity_establishing_png": None,
+        }
+    if law == "velocity_establishing_png":
+        controller_config, velocity_source = _velocity_establishing_config(values)
+        if controller_config.total_accel_limit_m_s2 > max_norm:
+            raise RuntimeError(
+                "guidance.velocity_establishing_png.total_accel_limit_m_s2 must not exceed "
+                "guidance.max_guidance_accel_mps2"
+            )
+        evaluator = FixedVmGuidanceEvaluator(
+            navigation_constant=controller_config.navigation_constant,
+            fixed_vm_m_s=controller_config.fixed_vm_m_s,
+            max_norm=max_norm,
+        )
+        return evaluator, {
+            "law": law,
+            "navigation_constant": controller_config.navigation_constant,
+            "fixed_vm_m_s": controller_config.fixed_vm_m_s,
+            "fixed_gain": (
+                controller_config.navigation_constant * controller_config.fixed_vm_m_s
+            ),
+            "max_guidance_accel_mps2": max_norm,
+            "ttc_required": False,
+            "velocity_source": velocity_source,
+            "velocity_establishing_png": asdict(controller_config),
         }
     raise RuntimeError(
-        f"unsupported guidance.law={law!r}; expected 'ttc_png' or 'fixed_vm_png'"
+        "unsupported guidance.law="
+        f"{law!r}; expected 'ttc_png', 'fixed_vm_png', or 'velocity_establishing_png'"
+    )
+
+
+def _velocity_establishing_config(
+    guidance_values: dict[str, Any],
+) -> tuple[VelocityEstablishingPngConfig, str]:
+    if "velocity_source" not in guidance_values:
+        raise RuntimeError("guidance.velocity_source is required for velocity_establishing_png")
+    velocity_source = str(guidance_values["velocity_source"]).strip().lower()
+    if velocity_source not in VELOCITY_SOURCES:
+        raise RuntimeError(
+            "guidance.velocity_source must be 'msp_kinematics' or 'bench_zero_velocity'"
+        )
+    raw = guidance_values.get("velocity_establishing_png")
+    if not isinstance(raw, dict):
+        raise RuntimeError("guidance.velocity_establishing_png must be a mapping")
+    if "fixed_vm_m_s" not in raw:
+        raise RuntimeError("guidance.velocity_establishing_png.fixed_vm_m_s is required")
+    try:
+        controller_config = VelocityEstablishingPngConfig(
+            fixed_vm_m_s=float(raw["fixed_vm_m_s"]),
+            navigation_constant=float(raw.get("navigation_constant", 3.0)),
+            speed_gain_s_inv=float(raw.get("speed_gain_s_inv", 1.2)),
+            speed_accel_limit_m_s2=float(raw.get("speed_accel_limit_m_s2", 8.0)),
+            png_accel_limit_m_s2=float(raw.get("png_accel_limit_m_s2", 20.0)),
+            fov_centering_gain_s2=float(raw.get("fov_centering_gain_s2", 8.0)),
+            fov_centering_accel_limit_m_s2=float(
+                raw.get("fov_centering_accel_limit_m_s2", 4.0)
+            ),
+            total_accel_limit_m_s2=float(raw.get("total_accel_limit_m_s2", 28.0)),
+            vertical_speed_reference_limit_m_s=float(
+                raw.get("vertical_speed_reference_limit_m_s", 6.0)
+            ),
+            png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
+            acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
+            detection_timeout_s=float(raw.get("detection_timeout_s", 0.35)),
+            velocity_timeout_s=float(raw.get("velocity_timeout_s", 0.5)),
+            los_prediction_max_s=float(raw.get("los_prediction_max_s", 0.0)),
+            gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),
+            fov_constraint_half_angle_deg=float(
+                raw.get("fov_constraint_half_angle_deg", 0.0)
+            ),
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError(f"invalid guidance.velocity_establishing_png: {exc}") from exc
+    return controller_config, velocity_source
+
+
+def _velocity_establishing_runtime(
+    config: dict[str, Any],
+    *,
+    intrinsics: CameraIntrinsics,
+    bench_scope: str,
+) -> VelocityEstablishingPngRuntime | None:
+    guidance_values = dict(config.get("guidance", {}))
+    if str(guidance_values.get("law", "ttc_png")).strip().lower() != "velocity_establishing_png":
+        return None
+    controller_config, velocity_source = _velocity_establishing_config(guidance_values)
+    if velocity_source == "bench_zero_velocity" and bench_scope != "noprop_bench":
+        raise RuntimeError(
+            "bench_zero_velocity is restricted to bench_profile.scope='noprop_bench'"
+        )
+    return VelocityEstablishingPngRuntime(
+        VelocityEstablishingPngController(controller_config),
+        velocity_source=velocity_source,
+        image_width=intrinsics.width,
+        image_height=intrinsics.height,
     )
 
 
@@ -1944,10 +2097,46 @@ def _guidance_log_stats(metadata: dict[str, Any]) -> dict[str, Any]:
         "guidance_fixed_gain": metadata["fixed_gain"],
         "guidance_max_accel_mps2": metadata["max_guidance_accel_mps2"],
         "guidance_ttc_required": int(bool(metadata["ttc_required"])),
+        "guidance_velocity_source": metadata.get("velocity_source") or "",
         "guidance_eval_frame": metadata["guidance_eval_frame"],
         "rate_gain_input_frame": metadata["rate_gain_input_frame"],
         "command_mapping_type": metadata["command_mapping_type"],
     }
+
+
+def _velocity_establishing_log_stats(
+    output: VelocityEstablishingPngOutput,
+    *,
+    velocity_source: str,
+    velocity_reason: str,
+) -> dict[str, Any]:
+    values: dict[str, Any] = {
+        "intercept_phase": output.phase.value,
+        "intercept_valid": int(output.valid),
+        "intercept_reason": output.reason,
+        "intercept_velocity_source": velocity_source,
+        "intercept_velocity_reason": velocity_reason,
+        "intercept_detection_age_s": output.detection_age_s,
+        "intercept_velocity_age_s": output.velocity_age_s,
+        "intercept_prediction_horizon_s": output.los_prediction_horizon_s,
+        "intercept_acquire_count": output.acquire_count,
+        "intercept_los_speed_m_s": output.los_speed_m_s,
+        "intercept_speed_saturated": int(output.speed_saturated),
+        "intercept_png_saturated": int(output.png_saturated),
+        "intercept_fov_saturated": int(output.fov_saturated),
+        "intercept_fov_constraint_active": int(output.fov_constraint_active),
+        "intercept_total_saturated": int(output.total_saturated),
+    }
+    for prefix, vector in (
+        ("intercept_velocity_reference", output.velocity_reference_ned_m_s),
+        ("intercept_speed_accel", output.speed_acceleration_ned_m_s2),
+        ("intercept_png_accel", output.png_acceleration_ned_m_s2),
+        ("intercept_fov_accel", output.fov_acceleration_ned_m_s2),
+        ("intercept_total_accel", output.acceleration_ned_m_s2),
+    ):
+        for axis, value in zip(("n", "e", "d"), vector):
+            values[f"{prefix}_{axis}"] = value
+    return values
 
 
 def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, Any]:
@@ -2927,9 +3116,40 @@ def _log_fields(channel_count: int) -> list[str]:
         "guidance_fixed_gain",
         "guidance_max_accel_mps2",
         "guidance_ttc_required",
+        "guidance_velocity_source",
         "guidance_eval_frame",
         "rate_gain_input_frame",
         "command_mapping_type",
+        "intercept_phase",
+        "intercept_valid",
+        "intercept_reason",
+        "intercept_velocity_source",
+        "intercept_velocity_reason",
+        "intercept_detection_age_s",
+        "intercept_velocity_age_s",
+        "intercept_prediction_horizon_s",
+        "intercept_acquire_count",
+        "intercept_los_speed_m_s",
+        "intercept_velocity_reference_n",
+        "intercept_velocity_reference_e",
+        "intercept_velocity_reference_d",
+        "intercept_speed_accel_n",
+        "intercept_speed_accel_e",
+        "intercept_speed_accel_d",
+        "intercept_png_accel_n",
+        "intercept_png_accel_e",
+        "intercept_png_accel_d",
+        "intercept_fov_accel_n",
+        "intercept_fov_accel_e",
+        "intercept_fov_accel_d",
+        "intercept_total_accel_n",
+        "intercept_total_accel_e",
+        "intercept_total_accel_d",
+        "intercept_speed_saturated",
+        "intercept_png_saturated",
+        "intercept_fov_saturated",
+        "intercept_fov_constraint_active",
+        "intercept_total_saturated",
         "ttc_valid",
         "ttc_reject_reason",
         "ttc_quality",
@@ -3410,10 +3630,56 @@ def _log_row(
             detector_stats, "guidance_max_accel_mps2", precision=6
         ),
         "guidance_ttc_required": detector_stats.get("guidance_ttc_required", ""),
+        "guidance_velocity_source": detector_stats.get("guidance_velocity_source", ""),
         "guidance_eval_frame": detector_stats.get("guidance_eval_frame", ""),
         "rate_gain_input_frame": detector_stats.get("rate_gain_input_frame", ""),
         "command_mapping_type": pre_shape_setpoint.mapping_type
         or detector_stats.get("command_mapping_type", ""),
+        "intercept_phase": detector_stats.get("intercept_phase", ""),
+        "intercept_valid": detector_stats.get("intercept_valid", ""),
+        "intercept_reason": detector_stats.get("intercept_reason", ""),
+        "intercept_velocity_source": detector_stats.get("intercept_velocity_source", ""),
+        "intercept_velocity_reason": detector_stats.get("intercept_velocity_reason", ""),
+        "intercept_detection_age_s": _stats_float(
+            detector_stats, "intercept_detection_age_s", precision=6
+        ),
+        "intercept_velocity_age_s": _stats_float(
+            detector_stats, "intercept_velocity_age_s", precision=6
+        ),
+        "intercept_prediction_horizon_s": _stats_float(
+            detector_stats, "intercept_prediction_horizon_s", precision=6
+        ),
+        "intercept_acquire_count": detector_stats.get("intercept_acquire_count", ""),
+        "intercept_los_speed_m_s": _stats_float(
+            detector_stats, "intercept_los_speed_m_s", precision=6
+        ),
+        **{
+            key: _stats_float(detector_stats, key, precision=9)
+            for key in (
+                "intercept_velocity_reference_n",
+                "intercept_velocity_reference_e",
+                "intercept_velocity_reference_d",
+                "intercept_speed_accel_n",
+                "intercept_speed_accel_e",
+                "intercept_speed_accel_d",
+                "intercept_png_accel_n",
+                "intercept_png_accel_e",
+                "intercept_png_accel_d",
+                "intercept_fov_accel_n",
+                "intercept_fov_accel_e",
+                "intercept_fov_accel_d",
+                "intercept_total_accel_n",
+                "intercept_total_accel_e",
+                "intercept_total_accel_d",
+            )
+        },
+        "intercept_speed_saturated": detector_stats.get("intercept_speed_saturated", ""),
+        "intercept_png_saturated": detector_stats.get("intercept_png_saturated", ""),
+        "intercept_fov_saturated": detector_stats.get("intercept_fov_saturated", ""),
+        "intercept_fov_constraint_active": detector_stats.get(
+            "intercept_fov_constraint_active", ""
+        ),
+        "intercept_total_saturated": detector_stats.get("intercept_total_saturated", ""),
         "ttc_valid": "" if ttc is None else int(ttc.valid),
         "ttc_reject_reason": "" if ttc is None else ttc.reject_reason or "",
         "ttc_quality": "" if ttc is None else f"{ttc.quality:.6f}",

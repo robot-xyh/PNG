@@ -27,6 +27,57 @@ def _input(timestamp: float, *, los_timestamp=None, speed=0.0, valid=True):
 
 
 class VelocityEstablishingPngControllerTest(unittest.TestCase):
+    def test_bounded_los_prediction_advances_velocity_reference(self):
+        controller = VelocityEstablishingPngController(
+            VelocityEstablishingPngConfig(
+                fixed_vm_m_s=10.0,
+                acquire_consecutive_frames=1,
+                los_prediction_max_s=0.1,
+            )
+        )
+        value = _input(1.2, los_timestamp=1.0)
+        value = VelocityEstablishingPngInput(
+            **{
+                **value.__dict__,
+                "lambda_dot_ned_s": np.array([0.0, 1.0, 0.0]),
+            }
+        )
+
+        output = controller.update(value)
+
+        self.assertTrue(output.valid)
+        self.assertAlmostEqual(output.los_prediction_horizon_s, 0.1)
+        self.assertGreater(output.velocity_reference_ned_m_s[1], 0.0)
+
+    def test_fov_constraint_bounds_commanded_body_up_from_los(self):
+        controller = VelocityEstablishingPngController(
+            VelocityEstablishingPngConfig(
+                fixed_vm_m_s=10.0,
+                acquire_consecutive_frames=1,
+                total_accel_limit_m_s2=7.0,
+                fov_constraint_half_angle_deg=15.0,
+            )
+        )
+        value = _input(0.0)
+        value = VelocityEstablishingPngInput(
+            **{
+                **value.__dict__,
+                "lambda_ned": np.array([0.3, 0.0, -0.953939]),
+                "lambda_dot_ned_s": np.array([0.0, 1.0, 0.0]),
+            }
+        )
+
+        output = controller.update(value)
+
+        acceleration = np.array(output.acceleration_ned_m_s2)
+        body_up = acceleration - np.array([0.0, 0.0, 9.80665])
+        body_up /= np.linalg.norm(body_up)
+        los = value.lambda_ned / np.linalg.norm(value.lambda_ned)
+        error_deg = np.degrees(np.arccos(np.clip(np.dot(body_up, los), -1.0, 1.0)))
+        self.assertTrue(output.fov_constraint_active)
+        self.assertLessEqual(error_deg, 15.0 + 1.0e-9)
+        self.assertLessEqual(np.linalg.norm(acceleration), 7.0 + 1.0e-9)
+
     def test_requires_consecutive_distinct_frames_then_accelerates(self):
         controller = VelocityEstablishingPngController(
             VelocityEstablishingPngConfig(fixed_vm_m_s=10.0, acquire_consecutive_frames=3)

@@ -1,0 +1,333 @@
+{
+  "bench_profile": {
+    "scope": "noprop_bench",
+    "description": "Restricted velocity-establishing PNG bench profile; all propellers must be physically removed.",
+    "rate_limit_deg_s": 3,
+    "throttle_pwm_range": [
+      1000,
+      1100
+    ]
+  },
+  "serial": {
+    "port": "/dev/ttyS1",
+    "baud": 115200,
+    "timeout_s": 0.1
+  },
+  "source_reference": {
+    "manifest": "config/betaflight.src-reference.json",
+    "runtime_loadable": false
+  },
+  "msp_runtime": {
+    "io_worker_enabled": true,
+    "transport_mode": "async_pipeline",
+    "telemetry_poll_hz": 5,
+    "status_poll_hz": 5,
+    "attitude_poll_hz": 10,
+    "raw_imu_poll_hz": 5,
+    "motor_poll_hz": 2,
+    "rc_poll_hz": 10,
+    "analog_poll_hz": 2,
+    "control_publish_hz": 50,
+    "physical_rc_timeout_s": 0.25,
+    "override_grace_hold_s": 0.35,
+    "override_channels_mask": 15,
+    "override_mode_cli_id": 50,
+    "aux_arm_channel_zero_based": 4,
+    "throttle_channel_zero_based": 2,
+    "set_raw_rc_channel_map": "AETR1234",
+    "throttle_handover_s": 0.4,
+    "prefill_enabled": true,
+    "prefill_min_frames": 10,
+    "prefill_valid_min_us": 900,
+    "prefill_valid_max_us": 2100,
+    "staged_command_timeout_s": 0.15,
+    "shutdown_passthrough_frames": 3,
+    "response_drain_budget_ms": 3,
+    "response_stale_s": 0.25,
+    "raw_imu_gyro": {
+      "enabled": true,
+      "scale_deg_s_per_lsb": 0.0625,
+      "axis_order": [
+        "x",
+        "y",
+        "z"
+      ],
+      "axis_sign": [
+        1,
+        -1,
+        1
+      ],
+      "output_frame": "body_frd",
+      "expected_fc_variant": "BTFL",
+      "expected_fc_version": [
+        25,
+        12,
+        2
+      ],
+      "expected_api_version": [
+        1,
+        47
+      ]
+    }
+  },
+  "logging": {
+    "platform_health_hz": 1
+  },
+  "telemetry_web": {
+    "enabled": true,
+    "bind": "0.0.0.0",
+    "port": 8080,
+    "allowed_subnets": [
+      "127.0.0.0/8",
+      "192.168.0.0/16",
+      "10.0.0.0/8"
+    ],
+    "sample_hz": 5,
+    "history_s": 60,
+    "stale_after_s": 1,
+    "max_sse_clients": 4,
+    "preview": {
+      "enabled": true,
+      "max_fps": 10,
+      "jpeg_quality": 70,
+      "max_clients": 2
+    }
+  },
+  "control_authorization": {
+    "enabled": true,
+    "required_scope": "noprop_bench",
+    "approval_manifest": "logs/betaflight_noprop_velocity_establishing_approval.json"
+  },
+  "camera": {
+    "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
+    "capture_width": 1280,
+    "capture_height": 1024,
+    "fps": 180,
+    "fourcc": "MJPG",
+    "buffer_size": 1,
+    "width": 640,
+    "height": 512,
+    "fx": 530.8443137411823,
+    "fy": 532.2954942356002,
+    "cx": 321.02786894123255,
+    "cy": 247.25731946583392,
+    "distortion_coefficients": [
+      0.07805567312849697,
+      -0.9515884755519438,
+      -0.006880353064013193,
+      -0.00021461333729847564,
+      1.4612166830713538
+    ],
+    "R_BC": [
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        -1
+      ]
+    ],
+    "timestamp_source": "capture_return_monotonic",
+    "intrinsic_calibration_id": "unarchived_candidate_640x512",
+    "extrinsic_validation": {
+      "verified": true,
+      "body_frame": "FRD",
+      "camera_frame": "opencv_x_right_y_down_z_forward",
+      "expected_optical_axis_body": [
+        0,
+        0,
+        -1
+      ],
+      "max_optical_axis_error_deg": 5
+    }
+  },
+  "rknn_detector": {
+    "library": "native/rknn_detector/build/librknn_detector_bridge.so",
+    "model": "models/rknn/drone_v8n_v21_kd_relu_lambda008_640_640-rk3588.rknn",
+    "conf_threshold": 0.2,
+    "iou_threshold": 0.45,
+    "min_score": 0.25,
+    "min_bbox_area": 0,
+    "max_bbox_aspect_ratio": 3,
+    "max_det": 300,
+    "core_mask": 7,
+    "temporal_gating_enabled": false,
+    "gate_radius_px": 160,
+    "reacquire_area_ratio": 0.4,
+    "track_hint_max_misses": 30
+  },
+  "rknn_bytetrack": {
+    "detector_conf_threshold": 0.05,
+    "detector_iou_threshold": 0.7,
+    "track_high_thresh": 0.25,
+    "track_low_thresh": 0.1,
+    "new_track_thresh": 0.25,
+    "match_thresh": 0.8,
+    "low_match_thresh": 0.5,
+    "fuse_score": false,
+    "track_buffer": 30,
+    "track_buffer_s": 0.5,
+    "frame_rate": 30,
+    "perception_rate_hz": 30,
+    "minimum_confirmed_frames": 3,
+    "final_min_score": 0.25,
+    "final_min_bbox_area": 0,
+    "final_max_bbox_aspect_ratio": 3
+  },
+  "torch_runtime": {
+    "num_threads": 1,
+    "disable_mkldnn": true,
+    "allow_cpu_inference": false
+  },
+  "attitude_buffer_s": 2,
+  "attitude_fusion": {
+    "max_wait_s": 0.2,
+    "max_pending": 8
+  },
+  "guidance": {
+    "law": "velocity_establishing_png",
+    "velocity_source": "bench_zero_velocity",
+    "max_guidance_accel_mps2": 1,
+    "velocity_establishing_png": {
+      "fixed_vm_m_s": 10,
+      "navigation_constant": 3,
+      "speed_gain_s_inv": 1.2,
+      "speed_accel_limit_m_s2": 1,
+      "png_accel_limit_m_s2": 1,
+      "fov_centering_gain_s2": 16,
+      "fov_centering_accel_limit_m_s2": 1,
+      "total_accel_limit_m_s2": 1,
+      "vertical_speed_reference_limit_m_s": 6,
+      "png_track_speed_ratio": 0.8,
+      "acquire_consecutive_frames": 1,
+      "detection_timeout_s": 0.35,
+      "velocity_timeout_s": 0.5,
+      "los_prediction_max_s": 0.15,
+      "gravity_m_s2": 9.80665,
+      "fov_constraint_half_angle_deg": 0
+    }
+  },
+  "rc_mapping": {
+    "channel_map": "AETR1234",
+    "channel_count": 8,
+    "rate_mapping_type": "betaflight",
+    "betaflight_rc_rate": [
+      1,
+      1,
+      1
+    ],
+    "betaflight_super_rate": [
+      0.7,
+      0.7,
+      0.7
+    ],
+    "betaflight_expo": [
+      0,
+      0,
+      0
+    ],
+    "betaflight_rate_profile_index": 0,
+    "roll_rate_limit_deg_s": 666.666667,
+    "pitch_rate_limit_deg_s": 666.666667,
+    "yaw_rate_limit_deg_s": 666.666667,
+    "roll_command_limit_deg_s": 3,
+    "pitch_command_limit_deg_s": 3,
+    "yaw_command_limit_deg_s": 0,
+    "thrust_min": 0,
+    "thrust_hover": 0.078,
+    "thrust_max": 0.1,
+    "throttle_min_us": 1000,
+    "throttle_hover_us": 1078,
+    "throttle_max_us": 1100,
+    "neutral_throttle_us": 1000,
+    "max_delta_us_per_s": 100,
+    "aux_values_us": {}
+  },
+  "guidance_command": {
+    "guidance_eval_frame": "inertial_ned",
+    "rate_gain_input_frame": "body_frd",
+    "mapping_type": "accel_tilt_rate",
+    "rate_gain_matrix": [
+      [
+        0,
+        1,
+        0
+      ],
+      [
+        1,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0
+      ]
+    ],
+    "hover_thrust": 0.078,
+    "yaw_rate_bias_deg_s": 0,
+    "entry_handoff": {
+      "enabled": true,
+      "duration_s": 0.8,
+      "gyro_max_age_s": 0.25,
+      "rate_source": "gyro"
+    },
+    "tilt_envelope": {
+      "enabled": true,
+      "max_roll_angle_deg": 35,
+      "max_pitch_angle_deg": 35,
+      "softcap_band_deg": 10,
+      "hardcap_margin_deg": 5,
+      "hardcap_level_kp": 3,
+      "hardcap_max_level_rate_deg_s": 3
+    },
+    "bench_axis_mapping_status": "verified_by_rbc_gyro_and_motor_mix_20260903",
+    "accel_tilt_rate": {
+      "gravity_mps2": 9.80665,
+      "roll_attitude_kp_s_inv": 4,
+      "pitch_attitude_kp_s_inv": 4,
+      "max_roll_tilt_deg": 35,
+      "max_pitch_tilt_deg": 35,
+      "max_roll_rate_deg_s": 3,
+      "max_pitch_rate_deg_s": 3,
+      "roll_rate_sign": 1,
+      "pitch_rate_sign": -1,
+      "min_vertical_specific_force_mps2": 0.5
+    }
+  },
+  "safety": {
+    "telemetry_timeout_s": 0.5,
+    "attitude_timeout_s": 0.5,
+    "watchdog_timeout_s": 0.25,
+    "min_vbat_v": 0,
+    "motor_output_interlock": {
+      "enabled": true,
+      "channel_count": 4,
+      "max_output_us": 1200,
+      "max_spread_us": 150,
+      "telemetry_timeout_s": 0.75,
+      "latch_until_disarm": true
+    },
+    "takeover_duration_interlock": {
+      "enabled": true,
+      "max_duration_s": 3,
+      "latch_until_disarm": true
+    },
+    "require_aux_enable": true,
+    "aux_enable": {
+      "channel_index": 7,
+      "min_us": 1700,
+      "max_us": 2100,
+      "satisfied_by_override_mode": true
+    },
+    "send_neutral_when_inactive": false
+  }
+}

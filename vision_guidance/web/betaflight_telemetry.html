@@ -236,6 +236,15 @@
           <div class="metric"><label>g I / NED</label><output id="guidanceInertial">--</output></div>
           <div class="metric"><label>g B / FRD</label><output id="guidanceBody">--</output></div>
           <div class="metric"><label>Rate input frame</label><output id="rateInputFrame">--</output></div>
+          <div class="metric"><label>Intercept phase</label><output id="interceptPhase">--</output></div>
+          <div class="metric"><label>Velocity source</label><output id="interceptVelocitySource">--</output></div>
+          <div class="metric"><label>Detection / velocity age</label><output id="interceptAges">--</output></div>
+          <div class="metric"><label>LOS speed</label><output id="interceptLosSpeed">--</output></div>
+          <div class="metric"><label>Speed accel N/E/D</label><output id="interceptSpeedAccel">--</output></div>
+          <div class="metric"><label>PNG accel N/E/D</label><output id="interceptPngAccel">--</output></div>
+          <div class="metric"><label>FOV accel N/E/D</label><output id="interceptFovAccel">--</output></div>
+          <div class="metric"><label>Total accel N/E/D</label><output id="interceptTotalAccel">--</output></div>
+          <div class="metric"><label>Saturation S/P/F/T</label><output id="interceptSaturation">--</output></div>
           <div class="metric"><label>RKNN</label><output id="rknn">--</output></div>
           <div class="metric"><label>Tracker</label><output id="trackerFps">--</output></div>
           <div class="metric"><label>MSP age</label><output id="mspAge">--</output></div>
@@ -512,14 +521,25 @@
       setMetric("trackId", trackerHeld ? `${trackId} held` : trackId);
       setMetric("score", number(path(data, ["vision", "score"]), 2));
       const guidanceLaw = path(data, ["guidance", "law"]);
-      const fixedVm = guidanceLaw === "fixed_vm_png";
+      const ttcBypassed = path(data, ["guidance", "ttc_required"]) === false;
+      const intercept = path(data, ["guidance", "intercept"], {});
+      const saturation = intercept.saturation || {};
       setMetric("guidanceLaw", text(guidanceLaw));
       setMetric("guidanceGain", number(path(data, ["guidance", "fixed_gain"]), 2));
-      setMetric("ttc", fixedVm ? "BYPASS" : number(path(data, ["guidance", "ttc_s"]), 2, " s"));
+      setMetric("ttc", ttcBypassed ? "BYPASS" : number(path(data, ["guidance", "ttc_s"]), 2, " s"));
       setMetric("guidance", boolText(path(data, ["guidance", "valid"]), "VALID", "INVALID"));
       setMetric("guidanceInertial", formatVector(path(data, ["guidance", "g_eval"]), 3));
       setMetric("guidanceBody", formatVector(path(data, ["guidance", "g_eval_body_frd"]), 3));
       setMetric("rateInputFrame", text(path(data, ["guidance", "rate_gain_input_frame"])));
+      setMetric("interceptPhase", `${text(intercept.phase)} / ${text(intercept.reason)}`);
+      setMetric("interceptVelocitySource", `${text(intercept.velocity_source)} / ${text(intercept.velocity_reason)}`);
+      setMetric("interceptAges", `${number(intercept.detection_age_s, 3, " s")} / ${number(intercept.velocity_age_s, 3, " s")}`);
+      setMetric("interceptLosSpeed", number(intercept.los_speed_m_s, 2, " m/s"));
+      setMetric("interceptSpeedAccel", formatVector(intercept.speed_acceleration_ned_m_s2, 2));
+      setMetric("interceptPngAccel", formatVector(intercept.png_acceleration_ned_m_s2, 2));
+      setMetric("interceptFovAccel", formatVector(intercept.fov_acceleration_ned_m_s2, 2));
+      setMetric("interceptTotalAccel", formatVector(intercept.total_acceleration_ned_m_s2, 2));
+      setMetric("interceptSaturation", [saturation.speed, saturation.png, saturation.fov, saturation.total].map(value => value === true ? "1" : value === false ? "0" : "-").join(" / "));
       setMetric("rknn", number(path(data, ["vision", "rknn_ms", "total"]), 1, " ms"));
       setMetric("trackerFps", number(path(data, ["vision", "tracker_fps"]), 1, " fps"));
       setMetric("bestCandidateScore", number(path(data, ["vision", "detector_best_score"]), 3));

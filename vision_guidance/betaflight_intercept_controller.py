@@ -29,6 +29,9 @@ class VelocityEstablishingPngConfig:
     acquire_consecutive_frames: int = 5
     detection_timeout_s: float = 0.35
     velocity_timeout_s: float = 0.5
+    los_prediction_max_s: float = 0.0
+    gravity_m_s2: float = 9.80665
+    fov_constraint_half_angle_deg: float = 0.0
 
     def __post_init__(self) -> None:
         positive = (
@@ -51,6 +54,15 @@ class VelocityEstablishingPngConfig:
             raise ValueError("png_track_speed_ratio must be in (0, 1]")
         if self.acquire_consecutive_frames < 1:
             raise ValueError("acquire_consecutive_frames must be positive")
+        if not math.isfinite(self.los_prediction_max_s) or self.los_prediction_max_s < 0.0:
+            raise ValueError("los_prediction_max_s must be finite and non-negative")
+        if not math.isfinite(self.gravity_m_s2) or self.gravity_m_s2 <= 0.0:
+            raise ValueError("gravity_m_s2 must be finite and positive")
+        if (
+            not math.isfinite(self.fov_constraint_half_angle_deg)
+            or not 0.0 <= self.fov_constraint_half_angle_deg < 90.0
+        ):
+            raise ValueError("fov_constraint_half_angle_deg must be in [0, 90)")
 
 
 @dataclass(frozen=True)
@@ -66,6 +78,7 @@ class VelocityEstablishingPngInput:
     velocity_timestamp_s: float | None
     velocity_ned_m_s: np.ndarray | None
     velocity_valid: bool
+    tracking_reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -82,10 +95,12 @@ class VelocityEstablishingPngOutput:
     los_speed_m_s: float | None
     detection_age_s: float | None
     velocity_age_s: float | None
+    los_prediction_horizon_s: float
     acquire_count: int
     speed_saturated: bool
     png_saturated: bool
     fov_saturated: bool
+    fov_constraint_active: bool
     total_saturated: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -133,6 +148,11 @@ class VelocityEstablishingPngController:
         los_dot = np.asarray(value.lambda_dot_ned_s, dtype=float)
         velocity = np.asarray(value.velocity_ned_m_s, dtype=float)
         R_IB = np.asarray(value.attitude_R_IB, dtype=float)
+        prediction_horizon = min(
+            detection_age or 0.0,
+            self.config.los_prediction_max_s,
+        )
+        control_los = _unit(los + prediction_horizon * los_dot)
         self._has_valid_sample = True
         if value.los_timestamp_s != self._last_los_timestamp_s:
             self._last_los_timestamp_s = value.los_timestamp_s
@@ -142,7 +162,7 @@ class VelocityEstablishingPngController:
                 return self._empty(now, "acquiring", detection_age, velocity_age)
             self.phase = InterceptPhase.ACCELERATE
 
-        velocity_reference = self.config.fixed_vm_m_s * los
+        velocity_reference = self.config.fixed_vm_m_s * control_los
         velocity_reference[2] = float(
             np.clip(
                 velocity_reference[2],
@@ -158,7 +178,7 @@ class VelocityEstablishingPngController:
             self.config.navigation_constant * self.config.fixed_vm_m_s * los_dot,
             self.config.png_accel_limit_m_s2,
         )
-        los_body = R_IB.T @ los
+        los_body = R_IB.T @ control_los
         fov_body = np.array(
             [
                 self.config.fov_centering_gain_s2 * los_body[0],
@@ -175,6 +195,14 @@ class VelocityEstablishingPngController:
             speed_accel + png_accel + fov_accel,
             self.config.total_accel_limit_m_s2,
         )
+        total, fov_constraint_active = _constrain_acceleration_to_los(
+            total,
+            control_los,
+            gravity_m_s2=self.config.gravity_m_s2,
+            half_angle_deg=self.config.fov_constraint_half_angle_deg,
+            acceleration_limit_m_s2=self.config.total_accel_limit_m_s2,
+        )
+        total_saturated = total_saturated or fov_constraint_active
         los_speed = float(np.dot(velocity, los))
         if (
             self.phase == InterceptPhase.ACCELERATE
@@ -194,10 +222,12 @@ class VelocityEstablishingPngController:
             los_speed_m_s=los_speed,
             detection_age_s=detection_age,
             velocity_age_s=velocity_age,
+            los_prediction_horizon_s=prediction_horizon,
             acquire_count=self._acquire_count,
             speed_saturated=speed_saturated,
             png_saturated=png_saturated,
             fov_saturated=fov_saturated,
+            fov_constraint_active=fov_constraint_active,
             total_saturated=total_saturated,
         )
 
@@ -211,7 +241,7 @@ class VelocityEstablishingPngController:
             if timestamp is not None and not math.isfinite(float(timestamp)):
                 return "nonfinite_input"
         if not value.tracking_valid or value.lambda_ned is None or value.lambda_dot_ned_s is None:
-            return "tracking_invalid"
+            return value.tracking_reason or "tracking_invalid"
         if detection_age is None or detection_age > self.config.detection_timeout_s:
             return "detection_stale"
         if not value.velocity_valid or value.velocity_ned_m_s is None:
@@ -257,12 +287,68 @@ class VelocityEstablishingPngController:
             los_speed_m_s=None,
             detection_age_s=detection_age_s,
             velocity_age_s=velocity_age_s,
+            los_prediction_horizon_s=0.0,
             acquire_count=self._acquire_count,
             speed_saturated=False,
             png_saturated=False,
             fov_saturated=False,
+            fov_constraint_active=False,
             total_saturated=False,
         )
+
+
+def _constrain_acceleration_to_los(
+    acceleration_ned_m_s2: np.ndarray,
+    los_ned: np.ndarray,
+    *,
+    gravity_m_s2: float,
+    half_angle_deg: float,
+    acceleration_limit_m_s2: float,
+) -> tuple[np.ndarray, bool]:
+    acceleration = np.asarray(acceleration_ned_m_s2, dtype=float)
+    if half_angle_deg <= 0.0:
+        return np.array(acceleration, dtype=float), False
+    gravity = np.array([0.0, 0.0, gravity_m_s2], dtype=float)
+    thrust_vector = acceleration - gravity
+    thrust_norm = float(np.linalg.norm(thrust_vector))
+    if thrust_norm <= 1.0e-12:
+        return np.array(acceleration, dtype=float), False
+    desired_up = thrust_vector / thrust_norm
+    los = _unit(los_ned)
+    cosine = float(np.clip(np.dot(los, desired_up), -1.0, 1.0))
+    angle = math.acos(cosine)
+    limit = math.radians(half_angle_deg)
+    if angle <= limit + 1.0e-12:
+        return np.array(acceleration, dtype=float), False
+
+    tangent = desired_up - cosine * los
+    tangent_norm = float(np.linalg.norm(tangent))
+    if tangent_norm <= 1.0e-12:
+        tangent = _orthogonal_unit(los)
+    else:
+        tangent /= tangent_norm
+    constrained_up = math.cos(limit) * los + math.sin(limit) * tangent
+
+    preferred_thrust = max(0.0, float(np.dot(thrust_vector, constrained_up)))
+    gravity_projection = float(np.dot(gravity, constrained_up))
+    discriminant = gravity_projection**2 - (
+        float(np.dot(gravity, gravity)) - acceleration_limit_m_s2**2
+    )
+    if discriminant < 0.0:
+        return np.array(acceleration, dtype=float), False
+    root = math.sqrt(max(0.0, discriminant))
+    thrust_min = max(0.0, -gravity_projection - root)
+    thrust_max = max(thrust_min, -gravity_projection + root)
+    thrust = float(np.clip(preferred_thrust, thrust_min, thrust_max))
+    return gravity + thrust * constrained_up, True
+
+
+def _orthogonal_unit(vector: np.ndarray) -> np.ndarray:
+    value = _unit(vector)
+    axis = np.array([1.0, 0.0, 0.0], dtype=float)
+    if abs(float(np.dot(value, axis))) > 0.9:
+        axis = np.array([0.0, 1.0, 0.0], dtype=float)
+    return _unit(axis - value * float(np.dot(value, axis)))
 
 
 def _age(now: float, timestamp: float | None) -> float | None:

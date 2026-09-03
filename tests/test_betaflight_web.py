@@ -146,6 +146,7 @@ class BetaflightWebTest(unittest.TestCase):
             "guidance_fixed_gain": "4.5",
             "guidance_max_accel_mps2": "1.0",
             "guidance_ttc_required": "0",
+            "guidance_velocity_source": "bench_zero_velocity",
             "guidance_eval_frame": "inertial_ned",
             "rate_gain_input_frame": "body_frd",
             "g_eval_x": "0.1",
@@ -154,6 +155,33 @@ class BetaflightWebTest(unittest.TestCase):
             "g_eval_body_frd_x": "0.4",
             "g_eval_body_frd_y": "0.5",
             "g_eval_body_frd_z": "0.6",
+            "intercept_phase": "ACCELERATE",
+            "intercept_valid": "1",
+            "intercept_reason": "active",
+            "intercept_velocity_source": "bench_zero_velocity",
+            "intercept_velocity_reason": "bench_zero_velocity",
+            "intercept_detection_age_s": "0.04",
+            "intercept_velocity_age_s": "0.0",
+            "intercept_prediction_horizon_s": "0.04",
+            "intercept_acquire_count": "3",
+            "intercept_los_speed_m_s": "0.0",
+            "intercept_speed_accel_n": "0.1",
+            "intercept_speed_accel_e": "0.2",
+            "intercept_speed_accel_d": "-0.3",
+            "intercept_png_accel_n": "0.4",
+            "intercept_png_accel_e": "0.5",
+            "intercept_png_accel_d": "0.0",
+            "intercept_fov_accel_n": "0.6",
+            "intercept_fov_accel_e": "0.7",
+            "intercept_fov_accel_d": "0.0",
+            "intercept_total_accel_n": "0.8",
+            "intercept_total_accel_e": "0.9",
+            "intercept_total_accel_d": "-0.3",
+            "intercept_speed_saturated": "1",
+            "intercept_png_saturated": "0",
+            "intercept_fov_saturated": "0",
+            "intercept_fov_constraint_active": "0",
+            "intercept_total_saturated": "1",
             "sp_valid": "1",
             "command_mapping_type": "accel_tilt_rate",
             "command_desired_roll_angle_deg": "5.0",
@@ -345,6 +373,14 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["guidance"]["rate_gain_input_frame"], "body_frd")
         self.assertEqual(payload["guidance"]["g_eval"], [0.1, 0.2, 0.3])
         self.assertEqual(payload["guidance"]["g_eval_body_frd"], [0.4, 0.5, 0.6])
+        intercept = payload["guidance"]["intercept"]
+        self.assertEqual(intercept["phase"], "ACCELERATE")
+        self.assertEqual(intercept["velocity_source"], "bench_zero_velocity")
+        self.assertEqual(intercept["png_acceleration_ned_m_s2"], [0.4, 0.5, 0.0])
+        self.assertEqual(
+            intercept["saturation"],
+            {"speed": True, "png": False, "fov": False, "fov_constraint": False, "total": True},
+        )
         shaping = payload["command"]["shaping"]
         self.assertEqual(payload["command"]["mapping_type"], "accel_tilt_rate")
         self.assertEqual(payload["command"]["attitude_mapping"]["desired_deg"], [5.0, -3.0])

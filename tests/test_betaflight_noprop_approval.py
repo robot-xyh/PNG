@@ -247,6 +247,44 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "guidance.law must be explicitly configured"):
             tool._validate_noprop_config(implicit, output)
 
+    def test_velocity_establishing_guidance_requires_bench_velocity_and_accel_mapping(self):
+        config = _with_verified_upward_camera(
+            json.loads(
+                (
+                    ROOT
+                    / "config/betaflight.rk3588.noprop.velocity_establishing.example.json"
+                ).read_text()
+            )
+        )
+        output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
+
+        tool._validate_noprop_config(config, output)
+        metadata = tool._validate_guidance_config(config)
+        self.assertEqual(metadata["law"], "velocity_establishing_png")
+        self.assertEqual(metadata["velocity_source"], "bench_zero_velocity")
+        self.assertEqual(metadata["fixed_gain"], 30.0)
+        self.assertEqual(
+            config["guidance_command"]["accel_tilt_rate"]["pitch_rate_sign"],
+            -1.0,
+        )
+
+        flight_velocity = copy.deepcopy(config)
+        flight_velocity["guidance"]["velocity_source"] = "msp_kinematics"
+        with self.assertRaisesRegex(RuntimeError, "bench_zero_velocity"):
+            tool._validate_noprop_config(flight_velocity, output)
+
+        direct_mapping = copy.deepcopy(config)
+        direct_mapping["guidance_command"]["mapping_type"] = "direct_rate_matrix"
+        with self.assertRaisesRegex(RuntimeError, "accel_tilt_rate"):
+            tool._validate_noprop_config(direct_mapping, output)
+
+        excessive = copy.deepcopy(config)
+        excessive["guidance"]["velocity_establishing_png"][
+            "total_accel_limit_m_s2"
+        ] = 1.01
+        with self.assertRaisesRegex(RuntimeError, "exceeds no-prop guidance limit"):
+            tool._validate_noprop_config(excessive, output)
+
     def test_noprop_approval_requires_latched_motor_output_interlock(self):
         config = _with_verified_upward_camera(
             json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())

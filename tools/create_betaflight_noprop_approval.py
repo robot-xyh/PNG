@@ -18,6 +18,9 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from vision_guidance.geometry import camera_mount_diagnostics, validated_rotation_matrix  # noqa: E402
+from vision_guidance.betaflight_intercept_controller import (  # noqa: E402
+    VelocityEstablishingPngConfig,
+)
 from vision_guidance.betaflight_runtime import (  # noqa: E402
     MspRawImuGyroConfig,
     bind_msp_raw_imu_gyro,
@@ -346,9 +349,10 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
     if "law" not in values:
         raise RuntimeError("guidance.law must be explicitly configured for no-prop approval")
     law = str(values["law"]).strip().lower()
-    if law not in {"ttc_png", "fixed_vm_png"}:
+    if law not in {"ttc_png", "fixed_vm_png", "velocity_establishing_png"}:
         raise RuntimeError(
-            f"unsupported guidance.law={law!r}; expected 'ttc_png' or 'fixed_vm_png'"
+            "unsupported guidance.law="
+            f"{law!r}; expected 'ttc_png', 'fixed_vm_png', or 'velocity_establishing_png'"
         )
     max_accel = _positive_guidance_float(values, "max_guidance_accel_mps2")
     if max_accel > MAX_NOPROP_GUIDANCE_ACCEL_MPS2:
@@ -364,6 +368,8 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
         "fixed_gain": None,
         "max_guidance_accel_mps2": max_accel,
         "ttc_required": law == "ttc_png",
+        "velocity_source": None,
+        "velocity_establishing_png": None,
     }
     if law == "fixed_vm_png":
         navigation_constant = _positive_guidance_float(values, "navigation_constant")
@@ -375,6 +381,67 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
             navigation_constant=navigation_constant,
             fixed_vm_m_s=fixed_vm_m_s,
             fixed_gain=fixed_gain,
+        )
+    elif law == "velocity_establishing_png":
+        velocity_source = str(values.get("velocity_source", "")).strip().lower()
+        if velocity_source != "bench_zero_velocity":
+            raise RuntimeError(
+                "no-prop velocity_establishing_png requires explicit "
+                "guidance.velocity_source='bench_zero_velocity'"
+            )
+        if str(dict(config.get("bench_profile", {})).get("scope", "")) != "noprop_bench":
+            raise RuntimeError("bench_zero_velocity is restricted to noprop_bench")
+        raw = values.get("velocity_establishing_png")
+        if not isinstance(raw, dict) or "fixed_vm_m_s" not in raw:
+            raise RuntimeError(
+                "guidance.velocity_establishing_png.fixed_vm_m_s is required"
+            )
+        try:
+            controller = VelocityEstablishingPngConfig(
+                fixed_vm_m_s=float(raw["fixed_vm_m_s"]),
+                navigation_constant=float(raw.get("navigation_constant", 3.0)),
+                speed_gain_s_inv=float(raw.get("speed_gain_s_inv", 1.2)),
+                speed_accel_limit_m_s2=float(raw.get("speed_accel_limit_m_s2", 8.0)),
+                png_accel_limit_m_s2=float(raw.get("png_accel_limit_m_s2", 20.0)),
+                fov_centering_gain_s2=float(raw.get("fov_centering_gain_s2", 8.0)),
+                fov_centering_accel_limit_m_s2=float(
+                    raw.get("fov_centering_accel_limit_m_s2", 4.0)
+                ),
+                total_accel_limit_m_s2=float(raw.get("total_accel_limit_m_s2", 28.0)),
+                vertical_speed_reference_limit_m_s=float(
+                    raw.get("vertical_speed_reference_limit_m_s", 6.0)
+                ),
+                png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
+                acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
+                detection_timeout_s=float(raw.get("detection_timeout_s", 0.35)),
+                velocity_timeout_s=float(raw.get("velocity_timeout_s", 0.5)),
+                los_prediction_max_s=float(raw.get("los_prediction_max_s", 0.0)),
+                gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),
+                fov_constraint_half_angle_deg=float(
+                    raw.get("fov_constraint_half_angle_deg", 0.0)
+                ),
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError(
+                f"invalid guidance.velocity_establishing_png: {exc}"
+            ) from exc
+        if controller.total_accel_limit_m_s2 > max_accel:
+            raise RuntimeError(
+                "velocity-establishing total acceleration exceeds no-prop guidance limit"
+            )
+        command_mapping = str(
+            dict(config.get("guidance_command", {})).get("mapping_type", "")
+        ).strip().lower()
+        if command_mapping != "accel_tilt_rate":
+            raise RuntimeError(
+                "velocity_establishing_png requires guidance_command.mapping_type='accel_tilt_rate'"
+            )
+        metadata.update(
+            navigation_constant=controller.navigation_constant,
+            fixed_vm_m_s=controller.fixed_vm_m_s,
+            fixed_gain=controller.navigation_constant * controller.fixed_vm_m_s,
+            velocity_source=velocity_source,
+            velocity_establishing_png=dict(controller.__dict__),
         )
     return metadata
 

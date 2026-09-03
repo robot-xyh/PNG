@@ -450,6 +450,7 @@ def telemetry_payload_from_log_row(
             "fixed_gain": _number(row.get("guidance_fixed_gain")),
             "max_accel_mps2": _number(row.get("guidance_max_accel_mps2")),
             "ttc_required": _boolean(row.get("guidance_ttc_required")),
+            "velocity_source": _text(row.get("guidance_velocity_source")),
             "los_valid": _boolean(row.get("los_valid")),
             "los_reason": _text(row.get("los_reject_reason")),
             "los_quality": _number(row.get("los_quality")),
@@ -472,6 +473,69 @@ def telemetry_payload_from_log_row(
                 row,
                 ("g_eval_body_frd_x", "g_eval_body_frd_y", "g_eval_body_frd_z"),
             ),
+            "intercept": {
+                "phase": _text(row.get("intercept_phase")),
+                "valid": _boolean(row.get("intercept_valid")),
+                "reason": _text(row.get("intercept_reason")),
+                "velocity_source": _text(row.get("intercept_velocity_source")),
+                "velocity_reason": _text(row.get("intercept_velocity_reason")),
+                "detection_age_s": _number(row.get("intercept_detection_age_s")),
+                "velocity_age_s": _number(row.get("intercept_velocity_age_s")),
+                "prediction_horizon_s": _number(
+                    row.get("intercept_prediction_horizon_s")
+                ),
+                "acquire_count": _integer(row.get("intercept_acquire_count")),
+                "los_speed_m_s": _number(row.get("intercept_los_speed_m_s")),
+                "velocity_reference_ned_m_s": _vector(
+                    row,
+                    (
+                        "intercept_velocity_reference_n",
+                        "intercept_velocity_reference_e",
+                        "intercept_velocity_reference_d",
+                    ),
+                ),
+                "speed_acceleration_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_speed_accel_n",
+                        "intercept_speed_accel_e",
+                        "intercept_speed_accel_d",
+                    ),
+                ),
+                "png_acceleration_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_png_accel_n",
+                        "intercept_png_accel_e",
+                        "intercept_png_accel_d",
+                    ),
+                ),
+                "fov_acceleration_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_fov_accel_n",
+                        "intercept_fov_accel_e",
+                        "intercept_fov_accel_d",
+                    ),
+                ),
+                "total_acceleration_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_total_accel_n",
+                        "intercept_total_accel_e",
+                        "intercept_total_accel_d",
+                    ),
+                ),
+                "saturation": {
+                    "speed": _boolean(row.get("intercept_speed_saturated")),
+                    "png": _boolean(row.get("intercept_png_saturated")),
+                    "fov": _boolean(row.get("intercept_fov_saturated")),
+                    "fov_constraint": _boolean(
+                        row.get("intercept_fov_constraint_active")
+                    ),
+                    "total": _boolean(row.get("intercept_total_saturated")),
+                },
+            },
         },
         "command": {
             "valid": _boolean(row.get("sp_valid")),
