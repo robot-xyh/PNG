@@ -63,10 +63,12 @@ def main() -> None:
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
     override_mode_cli_id = _configured_override_mode_cli_id(config)
+    override_channels_mask = _configured_override_channels_mask(config)
     parsed_cli = _validate_snapshot(
         snapshot,
         snapshot_path,
         expected_override_mode_cli_id=override_mode_cli_id,
+        expected_override_channels_mask=override_channels_mask,
     )
     camera_extrinsic = _validate_noprop_config(
         config,
@@ -101,6 +103,7 @@ def main() -> None:
             "prefill_required": True,
             "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
             "msp_override_cli_mode_id": override_mode_cli_id,
+            "msp_override_channels_mask": override_channels_mask,
             "entry_handoff_min_duration_s": MIN_ENTRY_HANDOFF_DURATION_S,
             "entry_handoff_max_gyro_age_s": MAX_ENTRY_GYRO_AGE_S,
             "max_tilt_angle_deg": MAX_NOPROP_TILT_ANGLE_DEG,
@@ -123,6 +126,7 @@ def _validate_snapshot(
     snapshot_path: Path,
     *,
     expected_override_mode_cli_id: int,
+    expected_override_channels_mask: int = 15,
 ) -> dict[str, Any]:
     if snapshot.get("readiness", {}).get("log_only_ready") is not True:
         raise RuntimeError("snapshot is not log-only ready")
@@ -151,10 +155,14 @@ def _validate_snapshot(
     if not parsed:
         raise RuntimeError("snapshot configuration review has no parsed CLI export")
     settings = dict(parsed.get("settings", {}))
-    if int(settings.get("msp_override_channels_mask", -1)) != 15:
-        raise RuntimeError("flight controller msp_override_channels_mask must be 15")
+    if int(settings.get("msp_override_channels_mask", -1)) != int(
+        expected_override_channels_mask
+    ):
+        raise RuntimeError(
+            "flight controller msp_override_channels_mask must match the approval config"
+        )
     if str(settings.get("msp_override_failsafe", "")).upper() != "OFF":
-        raise RuntimeError("flight controller msp_override_failsafe must be OFF for this bench profile")
+        raise RuntimeError("flight controller msp_override_failsafe must be OFF for this approval profile")
     if str(parsed.get("receiver", {}).get("channel_map", "")).upper() != "AETR1234":
         raise RuntimeError("flight controller receiver map must be AETR1234")
     aux_ranges = tuple(dict(value) for value in parsed.get("aux_ranges", ()))
@@ -186,6 +194,7 @@ def _validate_noprop_config(
 
     runtime = dict(config.get("msp_runtime", {}))
     _configured_override_mode_cli_id(config)
+    override_channels_mask = _configured_override_channels_mask(config)
     if runtime.get("io_worker_enabled") is not True or runtime.get("prefill_enabled") is not True:
         raise RuntimeError("MSP worker and prefill must be enabled")
     if runtime.get("transport_mode") != "async_pipeline":
@@ -202,8 +211,6 @@ def _validate_noprop_config(
         raise RuntimeError("RC7 MSP OVERRIDE mode must explicitly satisfy the no-prop AUX gate")
     if int(runtime.get("prefill_min_frames", 0)) < 10:
         raise RuntimeError("no-prop prefill_min_frames must be at least 10")
-    if int(runtime.get("override_channels_mask", 0)) != 15:
-        raise RuntimeError("no-prop override_channels_mask must be 15")
     if runtime.get("set_raw_rc_channel_map") != "AETR1234":
         raise RuntimeError("no-prop SET_RAW_RC wire order must be AETR1234")
     if int(runtime.get("throttle_channel_zero_based", -1)) != 2:
@@ -263,6 +270,11 @@ def _validate_noprop_config(
             f"(0, {MAX_NOPROP_TAKEOVER_DURATION_S}] s"
         )
     if parsed_cli is not None:
+        settings = dict(parsed_cli.get("settings", {}))
+        if int(settings.get("msp_override_channels_mask", -1)) != override_channels_mask:
+            raise RuntimeError(
+                "flight controller msp_override_channels_mask must match the no-prop config"
+            )
         _validate_rate_profile(rc, parsed_cli)
 
     _validate_guidance_config(config)
@@ -384,13 +396,32 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
         )
     elif law == "velocity_establishing_png":
         velocity_source = str(values.get("velocity_source", "")).strip().lower()
-        if velocity_source != "bench_zero_velocity":
+        if velocity_source not in {"bench_zero_velocity", "msp_kinematics"}:
             raise RuntimeError(
-                "no-prop velocity_establishing_png requires explicit "
-                "guidance.velocity_source='bench_zero_velocity'"
+                "no-prop velocity_establishing_png requires guidance.velocity_source "
+                "to be 'bench_zero_velocity' or 'msp_kinematics'"
             )
-        if str(dict(config.get("bench_profile", {})).get("scope", "")) != "noprop_bench":
-            raise RuntimeError("bench_zero_velocity is restricted to noprop_bench")
+        bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
+        if velocity_source == "bench_zero_velocity" and bench_scope not in {
+            "noprop_bench",
+            "prop_rig_active",
+        }:
+            raise RuntimeError(
+                "bench_zero_velocity is restricted to an explicitly approved bench scope"
+            )
+        if velocity_source == "msp_kinematics":
+            runtime = dict(config.get("msp_runtime", {}))
+            if float(runtime.get("raw_gps_poll_hz", 0.0)) <= 0.0:
+                raise RuntimeError("msp_kinematics requires msp_runtime.raw_gps_poll_hz > 0")
+            if float(runtime.get("altitude_poll_hz", 0.0)) <= 0.0:
+                raise RuntimeError("msp_kinematics requires msp_runtime.altitude_poll_hz > 0")
+            kinematics = dict(config.get("kinematics", {}))
+            if int(kinematics.get("minimum_satellites", 0)) < 6:
+                raise RuntimeError("msp_kinematics requires kinematics.minimum_satellites >= 6")
+            for key in ("gps_timeout_s", "altitude_timeout_s"):
+                timeout_s = _finite_float(kinematics, key)
+                if not 0.0 < timeout_s <= 0.5:
+                    raise RuntimeError(f"msp_kinematics {key} must be in (0, 0.5] s")
         raw = values.get("velocity_establishing_png")
         if not isinstance(raw, dict) or "fixed_vm_m_s" not in raw:
             raise RuntimeError(
@@ -524,6 +555,19 @@ def _configured_override_mode_cli_id(config: dict[str, Any]) -> int:
     if not 0 <= mode_id <= 255:
         raise RuntimeError("msp_runtime.override_mode_cli_id must be in range 0-255")
     return mode_id
+
+
+def _configured_override_channels_mask(config: dict[str, Any]) -> int:
+    runtime = dict(config.get("msp_runtime", {}))
+    try:
+        mask = int(runtime["override_channels_mask"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("msp_runtime.override_channels_mask must be explicitly configured") from exc
+    if mask not in {3, 15}:
+        raise RuntimeError(
+            "no-prop override_channels_mask must be 3 (Roll/Pitch) or 15 (Roll/Pitch/Throttle/Yaw)"
+        )
+    return mask
 
 
 def _finite_float(values: dict[str, Any], key: str) -> float:

@@ -22,6 +22,11 @@ def main() -> None:
     parser.add_argument("--duration-s", type=float, default=5.0)
     parser.add_argument("--rate-hz", type=float, default=5.0)
     parser.add_argument(
+        "--include-kinematics",
+        action="store_true",
+        help="Also capture MSP_RAW_GPS and MSP_ALTITUDE for supervised-flight approval.",
+    )
+    parser.add_argument(
         "--cli-export",
         default="",
         help="Legacy alias for one Configurator-generated CLI export; cannot be combined with the explicit options.",
@@ -52,6 +57,7 @@ def main() -> None:
             cli_diff_all=args.cli_diff_all or None,
             cli_dump_all=args.cli_dump_all or None,
             source_reference=ROOT / "config/betaflight.src-reference.json",
+            include_kinematics=args.include_kinematics,
         )
     finally:
         adapter.close()

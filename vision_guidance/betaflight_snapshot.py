@@ -242,6 +242,7 @@ def capture_betaflight_snapshot(
     cli_diff_all: str | Path | None = None,
     cli_dump_all: str | Path | None = None,
     source_reference: str | Path | None = None,
+    include_kinematics: bool = False,
     sleep_fn=time.sleep,
     monotonic_fn=time.monotonic,
 ) -> Path:
@@ -265,6 +266,7 @@ def capture_betaflight_snapshot(
         telemetry_path,
         duration_s=duration_s,
         rate_hz=rate_hz,
+        include_kinematics=include_kinematics,
         sleep_fn=sleep_fn,
         monotonic_fn=monotonic_fn,
     )
@@ -354,6 +356,7 @@ def capture_betaflight_snapshot(
             "duration_s": float(duration_s),
             "rate_hz": float(rate_hz),
             "sample_count": sample_count,
+            "include_kinematics": bool(include_kinematics),
             "error_count": len(errors),
             "errors": errors,
         },
@@ -546,13 +549,17 @@ def _capture_telemetry(
     *,
     duration_s: float,
     rate_hz: float,
+    include_kinematics: bool,
     sleep_fn,
     monotonic_fn,
 ) -> tuple[int, list[str]]:
     fields = (
         "sample", "monotonic_s", "cycle_time_us", "i2c_error_count", "sensor_flags", "mode_flags",
         "profile", "roll_deg", "pitch_deg", "yaw_deg", "vbat_v", "mah_drawn", "rssi",
-        "amperage_a", "rc_channels",
+        "amperage_a", "rc_channels", "gps_fix", "gps_satellites", "gps_hdop",
+        "gps_latitude_deg", "gps_longitude_deg", "gps_altitude_m",
+        "gps_ground_speed_m_s", "gps_ground_course_deg", "baro_altitude_m",
+        "baro_vertical_speed_m_s",
     )
     errors: list[str] = []
     start = monotonic_fn()
@@ -563,7 +570,14 @@ def _capture_telemetry(
         while monotonic_fn() - start < duration_s:
             loop_start = monotonic_fn()
             try:
-                telemetry = adapter.read_telemetry()
+                telemetry = (
+                    adapter.read_telemetry(
+                        include_raw_gps=True,
+                        include_altitude=True,
+                    )
+                    if include_kinematics
+                    else adapter.read_telemetry()
+                )
                 writer.writerow(_telemetry_row(count + 1, telemetry))
                 count += 1
             except Exception as exc:
@@ -576,6 +590,8 @@ def _telemetry_row(sample: int, telemetry: BetaflightTelemetry) -> dict[str, Any
     status = telemetry.status
     attitude = telemetry.attitude
     analog = telemetry.analog
+    gps = telemetry.raw_gps
+    altitude = telemetry.altitude
     return {
         "sample": sample,
         "monotonic_s": f"{telemetry.timestamp:.9f}",
@@ -592,6 +608,16 @@ def _telemetry_row(sample: int, telemetry: BetaflightTelemetry) -> dict[str, Any
         "rssi": "" if analog is None or analog.rssi is None else analog.rssi,
         "amperage_a": "" if analog is None or analog.amperage_a is None else analog.amperage_a,
         "rc_channels": ";".join(str(value) for value in telemetry.rc_channels),
+        "gps_fix": "" if gps is None else gps.fix,
+        "gps_satellites": "" if gps is None else gps.satellites,
+        "gps_hdop": "" if gps is None or gps.hdop is None else gps.hdop,
+        "gps_latitude_deg": "" if gps is None else gps.latitude_deg,
+        "gps_longitude_deg": "" if gps is None else gps.longitude_deg,
+        "gps_altitude_m": "" if gps is None else gps.altitude_m,
+        "gps_ground_speed_m_s": "" if gps is None else gps.ground_speed_m_s,
+        "gps_ground_course_deg": "" if gps is None else gps.ground_course_deg,
+        "baro_altitude_m": "" if altitude is None else altitude.altitude_m,
+        "baro_vertical_speed_m_s": "" if altitude is None else altitude.vertical_speed_m_s,
     }
 
 

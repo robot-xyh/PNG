@@ -1,3 +1,4 @@
+import csv
 import json
 import tempfile
 import unittest
@@ -5,10 +6,12 @@ from pathlib import Path
 
 from vision_guidance.betaflight_msp import (
     AnalogTelemetry,
+    AltitudeTelemetry,
     ApiVersion,
     AttitudeTelemetry,
     BetaflightTelemetry,
     FcVersion,
+    RawGpsTelemetry,
     StatusTelemetry,
 )
 from vision_guidance.betaflight_snapshot import (
@@ -58,6 +61,31 @@ class _Adapter:
             attitude=AttitudeTelemetry(1.0, -2.0, 30.0),
             analog=AnalogTelemetry(0.0, 0, 0, 0.0),
             rc_channels=(1500, 1500, 1000, 1500, 1000),
+        )
+
+
+class _KinematicAdapter(_Adapter):
+    def read_telemetry(self, *, include_raw_gps=False, include_altitude=False):
+        telemetry = super().read_telemetry()
+        return BetaflightTelemetry(
+            **{
+                **telemetry.__dict__,
+                "raw_gps": RawGpsTelemetry(
+                    fix=1,
+                    satellites=9,
+                    latitude_deg=22.799,
+                    longitude_deg=113.86,
+                    altitude_m=15.2,
+                    ground_speed_m_s=0.1,
+                    ground_course_deg=90.0,
+                    hdop=80,
+                )
+                if include_raw_gps
+                else None,
+                "altitude": AltitudeTelemetry(altitude_m=1.2, vertical_speed_m_s=-0.1)
+                if include_altitude
+                else None,
+            }
         )
 
 
@@ -250,6 +278,27 @@ set vbat_min_cell_voltage = 330
             self.assertIn("betaflight_dump_all.txt", manifest["artifacts"])
             self.assertNotIn("cli_configuration_incomplete", manifest["readiness"]["control_blockers"])
             self.assertFalse(manifest["readiness"]["control_ready"])
+
+    def test_snapshot_option_captures_gps_and_altitude_for_flight_approval(self):
+        clock = _Clock()
+        with tempfile.TemporaryDirectory() as directory:
+            manifest_path = capture_betaflight_snapshot(
+                _KinematicAdapter(),
+                Path(directory) / "out",
+                duration_s=0.2,
+                rate_hz=5.0,
+                include_kinematics=True,
+                sleep_fn=clock.sleep,
+                monotonic_fn=clock.monotonic,
+            )
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            with (manifest_path.parent / "telemetry.csv").open(encoding="utf-8") as stream:
+                rows = list(csv.DictReader(stream))
+
+            self.assertTrue(manifest["capture"]["include_kinematics"])
+            self.assertEqual(rows[0]["gps_fix"], "1")
+            self.assertEqual(rows[0]["gps_satellites"], "9")
+            self.assertEqual(rows[0]["baro_altitude_m"], "1.2")
 
 
 if __name__ == "__main__":

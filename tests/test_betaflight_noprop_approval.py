@@ -247,7 +247,7 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "guidance.law must be explicitly configured"):
             tool._validate_noprop_config(implicit, output)
 
-    def test_velocity_establishing_guidance_requires_bench_velocity_and_accel_mapping(self):
+    def test_velocity_establishing_guidance_accepts_bench_or_msp_velocity(self):
         config = _with_verified_upward_camera(
             json.loads(
                 (
@@ -268,10 +268,25 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
             -1.0,
         )
 
-        flight_velocity = copy.deepcopy(config)
-        flight_velocity["guidance"]["velocity_source"] = "msp_kinematics"
-        with self.assertRaisesRegex(RuntimeError, "bench_zero_velocity"):
-            tool._validate_noprop_config(flight_velocity, output)
+        flight_velocity = _with_verified_upward_camera(
+            json.loads(
+                (
+                    ROOT
+                    / "config/betaflight.rk3588.velocity_png.noprop_fault.json"
+                ).read_text()
+            )
+        )
+        flight_output = (
+            ROOT / flight_velocity["control_authorization"]["approval_manifest"]
+        ).resolve()
+        tool._validate_noprop_config(flight_velocity, flight_output)
+        flight_metadata = tool._validate_guidance_config(flight_velocity)
+        self.assertEqual(flight_metadata["velocity_source"], "msp_kinematics")
+
+        missing_gps = copy.deepcopy(flight_velocity)
+        missing_gps["msp_runtime"]["raw_gps_poll_hz"] = 0
+        with self.assertRaisesRegex(RuntimeError, "raw_gps_poll_hz"):
+            tool._validate_noprop_config(missing_gps, flight_output)
 
         direct_mapping = copy.deepcopy(config)
         direct_mapping["guidance_command"]["mapping_type"] = "direct_rate_matrix"
@@ -284,6 +299,46 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         ] = 1.01
         with self.assertRaisesRegex(RuntimeError, "exceeds no-prop guidance limit"):
             tool._validate_noprop_config(excessive, output)
+
+    def test_noprop_mask_accepts_roll_pitch_only_and_must_match_snapshot(self):
+        config = _with_verified_upward_camera(
+            json.loads(
+                (
+                    ROOT
+                    / "config/betaflight.rk3588.velocity_png.noprop_fault.json"
+                ).read_text()
+            )
+        )
+        output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
+        tool._validate_noprop_config(config, output)
+
+        unsupported = copy.deepcopy(config)
+        unsupported["msp_runtime"]["override_channels_mask"] = 7
+        with self.assertRaisesRegex(RuntimeError, "must be 3 .* or 15"):
+            tool._validate_noprop_config(unsupported, output)
+
+        parsed_cli = {
+            "settings": {"msp_override_channels_mask": "15"},
+            "rate_profiles": {
+                "0": {
+                    "roll_rc_rate": "100",
+                    "pitch_rc_rate": "100",
+                    "yaw_rc_rate": "100",
+                    "roll_srate": "70",
+                    "pitch_srate": "70",
+                    "yaw_srate": "70",
+                    "roll_expo": "0",
+                    "pitch_expo": "0",
+                    "yaw_expo": "0",
+                }
+            },
+        }
+        with self.assertRaisesRegex(RuntimeError, "must match the no-prop config"):
+            tool._validate_noprop_config(
+                config,
+                output,
+                parsed_cli=parsed_cli,
+            )
 
     def test_noprop_approval_requires_latched_motor_output_interlock(self):
         config = _with_verified_upward_camera(
