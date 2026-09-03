@@ -1,0 +1,190 @@
+{
+  "schema_version": 1,
+  "analysis_id": "BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS",
+  "decoder": {
+    "tool": "blackbox_decode",
+    "commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "options": [
+      "--unit-rotation raw",
+      "--unit-height m",
+      "--unit-gps-speed mps",
+      "--merge-gps",
+      "--save-headers"
+    ],
+    "decode_failed_frames": 0
+  },
+  "blackbox_inputs": {
+    "LOG00078.BFL": "860a68bf95eb85731fe0dbe460add950d9fa3e002df5031495c5c7f316e47ab7",
+    "LOG00079.BFL": "247b29fa17e3f8f103fa8c85377cce3e9d0e5a438c886efadc7888b95410a060",
+    "LOG00080.BFL": "f3d3ffb73b36127d7039e7015dd0199c1ecef3eaba656311934831704cfc7324",
+    "LOG00081.BFL": "f30abb1fcceb76585da2589ac759268b5470e8324efec5247c2133c4ef28ff95",
+    "LOG00082.BFL": "23b7474ab9dec20baf69f07930de32e7cc2b003085dd82600c532f8a62395372",
+    "LOG00083.BFL": "28c37103b3eae886a7b7e4ecc85623071997da3578aa465749a1d0032067adec",
+    "LOG00084.BFL": "3e9a1372844aafd5e4f91a137a464961601d3aa8dfe0a7027cd633a1273233ac",
+    "LOG00085.BFL": "91017a7c53b515a9bea0603394f906b16a72ffb093e5c41143a1d5a9178add7f",
+    "LOG00086.BFL": "c1c5c5645561f46605e7807e884c36621b0b9b7371f972a416e9d4991424c513",
+    "LOG00087.BFL": "9b1df2709159a7543732c7741f982ec84cf55f45d1f615bc3aef4c5e2a9516bf",
+    "LOG00088.BFL": "2c1de526d57764602a726dc6187401db10a851d100a2624c11293ea4d99a6dc9",
+    "LOG00089.BFL": "16bebdf98de63051e0be8a883835c4e126056b76cea1e393a3203a4964163127",
+    "LOG00090.BFL": "09d63f25ceb8cd4f1c939fce4b84e8c78f0acf1300074c2dc6573daa33425bff"
+  },
+  "blackbox_classification": [
+    {"log": 78, "duration_s": 0.303810, "classification": "short_arm", "png_active": false},
+    {"log": 79, "duration_s": 161.691282, "classification": "manual_full_stick_at_min_throttle", "png_active": false},
+    {"log": 80, "duration_s": 188.572368, "classification": "rig_idle_low_output", "png_active": false},
+    {"log": 81, "duration_s": 128.818010, "classification": "rig_idle_low_output", "png_active": false},
+    {"log": 82, "duration_s": 35.339174, "classification": "paired_rig_safety_reject_passthrough", "png_active": false},
+    {"log": 83, "duration_s": 19.458408, "classification": "rig_idle_low_output", "png_active": false},
+    {"log": 84, "duration_s": 58.318561, "classification": "paired_fixed_rig_png_pulse", "png_active": true},
+    {"log": 85, "duration_s": 61.338337, "classification": "unpaired_fixed_rig_five_png_pulses", "png_active": true},
+    {"log": 86, "duration_s": 54.234473, "classification": "manual_free_flight_baseline", "png_active": false},
+    {"log": 87, "duration_s": 0.226705, "classification": "short_arm", "png_active": false},
+    {"log": 88, "duration_s": 0.935248, "classification": "short_arm", "png_active": false},
+    {"log": 89, "duration_s": 94.834979, "classification": "first_png_free_flight", "png_active": true},
+    {"log": 90, "duration_s": 94.953346, "classification": "second_png_free_flight", "png_active": true}
+  ],
+  "log_only_real_target": {
+    "source": "logs/rig_tests/RIG_T4_LOG_ONLY_RETRY_20260903_143851_20260903_143852.csv",
+    "duration_s": 119.981452,
+    "set_raw_rc_count": 0,
+    "processed_tracks": 3093,
+    "confirmed_processed_tracks": 3093,
+    "track_ids": [1],
+    "tracker_switch_count": 0,
+    "tracker_fragment_count": 0,
+    "perception_result_age_p95_ms": 84.3552,
+    "perception_result_age_max_ms": 119.609,
+    "fusion_wait_p95_ms": 40.302,
+    "rknn_total_p95_ms": 6.412,
+    "guidance_valid_rows": 0,
+    "guidance_reject_reason": "velocity_invalid",
+    "kinematics_reason": "gps_fix_invalid"
+  },
+  "virtual_bbox_log_only": {
+    "source": "logs/virtual_bbox_load/VM_VIRTUAL_4_6_LOG_ONLY_RETRY_20260903_145451_20260903_145452.csv",
+    "set_raw_rc_count": 0,
+    "valid_intercept_rows": 2985,
+    "acceleration_norm_m_s2": {"p50": 1.0, "p95": 1.0, "max": 1.000000001},
+    "load_factor_g": {"p50": 1.046597, "p95": 1.099433, "max": 1.101930},
+    "required_thrust_n": {"p50": 24.755838, "p95": 26.005593, "max": 26.064660},
+    "bbox_command_correlation": {"horizontal_roll": 0.920245, "vertical_pitch": -0.919802},
+    "rate_limit_deg_s": 3.0,
+    "limitation": "computed candidate load only; virtual boxes bypass YOLO and ByteTrack"
+  },
+  "active_rig": {
+    "virtual_bbox_noprop": {
+      "algorithm_duration_s": 1.054612,
+      "motor_output_max_us": 1163,
+      "motor_spread_max_us": 107,
+      "set_raw_rc_write_errors": 0,
+      "set_raw_rc_write_rate_hz": 49.181,
+      "max_send_gap_ms": 101.799,
+      "p999_send_gap_ms": 61.998
+    },
+    "paired_log84": {
+      "host_source": "logs/PROP_RIG_MASK15_REPEAT_5S_300S_20260903_165906.csv",
+      "host_minus_blackbox_s": 19.942716,
+      "alignment_correlation": 0.994075,
+      "alignment_rmse_us": 1.623,
+      "algorithm_interval_host_s": [27.819855, 29.473929],
+      "algorithm_duration_s": 1.654074,
+      "rate_command_limit_deg_s": 3,
+      "throttle_blackbox_max": 1126,
+      "motor_output_max_approx_us": 1259.7,
+      "motor_spread_max_approx_us": 163.748,
+      "i_term_abs_max": [23, 47, 0],
+      "motor_spread_i_term_correlation": 0.9859,
+      "interlock": "motor_output_spread_high",
+      "motor_raw_saturation_duration_s": 0.0
+    },
+    "unpaired_log85_pulses": [
+      {"duration_s": 2.822192, "motor_spread_max_approx_us": 292.550, "i_term_abs_max": [31, 116, 6], "current_max_a": 9.20, "vbat_min_v": 22.97},
+      {"duration_s": 2.677398, "motor_spread_max_approx_us": 196.697, "i_term_abs_max": [17, 81, 4], "current_max_a": 7.16, "vbat_min_v": 23.14},
+      {"duration_s": 2.108887, "motor_spread_max_approx_us": 268.087, "i_term_abs_max": [31, 86, 1], "current_max_a": 6.86, "vbat_min_v": 23.04},
+      {"duration_s": 3.226069, "motor_spread_max_approx_us": 140.284, "i_term_abs_max": [24, 25, 2], "current_max_a": 8.70, "vbat_min_v": 23.17},
+      {"duration_s": 2.802177, "motor_spread_max_approx_us": 237.135, "i_term_abs_max": [29, 69, 6], "current_max_a": 9.97, "vbat_min_v": 23.07}
+    ],
+    "manual_endpoint_log79": {
+      "throttle_command": 1000,
+      "setpoint_abs_max_deg_s": [667, 667, 0],
+      "endpoint_event_duration_s": 0.1149,
+      "motor_raw_saturation_duration_s": 0.1149,
+      "current_max_a": 33.23,
+      "vbat_min_v": 15.63,
+      "vbat_below_20_duration_s": 0.0928,
+      "png_causal": false
+    }
+  },
+  "manual_flight_baseline_log86": {
+    "start_utc": "2026-09-03T10:31:24.591Z",
+    "duration_s": 54.234473,
+    "throttle_above_1050_duration_s": 49.144581,
+    "stable_sample_duration_s": 43.047473,
+    "stable_percentiles_p05_p50_p95": {
+      "throttle_command": [1221, 1243, 1257],
+      "vbat_v": [24.70, 24.79, 24.91],
+      "current_a": [1.84, 4.87, 8.50],
+      "specific_force_g": [0.882, 1.001, 1.098],
+      "motor_mean_approx_us": [1264.584, 1285.177, 1298.906],
+      "motor_spread_approx_us": [16.475, 44.931, 87.865]
+    },
+    "gps": {
+      "frames": 509,
+      "satellites_min_median_max": [20, 24, 24],
+      "frame_interval_p95_ms": 134.168,
+      "frame_interval_max_ms": 412.697,
+      "speed_max_m_s": 2.77,
+      "horizontal_displacement_max_m": 12.531,
+      "altitude_min_max_m": [11.5, 15.9]
+    },
+    "failsafe": false,
+    "landing_contact_transient": {
+      "first_motor_saturation_s": 53.598094,
+      "motor_raw_saturation_duration_s": 0.0284,
+      "current_max_a": 39.30,
+      "specific_force_max_g": 5.297,
+      "vbat_min_v": 23.75
+    }
+  },
+  "png_free_flight": {
+    "detailed_metrics": "doc/evidence/FLIGHT_ACTIVE09_LOG00089_90_analysis.json",
+    "log89": {
+      "takeover_duration_s": 0.925563,
+      "roll_response_lag_ms": 34,
+      "pitch_response_lag_ms": 9,
+      "throttle_pre_median": 1240,
+      "throttle_min": 1197,
+      "specific_force_pre_median_g": 0.999,
+      "specific_force_active_median_g": 0.877,
+      "gps_altitude_change_m": -0.2,
+      "motor_saturation_rows_during_takeover": 0
+    },
+    "log90": {
+      "takeover_duration_s": 0.905328,
+      "roll_response_lag_ms": 30,
+      "pitch_response_lag_ms": 23,
+      "throttle_pre_median": 1243,
+      "throttle_min": 1198,
+      "specific_force_pre_median_g": 0.993,
+      "specific_force_active_median_g": 0.842,
+      "gps_altitude_change_m": -0.2,
+      "motor_saturation_rows_during_takeover": 0
+    },
+    "first_takeover_vision": {
+      "confirmed_results": 27,
+      "result_count": 27,
+      "track_ids": [29],
+      "perception_age_p95_ms": 127.662,
+      "fusion_wait_p95_ms": 94.519,
+      "rknn_total_p95_ms": 6.521
+    }
+  },
+  "conclusions": {
+    "rate_and_msp_chain": "pass_at_3_deg_s",
+    "fixed_rig_interlocks": "pass",
+    "throttle_handover": "fail_p0",
+    "perception_age_under_100_ms": "fail",
+    "interception_probability_proven": false,
+    "next_required_validation": "one_short_supervised_takeover_after_offline throttle fix and latency verification"
+  }
+}
