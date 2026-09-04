@@ -1,5 +1,9 @@
 import unittest
 from collections import deque
+import hashlib
+import json
+import tempfile
+from pathlib import Path
 
 import numpy as np
 
@@ -27,29 +31,35 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
             ClosedLoopSimulationConfig(body_rate_command_delay_s=-0.001)
 
     def test_runtime_fidelity_models_held_control_entry_and_throttle(self):
-        config = ClosedLoopSimulationConfig(
-            duration_s=1.0,
-            dt_s=0.01,
-            control_rate_hz=50.0,
-            entry_handoff_enabled=True,
-            entry_handoff_duration_s=0.8,
-            throttle_dynamics_enabled=True,
-            throttle_handover_duration_s=0.8,
-            throttle_slew_limit_us_per_s=600.0,
-            perception_rate_hz=30.0,
-            kinematic_rate_hz=5.0,
-            kinematic_latency_s=0.0,
-            kinematic_dropout_probability=0.0,
-            kinematic_velocity_noise_std_m_s=0.0,
-            candidate_acquire_consecutive_frames=1,
-        )
+        with tempfile.TemporaryDirectory() as directory:
+            model_path, model_sha256 = self._write_thrust_model(Path(directory))
+            config = ClosedLoopSimulationConfig(
+                duration_s=1.0,
+                dt_s=0.01,
+                control_rate_hz=50.0,
+                entry_handoff_enabled=True,
+                entry_handoff_duration_s=0.8,
+                throttle_dynamics_enabled=True,
+                throttle_handover_duration_s=0.8,
+                throttle_slew_limit_us_per_s=600.0,
+                battery_voltage_v=22.6,
+                thrust_model_path=str(model_path),
+                thrust_model_sha256=model_sha256,
+                thrust_model_calibration_id="simulation-unit-test",
+                perception_rate_hz=30.0,
+                kinematic_rate_hz=5.0,
+                kinematic_latency_s=0.0,
+                kinematic_dropout_probability=0.0,
+                kinematic_velocity_noise_std_m_s=0.0,
+                candidate_acquire_consecutive_frames=1,
+            )
 
-        result = simulate_case(
-            MATRIX15_CASES[0],
-            controller_mode="candidate_velocity_hold_variable_thrust",
-            start_profile="hover",
-            config=config,
-        )
+            result = simulate_case(
+                MATRIX15_CASES[0],
+                controller_mode="candidate_velocity_hold_variable_thrust",
+                start_profile="hover",
+                config=config,
+            )
 
         self.assertEqual(result.control_update_count, 50)
         self.assertGreater(result.entry_handoff_active_fraction, 0.7)
@@ -76,6 +86,42 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
             ClosedLoopSimulationConfig(entry_handoff_enabled=True)
         with self.assertRaisesRegex(ValueError, "throttle slew"):
             ClosedLoopSimulationConfig(throttle_dynamics_enabled=True)
+        with self.assertRaisesRegex(ValueError, "battery_voltage_v"):
+            ClosedLoopSimulationConfig(
+                throttle_dynamics_enabled=True,
+                throttle_slew_limit_us_per_s=600.0,
+            )
+
+    def test_runtime_dynamics_reject_missing_or_uncovered_lut(self):
+        with tempfile.TemporaryDirectory() as directory:
+            model_path, model_sha256 = self._write_thrust_model(Path(directory))
+            common = {
+                "duration_s": 0.05,
+                "throttle_dynamics_enabled": True,
+                "throttle_slew_limit_us_per_s": 600.0,
+                "battery_voltage_v": 22.6,
+                "thrust_model_path": str(model_path),
+                "thrust_model_sha256": model_sha256,
+                "thrust_model_calibration_id": "simulation-unit-test",
+            }
+            with self.assertRaisesRegex(ValueError, "SHA256"):
+                simulate_case(
+                    MATRIX15_CASES[0],
+                    controller_mode="candidate_velocity_hold_variable_thrust",
+                    start_profile="hover",
+                    config=ClosedLoopSimulationConfig(
+                        **{**common, "thrust_model_sha256": "0" * 64}
+                    ),
+                )
+            with self.assertRaisesRegex(ValueError, "outside thrust LUT coverage"):
+                simulate_case(
+                    MATRIX15_CASES[0],
+                    controller_mode="candidate_velocity_hold_variable_thrust",
+                    start_profile="hover",
+                    config=ClosedLoopSimulationConfig(
+                        **{**common, "battery_voltage_v": 19.9}
+                    ),
+                )
 
     def test_matrix_contains_reported_fifteen_cases(self):
         self.assertEqual(len(MATRIX15_CASES), 15)
@@ -359,6 +405,28 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         self.assertFalse(result.target_continuously_in_fov)
         self.assertFalse(result.fov_feasible_hit)
         self.assertGreater(result.maximum_target_off_up_axis_deg, 60.0)
+
+    @staticmethod
+    def _write_thrust_model(directory: Path) -> tuple[Path, str]:
+        path = directory / "thrust_lut.json"
+        values = {
+            "schema_version": 1,
+            "model_type": "voltage_throttle_specific_force_lut",
+            "calibration_id": "simulation-unit-test",
+            "voltage_v": [20.0, 25.2],
+            "throttle_us": [1200.0, 1275.0, 1500.0],
+            "specific_force_m_s2": [
+                [4.0, 9.80665, 20.0],
+                [4.5, 10.2, 22.0],
+            ],
+            "validation": {
+                "passed": True,
+                "median_relative_error": 0.05,
+                "p95_relative_error": 0.15,
+            },
+        }
+        path.write_text(json.dumps(values), encoding="utf-8")
+        return path, hashlib.sha256(path.read_bytes()).hexdigest()
 
     def test_rejects_unknown_mode(self):
         with self.assertRaisesRegex(ValueError, "unsupported controller mode"):

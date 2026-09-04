@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import asdict, dataclass
+from functools import lru_cache
 import math
+from pathlib import Path
 from typing import Iterable, Sequence
 
 import numpy as np
@@ -20,6 +22,7 @@ from .flight_control import (
     guidance_eval_to_setpoint,
 )
 from .los_filter import LOSFilterConfig, LOSKalmanFilter6D
+from .thrust_model import VoltageThrottleThrustModel
 from .types import GuidanceEval
 
 
@@ -97,6 +100,10 @@ class ClosedLoopSimulationConfig:
     throttle_max_us: float = 1500.0
     hover_load_factor_g: float = 1.0
     max_load_factor_g: float = 2.37
+    battery_voltage_v: float = 0.0
+    thrust_model_path: str = ""
+    thrust_model_sha256: str = ""
+    thrust_model_calibration_id: str = ""
     collision_radius_m: float = 1.0
     near_hit_radius_m: float = 1.5
     camera_half_fov_deg: float = 60.0
@@ -274,6 +281,26 @@ class ClosedLoopSimulationConfig:
             raise ValueError(
                 "enabled throttle dynamics require a positive throttle slew limit"
             )
+        if self.throttle_dynamics_enabled:
+            if not math.isfinite(self.battery_voltage_v) or self.battery_voltage_v <= 0.0:
+                raise ValueError(
+                    "enabled throttle dynamics require a positive battery_voltage_v"
+                )
+            if not str(self.thrust_model_path).strip():
+                raise ValueError(
+                    "enabled throttle dynamics require a thrust_model_path"
+                )
+            digest = str(self.thrust_model_sha256).strip().lower()
+            if len(digest) != 64 or any(
+                character not in "0123456789abcdef" for character in digest
+            ):
+                raise ValueError(
+                    "enabled throttle dynamics require a thrust_model_sha256"
+                )
+            if not str(self.thrust_model_calibration_id).strip():
+                raise ValueError(
+                    "enabled throttle dynamics require a thrust_model_calibration_id"
+                )
         if self.collision_radius_m > self.near_hit_radius_m:
             raise ValueError("collision radius cannot exceed near-hit radius")
         if not 0.0 < float(self.candidate_png_track_speed_ratio) <= 1.0:
@@ -441,6 +468,7 @@ def simulate_case(
         raise ValueError(f"unsupported start profile: {start_profile}")
     cfg = config or ClosedLoopSimulationConfig()
     _validate_case(case)
+    thrust_model = _configured_thrust_model(cfg)
     dropout_rng, measurement_rng, wind_rng, kinematic_rng = _simulation_rngs(
         cfg.random_seed,
         case_id=case.case_id,
@@ -487,13 +515,15 @@ def simulate_case(
         thrust_feedforward=ThrustFeedforwardConfig(
             enabled=cfg.throttle_dynamics_enabled,
             model=(
-                "measured_load_factor"
+                "voltage_throttle_lut"
                 if cfg.throttle_dynamics_enabled
                 else "fixed_hover"
             ),
             hover_load_factor_g=cfg.hover_load_factor_g,
             max_load_factor_g=cfg.max_load_factor_g,
-            calibration_id=("simulation_runtime_binding" if cfg.throttle_dynamics_enabled else ""),
+            calibration_id=cfg.thrust_model_calibration_id,
+            model_path=cfg.thrust_model_path,
+            model_sha256=cfg.thrust_model_sha256,
         ),
     )
     candidate_controller = (
@@ -626,7 +656,15 @@ def simulate_case(
     )
     maximum_throttle_us: float | None = minimum_throttle_us
     maximum_load_factor_g: float | None = (
-        cfg.hover_load_factor_g if cfg.throttle_dynamics_enabled else None
+        (
+            thrust_model.specific_force(
+                cfg.battery_voltage_v,
+                cfg.throttle_hover_us,
+            )
+            / cfg.gravity_m_s2
+        )
+        if thrust_model is not None
+        else None
     )
     setpoint = None
     samples = 0
@@ -942,7 +980,18 @@ def simulate_case(
                 hover_thrust=0.5,
                 mapping_type="accel_tilt_rate",
                 accel_tilt_rate=mapping_config,
+                thrust_model=thrust_model,
+                battery_voltage_v=(
+                    cfg.battery_voltage_v
+                    if cfg.throttle_dynamics_enabled
+                    else None
+                ),
             )
+            if not setpoint.valid:
+                raise RuntimeError(
+                    "thrust-model setpoint generation failed: "
+                    f"{setpoint.reject_reason}"
+                )
             held_p_command_rad_s = math.radians(setpoint.roll_rate_deg_s)
             held_q_command_rad_s = math.radians(setpoint.pitch_rate_deg_s)
             if cfg.entry_handoff_enabled:
@@ -955,7 +1004,11 @@ def simulate_case(
                 held_q_command_rad_s = _lerp(
                     entry_start_q_rad_s, held_q_command_rad_s, progress
                 )
-            held_target_throttle_us = _thrust_to_pwm(setpoint.thrust, cfg)
+            held_target_throttle_us = (
+                float(setpoint.throttle_target_us)
+                if setpoint.throttle_target_us is not None
+                else _thrust_to_pwm(setpoint.thrust, cfg)
+            )
             body_rate_command_history.append(
                 (elapsed, held_p_command_rad_s, held_q_command_rad_s)
             )
@@ -1046,8 +1099,13 @@ def simulate_case(
                     cfg.throttle_max_us,
                 )
             )
-            load_factor_g = _pwm_to_load_factor(current_throttle_us, cfg)
-            thrust_specific_force = load_factor_g * cfg.gravity_m_s2
+            if thrust_model is None:
+                raise RuntimeError("throttle dynamics require a loaded thrust LUT")
+            thrust_specific_force = thrust_model.specific_force(
+                cfg.battery_voltage_v,
+                current_throttle_us,
+            )
+            load_factor_g = thrust_specific_force / cfg.gravity_m_s2
             thrust_saturated = bool(setpoint.thrust_command_limited)
             counters["throttle_handover"] += int(handover_active)
             counters["throttle_slew"] += int(throttle_slew_saturated)
@@ -1550,29 +1608,36 @@ def _thrust_to_pwm(thrust: float, config: ClosedLoopSimulationConfig) -> float:
     )
 
 
-def _pwm_to_load_factor(
-    throttle_us: float,
+def _configured_thrust_model(
     config: ClosedLoopSimulationConfig,
-) -> float:
-    pwm = float(
-        np.clip(
-            throttle_us,
-            config.throttle_min_us,
-            config.throttle_max_us,
-        )
+) -> VoltageThrottleThrustModel | None:
+    if not config.throttle_dynamics_enabled:
+        return None
+    model = _load_thrust_model(
+        str(Path(config.thrust_model_path).expanduser().resolve()),
+        config.thrust_model_sha256,
+        config.thrust_model_calibration_id,
     )
-    if pwm <= config.throttle_hover_us:
-        progress = (pwm - config.throttle_min_us) / (
-            config.throttle_hover_us - config.throttle_min_us
-        )
-        return _lerp(0.0, config.hover_load_factor_g, progress)
-    progress = (pwm - config.throttle_hover_us) / (
-        config.throttle_max_us - config.throttle_hover_us
-    )
-    return _lerp(
-        config.hover_load_factor_g,
-        config.max_load_factor_g,
-        progress,
+    if not model.covers_voltage(config.battery_voltage_v):
+        raise ValueError("battery voltage is outside thrust LUT coverage")
+    if (
+        float(model.throttle_us[0]) > config.throttle_min_us
+        or float(model.throttle_us[-1]) < config.throttle_max_us
+    ):
+        raise ValueError("thrust LUT does not cover the configured throttle envelope")
+    return model
+
+
+@lru_cache(maxsize=8)
+def _load_thrust_model(
+    path: str,
+    sha256: str,
+    calibration_id: str,
+) -> VoltageThrottleThrustModel:
+    return VoltageThrottleThrustModel.from_file(
+        path,
+        expected_sha256=sha256,
+        expected_calibration_id=calibration_id,
     )
 
 
