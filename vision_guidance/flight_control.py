@@ -1073,6 +1073,7 @@ class TakeoverDurationInterlockConfig:
     max_duration_s: float | None = 3.0
     latch_until_disarm: bool = True
     rearm_release_s: float = 0.0
+    max_takeovers_per_arm: int | None = None
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "TakeoverDurationInterlockConfig":
@@ -1084,6 +1085,11 @@ class TakeoverDurationInterlockConfig:
             ),
             latch_until_disarm=bool(values.get("latch_until_disarm", True)),
             rearm_release_s=float(values.get("rearm_release_s", 0.0)),
+            max_takeovers_per_arm=(
+                None
+                if values.get("max_takeovers_per_arm") is None
+                else int(values["max_takeovers_per_arm"])
+            ),
         )
 
     def __post_init__(self) -> None:
@@ -1099,6 +1105,8 @@ class TakeoverDurationInterlockConfig:
             raise ValueError("takeover duration max_duration_s must be null or finite and positive")
         if not np.isfinite(self.rearm_release_s) or self.rearm_release_s < 0.0:
             raise ValueError("takeover duration rearm_release_s must be finite and non-negative")
+        if self.max_takeovers_per_arm is not None and self.max_takeovers_per_arm < 1:
+            raise ValueError("max_takeovers_per_arm must be null or positive")
 
 
 @dataclass(frozen=True)
@@ -1112,6 +1120,8 @@ class TakeoverDurationInterlockState:
     takeover_requested: bool = False
     control_active: bool = False
     release_elapsed_s: float = 0.0
+    takeover_count: int = 0
+    max_takeovers_per_arm: int | None = None
 
 
 class TakeoverDurationInterlock:
@@ -1125,6 +1135,8 @@ class TakeoverDurationInterlock:
         self._release_started_s: float | None = None
         self._last_update_s: float | None = None
         self._last_control_active = False
+        self._takeover_count = 0
+        self._latched_reason = ""
 
     def update(
         self,
@@ -1155,6 +1167,8 @@ class TakeoverDurationInterlock:
                 False,
                 takeover_requested=requested,
                 control_active=active,
+                takeover_count=0,
+                max_takeovers_per_arm=self.config.max_takeovers_per_arm,
             )
         if not armed:
             self._reset(now)
@@ -1166,6 +1180,8 @@ class TakeoverDurationInterlock:
                 remaining_s=self.config.max_duration_s,
                 takeover_requested=requested,
                 control_active=False,
+                takeover_count=0,
+                max_takeovers_per_arm=self.config.max_takeovers_per_arm,
             )
         previous_update_s = self._last_update_s
         dt = (
@@ -1177,14 +1193,34 @@ class TakeoverDurationInterlock:
         if self._latched:
             return TakeoverDurationInterlockState(
                 False,
-                "takeover_duration_exceeded",
+                self._latched_reason or "takeover_duration_exceeded",
                 True,
                 self._active_duration_s,
                 self.config.max_duration_s,
                 0.0,
                 requested,
                 active,
+                takeover_count=self._takeover_count,
+                max_takeovers_per_arm=self.config.max_takeovers_per_arm,
             )
+        if active and not self._last_control_active:
+            maximum = self.config.max_takeovers_per_arm
+            if maximum is not None and self._takeover_count >= maximum:
+                self._latched = True
+                self._latched_reason = "takeover_count_exceeded"
+                return TakeoverDurationInterlockState(
+                    False,
+                    self._latched_reason,
+                    True,
+                    self._active_duration_s,
+                    self.config.max_duration_s,
+                    max(0.0, self.config.max_duration_s - self._active_duration_s),
+                    requested,
+                    False,
+                    takeover_count=self._takeover_count,
+                    max_takeovers_per_arm=maximum,
+                )
+            self._takeover_count += 1
         if self._rearm_required:
             if requested:
                 self._release_started_s = None
@@ -1253,6 +1289,8 @@ class TakeoverDurationInterlock:
                     self.config.max_duration_s - self._active_duration_s,
                 ),
                 release_elapsed_s=0.0,
+                takeover_count=self._takeover_count,
+                max_takeovers_per_arm=self.config.max_takeovers_per_arm,
             )
         if active and self._last_control_active:
             self._active_duration_s += dt
@@ -1263,6 +1301,8 @@ class TakeoverDurationInterlock:
                 self._active_duration_s,
             )
             self._latched = bool(self.config.latch_until_disarm)
+            if self._latched:
+                self._latched_reason = "takeover_duration_exceeded"
             self._rearm_required = not self._latched
             self._release_started_s = None
             return TakeoverDurationInterlockState(
@@ -1284,6 +1324,8 @@ class TakeoverDurationInterlock:
             max(0.0, self.config.max_duration_s - self._active_duration_s),
             True,
             active,
+            takeover_count=self._takeover_count,
+            max_takeovers_per_arm=self.config.max_takeovers_per_arm,
         )
 
     def _reset(self, timestamp: float | None = None) -> None:
@@ -1293,6 +1335,8 @@ class TakeoverDurationInterlock:
         self._release_started_s = None
         self._last_update_s = timestamp
         self._last_control_active = False
+        self._takeover_count = 0
+        self._latched_reason = ""
 
 
 @dataclass(frozen=True)

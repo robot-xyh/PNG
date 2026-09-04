@@ -241,7 +241,7 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         config = self.flight_supervised
         self.assertEqual(
             config["candidate_profile"]["scope"],
-            "flight_active_supervised",
+            "flight_noncollision_supervised_v2",
         )
         self.assertEqual(config["msp_runtime"]["override_channels_mask"], 15)
         self.assertEqual(config["msp_runtime"]["throttle_relative_limit_us"], 0)
@@ -283,9 +283,10 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertTrue(thrust["enabled"])
         self.assertEqual(thrust["calibration_id"], "LOG00062_1275_1500")
         takeover = config["safety"]["takeover_duration_interlock"]
-        self.assertFalse(takeover["enabled"])
-        self.assertIsNone(takeover["max_duration_s"])
-        self.assertFalse(takeover["latch_until_disarm"])
+        self.assertTrue(takeover["enabled"])
+        self.assertEqual(takeover["max_duration_s"], 2.0)
+        self.assertTrue(takeover["latch_until_disarm"])
+        self.assertEqual(takeover["max_takeovers_per_arm"], 1)
         self.assertEqual(takeover["rearm_release_s"], 0)
 
     def test_runtime_policy_rejects_output_for_log_only_profiles(self):

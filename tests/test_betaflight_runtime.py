@@ -386,6 +386,29 @@ class BetaflightRuntimeTest(unittest.TestCase):
             self.assertFalse(wrong_scope.approved)
             self.assertEqual(wrong_scope.reason, "authorization_scope_mismatch")
 
+    def test_authorization_rejects_legacy_schema_when_v2_is_required(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{}\n', encoding="utf-8")
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps({"schema_version": 1, "approved": True}) + "\n",
+                encoding="utf-8",
+            )
+            status = resolve_control_authorization(
+                {
+                    "enabled": True,
+                    "approval_manifest": str(approval),
+                    "minimum_approval_schema_version": 2,
+                },
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(status.approved)
+            self.assertEqual(status.reason, "approval_schema_version_too_old")
+
     def test_authorization_binds_required_release_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -659,7 +682,10 @@ class BetaflightRuntimeTest(unittest.TestCase):
 
         worker._publish(1.01)
 
-        self.assertEqual(worker.snapshot(1.01).publish_mode, "throttle_reference_out_of_range")
+        snapshot = worker.snapshot(1.01)
+        self.assertEqual(snapshot.publish_mode, "override_frozen_hold")
+        self.assertEqual(snapshot.publish_reason, "throttle_reference_out_of_range")
+        self.assertFalse(snapshot.pilot_control_available)
         self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
 
     def test_worker_never_sends_without_authorization(self):
@@ -699,7 +725,10 @@ class BetaflightRuntimeTest(unittest.TestCase):
 
         worker._publish(1.02)
 
-        self.assertEqual(worker.snapshot(1.02).publish_mode, "passthrough")
+        snapshot = worker.snapshot(1.02)
+        self.assertEqual(snapshot.publish_mode, "live_passthrough")
+        self.assertEqual(snapshot.rc_source, "live_msp_rc")
+        self.assertTrue(snapshot.pilot_control_available)
         self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
 
     def test_worker_refuses_inactive_command_at_publish_boundary(self):
@@ -752,13 +781,15 @@ class BetaflightRuntimeTest(unittest.TestCase):
         snapshot = worker.snapshot(now + 0.02)
         self.assertTrue(snapshot.override_release_hold_active)
         self.assertTrue(snapshot.last_publish_override_release_hold_active)
-        self.assertEqual(snapshot.publish_mode, "passthrough")
+        self.assertEqual(snapshot.publish_mode, "release_hold")
         self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1000, 1500))
 
         sent_count = len(adapter.sent)
         worker._publish(now + 0.40)
         self.assertEqual(len(adapter.sent), sent_count)
-        self.assertEqual(worker.snapshot(now + 0.40).publish_mode, "physical_rc_stale")
+        snapshot = worker.snapshot(now + 0.40)
+        self.assertEqual(snapshot.publish_mode, "disabled")
+        self.assertEqual(snapshot.publish_reason, "physical_rc_stale")
 
     def test_async_motor_response_is_merged_into_telemetry(self):
         transport = _AsyncTransport()
@@ -850,8 +881,48 @@ class BetaflightRuntimeTest(unittest.TestCase):
 
         snapshot = worker.snapshot(1.2)
         self.assertEqual(adapter.sent[-1], (1500, 1500, 1000, 1500, 1800, 1200, 1300, 1400))
-        self.assertEqual(snapshot.publish_mode, "passthrough")
+        self.assertEqual(snapshot.publish_mode, "override_frozen_hold")
+        self.assertEqual(snapshot.publish_reason, "algorithm_unavailable")
+        self.assertFalse(snapshot.pilot_control_available)
         self.assertEqual(snapshot.stale_command_count, 1)
+
+    def test_algorithm_release_neutralizes_rates_and_returns_entry_throttle(self):
+        adapter = _Adapter()
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                prefill_enabled=True,
+                prefill_min_frames=1,
+                staged_command_timeout_s=0.1,
+                throttle_handover_s=0.0,
+                throttle_slew_limit_us_per_s=600.0,
+                throttle_reference_min_us=1000,
+                throttle_reference_max_us=1400,
+                throttle_command_min_us=1000,
+                throttle_command_max_us=1500,
+            ),
+        )
+        worker._poll(1.0)
+        worker.stage(None, output_enabled=True, algorithm_authorized=False, override_active=False)
+        worker._publish(1.01)
+        command = RcCommand(
+            1.02,
+            (1600, 1400, 1400, 1550, 1000, 2000, 2000, 2000),
+            True,
+        )
+        worker.stage(command, output_enabled=True, algorithm_authorized=True, override_active=True)
+        worker._publish(1.02)
+        worker.stage(command, output_enabled=True, algorithm_authorized=False, override_active=True)
+        worker._publish(1.12)
+
+        snapshot = worker.snapshot(1.12)
+        self.assertEqual(snapshot.publish_mode, "release_hold")
+        self.assertEqual(snapshot.rc_source, "synthesized_release_hold")
+        self.assertFalse(snapshot.pilot_control_available)
+        self.assertEqual(adapter.sent[-1][0], 1500)
+        self.assertEqual(adapter.sent[-1][1], 1500)
+        self.assertEqual(adapter.sent[-1][3], 1500)
+        self.assertLess(adapter.sent[-1][2], 1400)
 
     def test_worker_refuses_prefill_when_started_with_override_active_and_885_rc(self):
         adapter = _Adapter()
@@ -873,7 +944,8 @@ class BetaflightRuntimeTest(unittest.TestCase):
         snapshot = worker.snapshot(1.01)
         self.assertEqual(adapter.sent, [])
         self.assertFalse(snapshot.prefill_ready)
-        self.assertEqual(snapshot.publish_mode, "physical_rc_invalid")
+        self.assertEqual(snapshot.publish_mode, "disabled")
+        self.assertEqual(snapshot.publish_reason, "physical_rc_invalid")
 
     def test_worker_normal_close_sends_configured_passthrough_frames(self):
         adapter = _Adapter()
@@ -983,7 +1055,8 @@ class BetaflightRuntimeTest(unittest.TestCase):
         worker._publish(time.monotonic())
 
         snapshot = worker.snapshot()
-        self.assertEqual(snapshot.publish_mode, "set_ack_stale")
+        self.assertEqual(snapshot.publish_mode, "override_frozen_hold")
+        self.assertEqual(snapshot.publish_reason, "set_ack_stale")
         self.assertFalse(snapshot.set_raw_rc_ack_fresh)
         self.assertEqual(snapshot.last_sent_channels[:4], (1500, 1500, 1000, 1500))
         adapter.end_async_pipeline()

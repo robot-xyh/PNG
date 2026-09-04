@@ -1425,25 +1425,26 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             raise RuntimeError("flight_active_1s requires Acro/Rate mode")
         if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
             raise RuntimeError("flight_active_1s requires safety.min_vbat_v >= 20 V")
-    if control_output_requested and flight_scope == "flight_active_supervised":
+    if control_output_requested and flight_scope == "flight_noncollision_supervised_v2":
         guidance_cfg = dict(config.get("guidance", {}))
         velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
         thrust_cfg = _acceleration_tilt_rate_config(config).thrust_feedforward
         if guidance_cfg.get("velocity_source") != "msp_kinematics":
-            raise RuntimeError("flight_active_supervised requires velocity_source=msp_kinematics")
+            raise RuntimeError("flight_noncollision_supervised_v2 requires velocity_source=msp_kinematics")
         if msp_runtime_config.override_channels_mask != 15:
-            raise RuntimeError("flight_active_supervised requires four-channel mask 15")
+            raise RuntimeError("flight_noncollision_supervised_v2 requires four-channel mask 15")
         if (
-            takeover_duration_config.enabled
-            or takeover_duration_config.max_duration_s is not None
-            or takeover_duration_config.latch_until_disarm
+            not takeover_duration_config.enabled
+            or takeover_duration_config.max_duration_s != 2.0
+            or not takeover_duration_config.latch_until_disarm
+            or takeover_duration_config.max_takeovers_per_arm != 1
             or takeover_duration_config.rearm_release_s != 0.0
         ):
             raise RuntimeError(
-                "flight_active_supervised requires an explicitly disabled duration interlock"
+                "flight_noncollision_supervised_v2 requires a 2 s, one-takeover, DISARM-latched interlock"
             )
         if msp_runtime_config.throttle_relative_limit_us != 0:
-            raise RuntimeError("flight_active_supervised forbids relative throttle limiting")
+            raise RuntimeError("flight_noncollision_supervised_v2 forbids relative throttle limiting")
         if (
             msp_runtime_config.throttle_reference_min_us != 1200
             or msp_runtime_config.throttle_reference_max_us != 1400
@@ -1451,14 +1452,14 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             or msp_runtime_config.throttle_command_max_us != 1500
             or not 0.0 < msp_runtime_config.throttle_slew_limit_us_per_s <= 600.0
         ):
-            raise RuntimeError("flight_active_supervised throttle envelope mismatch")
+            raise RuntimeError("flight_noncollision_supervised_v2 throttle envelope mismatch")
         if (
             rc_mapping_config.throttle_min_us != 1200
             or rc_mapping_config.throttle_hover_us != 1275
             or rc_mapping_config.throttle_max_us != 1500
             or rc_mapping_config.yaw_command_limit_deg_s != 0.0
         ):
-            raise RuntimeError("flight_active_supervised RC throttle/Yaw mapping mismatch")
+            raise RuntimeError("flight_noncollision_supervised_v2 RC throttle/Yaw mapping mismatch")
         if any(
             limit is None or limit > 60.0
             for limit in (
@@ -1914,6 +1915,12 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     takeover_requested=int(takeover_duration_state.takeover_requested),
                     takeover_control_active=int(takeover_duration_state.control_active),
                     takeover_release_elapsed_s=takeover_duration_state.release_elapsed_s,
+                    takeover_count=takeover_duration_state.takeover_count,
+                    takeover_count_limit=(
+                        ""
+                        if takeover_duration_state.max_takeovers_per_arm is None
+                        else takeover_duration_state.max_takeovers_per_arm
+                    ),
                 )
                 aux_enabled = _aux_enabled(telemetry, safety_cfg, override_active=override_active)
                 if bool(safety_cfg.get("require_acro_rate_mode", False)):
@@ -2950,6 +2957,9 @@ def _msp_log_stats(
                 "" if worker_snapshot.staged_command_age_s is None else worker_snapshot.staged_command_age_s
             ),
             msp_publish_mode=worker_snapshot.publish_mode,
+            msp_publish_reason=worker_snapshot.publish_reason,
+            msp_rc_source=worker_snapshot.rc_source,
+            msp_pilot_control_available=int(worker_snapshot.pilot_control_available),
             msp_last_publish_output_enabled=int(worker_snapshot.last_publish_output_enabled),
             msp_last_publish_algorithm_authorized=int(
                 worker_snapshot.last_publish_algorithm_authorized
@@ -3339,6 +3349,9 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_stale_command_count",
         "msp_staged_command_age_s",
         "msp_publish_mode",
+        "msp_publish_reason",
+        "msp_rc_source",
+        "msp_pilot_control_available",
         "msp_last_publish_output_enabled",
         "msp_last_publish_algorithm_authorized",
         "msp_last_publish_override_active",
@@ -3435,6 +3448,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "takeover_requested",
         "takeover_control_active",
         "takeover_release_elapsed_s",
+        "takeover_count",
+        "takeover_count_limit",
         "rc_in_count",
         "rc_in_all",
         "detector_source",
@@ -3811,6 +3826,11 @@ def _log_row(
         "msp_stale_command_count": detector_stats.get("msp_stale_command_count", ""),
         "msp_staged_command_age_s": _stats_float(detector_stats, "msp_staged_command_age_s", precision=6),
         "msp_publish_mode": detector_stats.get("msp_publish_mode", ""),
+        "msp_publish_reason": detector_stats.get("msp_publish_reason", ""),
+        "msp_rc_source": detector_stats.get("msp_rc_source", ""),
+        "msp_pilot_control_available": detector_stats.get(
+            "msp_pilot_control_available", ""
+        ),
         "msp_last_publish_output_enabled": detector_stats.get(
             "msp_last_publish_output_enabled", ""
         ),
@@ -3966,6 +3986,8 @@ def _log_row(
         "takeover_release_elapsed_s": _stats_float(
             detector_stats, "takeover_release_elapsed_s", precision=6
         ),
+        "takeover_count": detector_stats.get("takeover_count", ""),
+        "takeover_count_limit": detector_stats.get("takeover_count_limit", ""),
         "rc_in_count": "" if telemetry is None else len(telemetry.rc_channels),
         "rc_in_all": "" if telemetry is None else _channels_field(telemetry.rc_channels),
         "detector_source": detector_stats.get("detector_source", ""),

@@ -176,6 +176,11 @@ def telemetry_payload_from_log_row(
             "msp_response_fresh": _boolean(row.get("msp_set_raw_rc_ack_fresh")),
             "target_valid": _boolean(row.get("sp_valid")),
             "publish_mode": _text(row.get("msp_publish_mode")),
+            "publish_reason": _text(row.get("msp_publish_reason")),
+            "rc_source": _text(row.get("msp_rc_source")),
+            "pilot_control_available": _boolean(
+                row.get("msp_pilot_control_available")
+            ),
             "telemetry_fresh": _boolean(row.get("telemetry_fresh")),
             "attitude_synced": _boolean(row.get("attitude_synced")),
             "motor_interlock": {
@@ -195,6 +200,8 @@ def telemetry_payload_from_log_row(
                 "takeover_requested": _boolean(row.get("takeover_requested")),
                 "control_active": _boolean(row.get("takeover_control_active")),
                 "release_elapsed_s": _number(row.get("takeover_release_elapsed_s")),
+                "takeover_count": _integer(row.get("takeover_count")),
+                "takeover_count_limit": _integer(row.get("takeover_count_limit")),
                 "rearm_waiting": _text(row.get("takeover_duration_interlock_reason"))
                 in {"takeover_rearm_wait", "takeover_release_required"},
             },

@@ -36,7 +36,7 @@ from vision_guidance.flight_control import (  # noqa: E402
 )
 
 
-SCOPE = "flight_active_supervised"
+SCOPE = "flight_noncollision_supervised_v2"
 OVERRIDE_CHANNELS_MASK = 15
 MAX_RATE_DEG_S = 60.0
 MAX_TILT_DEG = 35.0
@@ -77,6 +77,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--release-evidence", required=True)
+    parser.add_argument("--rc-interlock-evidence", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--operator", required=True)
     parser.add_argument("--acknowledge-supervised-flight", action="store_true")
@@ -91,6 +92,7 @@ def main() -> None:
     snapshot_path = Path(args.snapshot).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve()
     release_evidence_path = Path(args.release_evidence).expanduser().resolve()
+    rc_interlock_path = Path(args.rc_interlock_evidence).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
@@ -98,6 +100,11 @@ def main() -> None:
     release_evidence = validate_release_evidence(
         _read_json(release_evidence_path),
         release_evidence_path,
+        runtime_config_sha256=config_sha256,
+    )
+    rc_interlock_evidence = validate_rc_interlock_evidence(
+        _read_json(rc_interlock_path),
+        rc_interlock_path,
         runtime_config_sha256=config_sha256,
     )
     parsed_cli = _validate_snapshot(
@@ -114,7 +121,7 @@ def main() -> None:
         fc_identity=dict(snapshot["fc_identity"]),
     )
     approval = {
-        "schema_version": 1,
+        "schema_version": 2,
         "approved": True,
         "scope": SCOPE,
         "created_unix_s": time.time(),
@@ -131,10 +138,12 @@ def main() -> None:
         "parameters_path": str(config_path),
         "parameters_sha256": config_sha256,
         "release_evidence": release_evidence,
+        "rc_interlock_evidence": rc_interlock_evidence,
         "limits": {
             "override_channels_mask": OVERRIDE_CHANNELS_MASK,
-            "actual_algorithm_publication_limit_s": None,
-            "duration_interlock_enabled": False,
+            "actual_algorithm_publication_limit_s": 2.0,
+            "duration_interlock_enabled": True,
+            "max_takeovers_per_arm": 1,
             "roll_pitch_rate_deg_s": MAX_RATE_DEG_S,
             "tilt_envelope_deg": MAX_TILT_DEG,
             "total_guidance_accel_mps2": MAX_GUIDANCE_ACCEL_MPS2,
@@ -159,8 +168,8 @@ def validate_release_evidence(
     *,
     runtime_config_sha256: str,
 ) -> dict[str, Any]:
-    if report.get("schema_version") != 2:
-        raise RuntimeError("release evidence schema_version must be 2")
+    if report.get("schema_version") != 3:
+        raise RuntimeError("release evidence schema_version must be 3")
     if report.get("purpose") != "stochastic interception release evaluation":
         raise RuntimeError("release evidence purpose mismatch")
     if report.get("release_passed") is not True:
@@ -245,7 +254,7 @@ def validate_release_evidence(
     return {
         "path": str(report_path),
         "sha256": _sha256(report_path),
-        "schema_version": 2,
+        "schema_version": 3,
         "runtime_config_sha256": runtime_config_sha256,
         "formal_hit_rate_min": RELEASE_HIT_RATE_MIN,
         "formal_fov_hit_rate_min": RELEASE_FOV_HIT_RATE_MIN,
@@ -253,6 +262,38 @@ def validate_release_evidence(
         "case_count": case_count,
         "row_count": row_count,
         "required_scenario_count": len(summaries),
+    }
+
+
+def validate_rc_interlock_evidence(
+    report: dict[str, Any],
+    report_path: Path,
+    *,
+    runtime_config_sha256: str,
+) -> dict[str, Any]:
+    if report.get("schema_version") != 1 or report.get("passed") is not True:
+        raise RuntimeError("RC interlock evidence must be a passing schema v1 report")
+    binding = _release_mapping(report.get("runtime_binding"), "runtime_binding")
+    if binding.get("sha256") != runtime_config_sha256:
+        raise RuntimeError("RC interlock evidence runtime config SHA256 mismatch")
+    checks = _release_mapping(report.get("checks"), "checks")
+    required = (
+        "override_seen",
+        "release_mode_seen",
+        "rc7_low_seen",
+        "override_cleared",
+    )
+    if any(checks.get(name) is not True for name in required):
+        raise RuntimeError("RC interlock evidence is incomplete")
+    latency_ms = float(report.get("max_release_latency_ms", math.inf))
+    if not math.isfinite(latency_ms) or latency_ms > 200.0:
+        raise RuntimeError("RC interlock release latency exceeds 200 ms")
+    return {
+        "path": str(report_path),
+        "sha256": _sha256(report_path),
+        "schema_version": 1,
+        "max_release_latency_ms": latency_ms,
+        "checks": {name: True for name in required},
     }
 
 
@@ -325,11 +366,12 @@ def validate_flight_supervised_config(
     if int(profile.get("override_channels_mask", -1)) != OVERRIDE_CHANNELS_MASK:
         raise RuntimeError("supervised profile must use mask 15")
     if (
-        profile.get("max_takeover_duration_s") is not None
-        or profile.get("takeover_time_basis") != "unbounded_while_safety_gates_healthy"
+        float(profile.get("max_takeover_duration_s", math.nan)) != 2.0
+        or profile.get("takeover_time_basis") != "actual_algorithm_publication"
+        or int(profile.get("max_takeovers_per_arm", 0)) != 1
         or float(profile.get("rc7_release_rearm_s", math.nan)) != 0.0
     ):
-        raise RuntimeError("supervised profile must declare an unbounded takeover duration")
+        raise RuntimeError("non-collision profile must declare one 2 s takeover per ARM")
 
     if policy.get("required_authorization_scope") != SCOPE:
         raise RuntimeError("runtime policy scope mismatch")
@@ -383,12 +425,13 @@ def validate_flight_supervised_config(
 
     takeover = dict(safety.get("takeover_duration_interlock", {}))
     if (
-        takeover.get("enabled") is not False
-        or takeover.get("latch_until_disarm") is not False
-        or takeover.get("max_duration_s") is not None
+        takeover.get("enabled") is not True
+        or takeover.get("latch_until_disarm") is not True
+        or float(takeover.get("max_duration_s", math.nan)) != 2.0
+        or int(takeover.get("max_takeovers_per_arm", 0)) != 1
         or float(takeover.get("rearm_release_s", math.nan)) != 0.0
     ):
-        raise RuntimeError("takeover duration interlock must be explicitly disabled")
+        raise RuntimeError("takeover interlock must enforce one 2 s pulse per ARM")
     if safety.get("require_acro_rate_mode") is not True:
         raise RuntimeError("Acro/Rate mode is required")
     if float(safety.get("min_vbat_v", 0.0)) < MIN_VBAT_V:

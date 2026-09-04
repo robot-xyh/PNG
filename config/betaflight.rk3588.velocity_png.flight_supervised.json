@@ -1,12 +1,13 @@
 {
+  "schema_version": 2,
   "candidate_profile": {
-    "id": "velocity_png_flight_active_supervised",
-    "scope": "flight_active_supervised",
+    "id": "velocity_png_flight_noncollision_supervised_v2",
+    "scope": "flight_noncollision_supervised_v2",
     "runnable_as_log_only": true,
     "active_control_runnable_after_fresh_approval": true,
     "control_authorized_without_manifest": false,
     "propellers_installed": true,
-    "purpose": "Supervised four-channel PNG candidate with measured variable thrust and no fixed takeover-duration cutoff."
+    "purpose": "Finite-duration, single-takeover, non-collision four-channel PNG validation."
   },
   "runtime_policy": {
     "allowed_control_modes": [
@@ -15,18 +16,19 @@
     ],
     "allow_control_flag_permitted": true,
     "msp_set_raw_rc_permitted": true,
-    "required_authorization_scope": "flight_active_supervised"
+    "required_authorization_scope": "flight_noncollision_supervised_v2"
   },
   "flight_profile": {
-    "scope": "flight_active_supervised",
+    "scope": "flight_noncollision_supervised_v2",
     "propellers_installed": true,
     "professional_pilot_required": true,
     "acro_rate_mode_required": true,
     "controlled_axes": ["roll", "pitch", "throttle", "yaw"],
     "yaw_policy": "neutral_1500_us",
     "override_channels_mask": 15,
-    "max_takeover_duration_s": null,
-    "takeover_time_basis": "unbounded_while_safety_gates_healthy",
+    "max_takeover_duration_s": 2.0,
+    "takeover_time_basis": "actual_algorithm_publication",
+    "max_takeovers_per_arm": 1,
     "rc7_release_rearm_s": 0,
     "throttle_absolute_max_us": 1500
   },
@@ -126,8 +128,10 @@
   },
   "control_authorization": {
     "enabled": true,
-    "required_scope": "flight_active_supervised",
-    "approval_manifest": "logs/betaflight_velocity_png_flight_supervised_approval.json",
+    "required_scope": "flight_noncollision_supervised_v2",
+    "approval_manifest": "logs/betaflight_velocity_png_flight_noncollision_v2_approval.json",
+    "minimum_approval_schema_version": 2,
+    "rc_interlock_evidence_required": true,
     "release_evidence_required": true
   },
   "camera": {
@@ -357,9 +361,10 @@
     "watchdog_timeout_s": 0.25,
     "min_vbat_v": 20,
     "takeover_duration_interlock": {
-      "enabled": false,
-      "max_duration_s": null,
-      "latch_until_disarm": false,
+      "enabled": true,
+      "max_duration_s": 2.0,
+      "latch_until_disarm": true,
+      "max_takeovers_per_arm": 1,
       "rearm_release_s": 0
     },
     "require_aux_enable": true,

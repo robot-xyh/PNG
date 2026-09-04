@@ -332,6 +332,9 @@ class MspWorkerSnapshot:
     stale_command_count: int
     staged_command_age_s: float | None
     publish_mode: str
+    publish_reason: str
+    rc_source: str
+    pilot_control_available: bool
     last_sent_channels: tuple[int, ...]
     last_publish_output_enabled: bool
     last_publish_algorithm_authorized: bool
@@ -395,6 +398,17 @@ def resolve_control_authorization(
         return ControlAuthorizationStatus(False, f"approval_manifest_invalid:{exc}", str(approval_path))
     if approval.get("approved") is not True:
         return ControlAuthorizationStatus(False, "approval_not_granted", str(approval_path))
+    minimum_schema_version = int(values.get("minimum_approval_schema_version", 1))
+    try:
+        approval_schema_version = int(approval.get("schema_version", 1))
+    except (TypeError, ValueError):
+        approval_schema_version = 0
+    if approval_schema_version < minimum_schema_version:
+        return ControlAuthorizationStatus(
+            False,
+            "approval_schema_version_too_old",
+            str(approval_path),
+        )
     if approval.get("source_conflicts_resolved") is not True:
         return ControlAuthorizationStatus(False, "source_conflicts_unresolved", str(approval_path))
     scope = str(approval.get("scope", "")).strip()
@@ -508,6 +522,43 @@ def resolve_control_authorization(
                         reason = "release_evidence_parameters_mismatch"
                     else:
                         reason = ""
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                reason,
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
+    if bool(values.get("rc_interlock_evidence_required", False)):
+        interlock_evidence = approval.get("rc_interlock_evidence")
+        reason = ""
+        if not isinstance(interlock_evidence, dict):
+            reason = "rc_interlock_evidence_missing"
+        else:
+            evidence_path = Path(str(interlock_evidence.get("path", ""))).expanduser()
+            if not evidence_path.is_file():
+                reason = "rc_interlock_evidence_file_missing"
+            elif _sha256(evidence_path) != str(interlock_evidence.get("sha256", "")):
+                reason = "rc_interlock_evidence_sha256_mismatch"
+            else:
+                try:
+                    evidence_report = json.loads(evidence_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    reason = "rc_interlock_evidence_invalid"
+                else:
+                    binding = (
+                        evidence_report.get("runtime_binding", {})
+                        if isinstance(evidence_report, dict)
+                        else {}
+                    )
+                    if evidence_report.get("passed") is not True:
+                        reason = "rc_interlock_evidence_not_passed"
+                    elif binding.get("sha256") != actual_parameters_sha:
+                        reason = "rc_interlock_evidence_parameters_mismatch"
         if reason:
             return ControlAuthorizationStatus(
                 False,
@@ -694,6 +745,11 @@ class BetaflightMspIoWorker:
         self._algorithm_send_count = 0
         self._stale_command_count = 0
         self._publish_mode = "disabled"
+        self._publish_reason = "not_started"
+        self._rc_source = "none"
+        self._pilot_control_available = False
+        self._algorithm_release_active = False
+        self._release_throttle_reference_us: int | None = None
         self._last_sent_channels: tuple[int, ...] = ()
         self._last_publish_output_enabled = False
         self._last_publish_algorithm_authorized = False
@@ -860,6 +916,9 @@ class BetaflightMspIoWorker:
                 stale_command_count=self._stale_command_count,
                 staged_command_age_s=command_age,
                 publish_mode=self._publish_mode,
+                publish_reason=self._publish_reason,
+                rc_source=self._rc_source,
+                pilot_control_available=self._pilot_control_available,
                 last_sent_channels=self._last_sent_channels,
                 last_publish_output_enabled=self._last_publish_output_enabled,
                 last_publish_algorithm_authorized=self._last_publish_algorithm_authorized,
@@ -1034,7 +1093,11 @@ class BetaflightMspIoWorker:
             publish_mode, use_algorithm = context
             if use_algorithm:
                 return
-            if publish_mode in {"prefill", "passthrough", "set_ack_stale"}:
+            if publish_mode in {
+                "live_passthrough",
+                "override_frozen_hold",
+                "release_hold",
+            }:
                 self._prefill_success_count += 1
 
     def _next_due_poll_name(self, now: float) -> str | None:
@@ -1281,6 +1344,11 @@ class BetaflightMspIoWorker:
                 self._was_algorithm_authorized = False
                 self._prefill_success_count = 0
                 self._publish_mode = "disabled"
+                self._publish_reason = "output_disabled"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
+                self._algorithm_release_active = False
+                self._release_throttle_reference_us = None
                 self._handover.clear()
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
@@ -1290,7 +1358,10 @@ class BetaflightMspIoWorker:
                 self._send_skip_count += 1
                 self._was_algorithm_authorized = False
                 self._prefill_success_count = 0
-                self._publish_mode = "physical_rc_stale"
+                self._publish_mode = "disabled"
+                self._publish_reason = "physical_rc_stale"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
                 self._handover.clear()
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
@@ -1308,7 +1379,10 @@ class BetaflightMspIoWorker:
             with self._lock:
                 self._send_skip_count += 1
                 self._prefill_success_count = 0
-                self._publish_mode = "channel_map_error"
+                self._publish_mode = "disabled"
+                self._publish_reason = "channel_map_error"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
                 self._worker_error = str(exc)
                 self._handover.clear()
                 self._throttle_reference_us = None
@@ -1318,7 +1392,10 @@ class BetaflightMspIoWorker:
             with self._lock:
                 self._send_skip_count += 1
                 self._prefill_success_count = 0
-                self._publish_mode = "physical_rc_invalid"
+                self._publish_mode = "disabled"
+                self._publish_reason = "physical_rc_invalid"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
                 self._handover.clear()
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
@@ -1327,7 +1404,10 @@ class BetaflightMspIoWorker:
             with self._lock:
                 self._send_skip_count += 1
                 self._prefill_success_count = 0
-                self._publish_mode = "manual_rc_unavailable"
+                self._publish_mode = "disabled"
+                self._publish_reason = "manual_rc_unavailable"
+                self._rc_source = "none"
+                self._pilot_control_available = False
                 self._handover.clear()
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
@@ -1349,7 +1429,10 @@ class BetaflightMspIoWorker:
         if use_algorithm and command is not None and len(physical) < len(command.channels):
             with self._lock:
                 self._send_skip_count += 1
-                self._publish_mode = "channel_count_mismatch"
+                self._publish_mode = "disabled"
+                self._publish_reason = "channel_count_mismatch"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
             return
         throttle_reference_invalid = False
         throttle = self.config.throttle_channel_zero_based
@@ -1361,6 +1444,7 @@ class BetaflightMspIoWorker:
                 throttle_reference_invalid = True
             else:
                 self._throttle_reference_us = candidate_reference
+                self._release_throttle_reference_us = candidate_reference
                 self._handover.reset(now, candidate_reference)
                 self._reset_throttle_slew(now, candidate_reference)
         if use_algorithm and command is not None:
@@ -1404,22 +1488,50 @@ class BetaflightMspIoWorker:
             )
             channels[throttle] = self._apply_throttle_slew(now, handover_output_us)
             publish_mode = "algorithm"
+            publish_reason = "active"
+            rc_source = "algorithm"
+            self._algorithm_release_active = False
         elif self.config.prefill_enabled:
-            channels = list(self._passthrough_channels(physical, manual_rc, override_active))
-            if throttle_reference_invalid:
-                publish_mode = "throttle_reference_out_of_range"
-            elif not ack_fresh and prefill_ready:
-                publish_mode = "set_ack_stale"
+            if self._was_algorithm_authorized and override_active:
+                self._algorithm_release_active = True
+            if self._algorithm_release_active and (override_active or release_hold_active):
+                channels = list(self._release_hold_channels(physical, now))
+                publish_mode = "release_hold"
+                publish_reason = "algorithm_released"
+                rc_source = "synthesized_release_hold"
             else:
-                publish_mode = "prefill" if not prefill_ready else "passthrough"
+                channels = list(self._passthrough_channels(physical, manual_rc, override_active))
+                if release_hold_active:
+                    publish_mode = "release_hold"
+                    publish_reason = "override_release_grace"
+                    rc_source = "cached_pre_override"
+                elif override_active:
+                    publish_mode = "override_frozen_hold"
+                    publish_reason = "algorithm_unavailable"
+                    rc_source = "cached_pre_override"
+                else:
+                    publish_mode = "live_passthrough"
+                    publish_reason = "prefill" if not prefill_ready else "manual"
+                    rc_source = "live_msp_rc"
+            if throttle_reference_invalid:
+                publish_reason = "throttle_reference_out_of_range"
+            elif not ack_fresh and prefill_ready:
+                publish_reason = "set_ack_stale"
             self._handover.clear()
-            self._throttle_reference_us = None
-            self._clear_throttle_slew()
+            if publish_mode != "release_hold":
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
+            if not override_active and not release_hold_active:
+                self._algorithm_release_active = False
+                self._release_throttle_reference_us = None
         else:
             with self._lock:
                 self._send_skip_count += 1
                 self._was_algorithm_authorized = False
-                self._publish_mode = "algorithm_not_authorized"
+                self._publish_mode = "disabled"
+                self._publish_reason = "algorithm_not_authorized"
+                self._rc_source = "none"
+                self._pilot_control_available = not override_active
                 self._handover.clear()
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
@@ -1448,6 +1560,9 @@ class BetaflightMspIoWorker:
                 self._worker_error = ""
                 self._last_sent_channels = tuple(channels)
                 self._publish_mode = publish_mode
+                self._publish_reason = publish_reason
+                self._rc_source = rc_source
+                self._pilot_control_available = not override_active
                 self._last_publish_output_enabled = output_enabled
                 self._last_publish_algorithm_authorized = algorithm_authorized
                 self._last_publish_override_active = override_active
@@ -1527,6 +1642,26 @@ class BetaflightMspIoWorker:
             for index in range(len(result)):
                 if self.config.override_channels_mask & (1 << index):
                     result[index] = int(manual_channels[index])
+        return tuple(result)
+
+    def _release_hold_channels(
+        self,
+        current_channels: Sequence[int],
+        timestamp_s: float,
+    ) -> tuple[int, ...]:
+        """Stop body-rate commands while returning throttle to the entry reference."""
+
+        result = [int(value) for value in current_channels]
+        for role in ("A", "E", "R"):
+            index = self.config.set_raw_rc_channel_map.index(role)
+            if self.config.override_channels_mask & (1 << index):
+                result[index] = 1500
+        throttle = self.config.throttle_channel_zero_based
+        if self.config.override_channels_mask & (1 << throttle):
+            target = self._release_throttle_reference_us
+            if target is None:
+                target = int(result[throttle])
+            result[throttle] = self._apply_throttle_slew(timestamp_s, int(target))
         return tuple(result)
 
     def metadata(self) -> dict[str, Any]:

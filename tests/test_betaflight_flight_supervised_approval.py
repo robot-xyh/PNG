@@ -14,6 +14,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from create_betaflight_flight_supervised_approval import (  # noqa: E402
+    validate_rc_interlock_evidence,
     validate_release_evidence,
     validate_flight_supervised_config,
     validate_snapshot_flight_state,
@@ -24,7 +25,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
     def setUp(self):
         path = ROOT / "config" / "betaflight.rk3588.velocity_png.flight_supervised.json"
         self.config = json.loads(path.read_text(encoding="utf-8"))
-        self.output = ROOT / "logs" / "betaflight_velocity_png_flight_supervised_approval.json"
+        self.output = ROOT / "logs" / "betaflight_velocity_png_flight_noncollision_v2_approval.json"
         self.parsed_cli = {
             "rate_profiles": {
                 "0": {
@@ -98,13 +99,13 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "LOG00062"):
             self.validate(config)
 
-    def test_rejects_enabled_timer_or_wrong_poll_schedule(self):
+    def test_rejects_wrong_timer_or_poll_schedule(self):
         config = copy.deepcopy(self.config)
         config["safety"]["takeover_duration_interlock"].update(
             enabled=True,
             max_duration_s=10,
         )
-        with self.assertRaisesRegex(RuntimeError, "explicitly disabled"):
+        with self.assertRaisesRegex(RuntimeError, "one 2 s pulse"):
             self.validate(config)
 
         config = copy.deepcopy(self.config)
@@ -133,7 +134,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                     },
                 }
             report = {
-                "schema_version": 2,
+                "schema_version": 3,
                 "purpose": "stochastic interception release evaluation",
                 "release_passed": True,
                 "runtime_binding": {"sha256": config_sha256},
@@ -185,6 +186,38 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             report["summaries"] = ["not-an-object"]
             with self.assertRaisesRegex(RuntimeError, "list of objects"):
                 validate_release_evidence(
+                    report,
+                    report_path,
+                    runtime_config_sha256=config_sha256,
+                )
+
+    def test_rc_interlock_evidence_is_hash_bound_and_under_200_ms(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "rc_interlock.json"
+            config_sha256 = "b" * 64
+            report = {
+                "schema_version": 1,
+                "passed": True,
+                "runtime_binding": {"sha256": config_sha256},
+                "max_release_latency_ms": 50.0,
+                "checks": {
+                    "override_seen": True,
+                    "release_mode_seen": True,
+                    "rc7_low_seen": True,
+                    "override_cleared": True,
+                },
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            evidence = validate_rc_interlock_evidence(
+                report,
+                report_path,
+                runtime_config_sha256=config_sha256,
+            )
+            self.assertEqual(evidence["max_release_latency_ms"], 50.0)
+
+            report["max_release_latency_ms"] = 201.0
+            with self.assertRaisesRegex(RuntimeError, "exceeds 200"):
+                validate_rc_interlock_evidence(
                     report,
                     report_path,
                     runtime_config_sha256=config_sha256,

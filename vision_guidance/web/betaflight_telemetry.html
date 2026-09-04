@@ -420,10 +420,14 @@
       const state = text(safety.state);
       const publish = text(safety.publish_mode);
       const reason = safety.reason || "unknown";
-      const summaryKind = state === "ACTIVE" ? "ok" : state === "FAILSAFE" || state === "DISABLED" ? "bad" : state === "LOG_ONLY" ? "info" : "warn";
+      const pilotBlocked = safety.override_active && !safety.pilot_control_available;
+      const frozen = publish === "override_frozen_hold" || publish === "release_hold";
+      const summaryKind = pilotBlocked || frozen ? "bad" : state === "ACTIVE" ? "ok" : state === "FAILSAFE" || state === "DISABLED" ? "bad" : state === "LOG_ONLY" ? "info" : "warn";
       $("controlSummary").className = `control-summary ${summaryKind}`;
       $("controlSummaryState").textContent = `${state} / ${publish}`;
-      $("controlSummaryReason").textContent = `${reasonLabels[reason] || reason} (${reason})`;
+      $("controlSummaryReason").textContent = pilotBlocked
+        ? `RC7 STILL HIGH: PILOT CONTROL BLOCKED / ${text(safety.publish_reason)}`
+        : `${reasonLabels[reason] || reason} (${reason}) / ${text(safety.publish_reason)}`;
 
       setGate("gateApproval", safety.snapshot_approved, "APPROVED", "REJECTED", "fail");
       $("gateApproval").title = text(safety.authorization_reason);
@@ -620,7 +624,7 @@
       setMetric("gpsCommand", `${text(gpsCommand.success_count)} ok / ${text(gpsCommand.error_count)} err`);
       setMetric("altitudeCommand", `${text(altitudeCommand.success_count)} ok / ${text(altitudeCommand.error_count)} err`);
       setMetric("safetyReason", text(safety.reason));
-      setMetric("publishMode", text(safety.publish_mode));
+      setMetric("publishMode", `${text(safety.publish_mode)} / ${text(safety.rc_source)}`);
       setMetric("detectorReason", text(path(data, ["vision", "detector_reason"])));
       setMetric("workerState", text(path(data, ["vision", "tracker_state"])));
       setMetric("perceptionState", path(data, ["vision", "new_result"]) === false ? "HELD BETWEEN RESULTS" : "NEW RESULT");

@@ -452,6 +452,40 @@ class FlightControlTest(unittest.TestCase):
         self.assertTrue(restarted.ok)
         self.assertEqual(restarted.active_duration_s, 0.0)
 
+    def test_takeover_duration_interlock_allows_only_one_control_start_per_arm(self):
+        interlock = TakeoverDurationInterlock(
+            TakeoverDurationInterlockConfig(
+                enabled=True,
+                max_duration_s=2.0,
+                latch_until_disarm=True,
+                max_takeovers_per_arm=1,
+            )
+        )
+        first = interlock.update(
+            timestamp=1.0,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+        interlock.update(
+            timestamp=1.5,
+            armed=True,
+            takeover_requested=True,
+            control_active=False,
+        )
+        second = interlock.update(
+            timestamp=1.6,
+            armed=True,
+            takeover_requested=True,
+            control_active=True,
+        )
+
+        self.assertTrue(first.ok)
+        self.assertEqual(first.takeover_count, 1)
+        self.assertFalse(second.ok)
+        self.assertTrue(second.latched)
+        self.assertEqual(second.reason, "takeover_count_exceeded")
+
     def test_takeover_duration_interlock_rearms_after_continuous_release_dwell(self):
         interlock = TakeoverDurationInterlock(
             TakeoverDurationInterlockConfig(
