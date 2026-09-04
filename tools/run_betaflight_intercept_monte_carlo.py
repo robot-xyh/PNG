@@ -33,6 +33,25 @@ from vision_guidance.betaflight_png_sim import (  # noqa: E402
     MatrixCase,
     simulate_case,
 )
+from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E402
+
+
+RELEASE_SOURCE_PATHS = {
+    "controller": ROOT / "vision_guidance" / "betaflight_intercept_controller.py",
+    "flight_control": ROOT / "vision_guidance" / "flight_control.py",
+    "simulation": ROOT / "vision_guidance" / "betaflight_png_sim.py",
+    "thrust_model": ROOT / "vision_guidance" / "thrust_model.py",
+    "monte_carlo_runner": Path(__file__).resolve(),
+}
+RELEASE_THRUST_VOLTAGE_MIN_V = 20.0
+RELEASE_THRUST_VOLTAGE_MAX_V = 25.2
+RELEASE_THRUST_VALIDATION_SAMPLES_MIN = 100
+EVIDENCE_ROLES = {
+    "diagnostic",
+    "screening_baseline",
+    "contact_performance",
+    "noncollision_safety",
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -63,7 +82,8 @@ def main() -> None:
     args = parse_args()
     if args.workers <= 0:
         raise SystemExit("--workers must be positive")
-    spec = _read_json(Path(args.config).expanduser().resolve())
+    source_config_path = Path(args.config).expanduser().resolve()
+    spec = _read_json(source_config_path)
     scenarios = _select_named(
         _mapping_list(spec, "scenarios"), args.scenario_names, "scenario"
     )
@@ -102,11 +122,14 @@ def main() -> None:
             rows = list(executor.map(_run_task, tasks, chunksize=1))
 
     summaries = _summarize_rows(rows, scenarios, evaluations, criteria)
-    required_summaries = [
-        summary for summary in summaries if summary["required_for_release"]
+    contact_summaries = [
+        summary
+        for summary in summaries
+        if summary["evidence_role"] == "contact_performance"
+        and summary["required_for_release"]
     ]
     initial_performance_target = _initial_performance_verdict(
-        spec.get("initial_performance"), required_summaries
+        spec.get("initial_performance"), contact_summaries
     )
     paired_screening = _paired_screening_verdict(
         spec.get("paired_screening"),
@@ -115,17 +138,37 @@ def main() -> None:
         scenarios=scenarios,
         evaluations=evaluations,
     )
+    policy_results = _release_policy_verdict(
+        config_schema_version=int(spec["schema_version"]),
+        rows=rows,
+        summaries=summaries,
+        scenarios=scenarios,
+        evaluations=evaluations,
+        paired_screening=paired_screening,
+        noncollision_acceptance=spec.get("noncollision_acceptance"),
+        runtime_binding=runtime_binding,
+    )
+    required_summaries = [
+        summary for summary in summaries if summary["required_for_release"]
+    ]
     report = {
-        "schema_version": 2,
+        "schema_version": 3,
         "purpose": "stochastic interception release evaluation",
         "limitations": [
             "Point-mass dynamics and idealized first-order body-rate response are not a flight approval.",
             "Noise models are configured surrogates, not a fitted YOLO/ByteTrack error distribution.",
             "This Monte Carlo runner does not emit Betaflight RC/PWM; active runtime use remains approval-gated.",
             "The candidate uses the production LOS filter and delayed/noisy own velocity, but its noise model is not fitted to flight data.",
+            "Contact-policy hit rates are project-performance evidence and are not represented as the non-collision runtime policy.",
+            "Non-collision acceptance measures timely transfer to the pilot; it does not claim autonomous collision avoidance after ABORT.",
         ],
-        "source_config": str(Path(args.config).expanduser().resolve()),
+        "source_config": str(source_config_path),
+        "source_config_binding": _file_binding(source_config_path),
+        "source_bindings": _release_source_bindings(),
         "runtime_binding": runtime_binding,
+        "thrust_model_binding": (
+            None if runtime_binding is None else runtime_binding.get("thrust_model")
+        ),
         "evidence": dict(spec.get("evidence", {})),
         "base_seed": base_seed,
         "trials_per_case": trials_per_case,
@@ -146,8 +189,8 @@ def main() -> None:
             else bool(initial_performance_target["passed"])
         ),
         "paired_screening": paired_screening,
-        "release_passed": bool(required_summaries)
-        and all(bool(summary["passed"]) for summary in required_summaries),
+        "policy_results": policy_results,
+        "release_passed": bool(policy_results["passed"]),
     }
     output_path = Path(args.output).expanduser().resolve()
     csv_path = Path(args.csv).expanduser().resolve()
@@ -202,6 +245,13 @@ def _build_tasks(
             evaluation_name = str(evaluation["name"])
             mode = str(evaluation.get("controller_mode", ""))
             start = str(evaluation.get("start_profile", ""))
+            evidence_role = str(
+                evaluation.get("evidence_role", "diagnostic")
+            ).strip()
+            if evidence_role not in EVIDENCE_ROLES:
+                raise ValueError(
+                    f"unsupported evidence_role for {evaluation_name}: {evidence_role}"
+                )
             if mode not in CONTROLLER_MODES:
                 raise ValueError(f"unsupported controller_mode for {evaluation_name}: {mode}")
             if start not in START_PROFILES:
@@ -214,6 +264,19 @@ def _build_tasks(
                     **evaluation_overrides,
                 }
             )
+            engagement_policy = (
+                str(simulation.get("candidate_engagement_policy", "contact"))
+                if mode == "candidate_velocity_hold_variable_thrust"
+                else "not_applicable"
+            )
+            if evidence_role == "contact_performance" and engagement_policy != "contact":
+                raise ValueError(
+                    f"contact_performance evaluation {evaluation_name} must use contact policy"
+                )
+            if evidence_role == "noncollision_safety" and engagement_policy != "noncollision":
+                raise ValueError(
+                    f"noncollision_safety evaluation {evaluation_name} must use noncollision policy"
+                )
             for trial_index in range(trials_per_case):
                 trial_seed = (base_seed + scenario_seed + trial_index) & 0xFFFFFFFF
                 trial_simulation = {**simulation, "random_seed": trial_seed}
@@ -227,6 +290,8 @@ def _build_tasks(
                             "required_for_release": bool(
                                 evaluation.get("required_for_release", False)
                             ),
+                            "evidence_role": evidence_role,
+                            "engagement_policy": engagement_policy,
                             "trial_index": trial_index,
                             "random_seed": trial_seed,
                             "case": case,
@@ -249,6 +314,8 @@ def _run_task(task: Mapping[str, object]) -> dict[str, object]:
         "scenario_name": str(task["scenario_name"]),
         "evaluation_name": str(task["evaluation_name"]),
         "required_for_release": bool(task["required_for_release"]),
+        "evidence_role": str(task["evidence_role"]),
+        "engagement_policy": str(task["engagement_policy"]),
         "trial_index": int(task["trial_index"]),
         "random_seed": int(task["random_seed"]),
         **result.to_dict(),
@@ -279,6 +346,12 @@ def _summarize_rows(
                     "evaluation_name": evaluation_name,
                     "controller_mode": str(evaluation["controller_mode"]),
                     "start_profile": str(evaluation["start_profile"]),
+                    "evidence_role": str(
+                        evaluation.get("evidence_role", "diagnostic")
+                    ),
+                    "engagement_policy": str(
+                        selected[0].get("engagement_policy", "not_applicable")
+                    ),
                     "required_for_release": bool(
                         evaluation.get("required_for_release", False)
                     ),
@@ -345,7 +418,14 @@ def _bind_runtime_config(
     runtime = json.loads(payload)
     if not isinstance(runtime, Mapping):
         raise ValueError("runtime config root must be an object")
-    derived = _derive_runtime_simulation(runtime)
+    thrust_model_binding = _runtime_thrust_model_binding(
+        runtime,
+        config_path=config_path,
+    )
+    derived = _derive_runtime_simulation(
+        runtime,
+        thrust_model_binding=thrust_model_binding,
+    )
     bound = dict(simulation)
     mismatches = []
     for name, runtime_value in derived.items():
@@ -365,10 +445,15 @@ def _bind_runtime_config(
         "config": str(config_path),
         "sha256": actual_sha256,
         "derived_simulation": derived,
+        "thrust_model": thrust_model_binding,
     }
 
 
-def _derive_runtime_simulation(runtime: Mapping[str, object]) -> dict[str, object]:
+def _derive_runtime_simulation(
+    runtime: Mapping[str, object],
+    *,
+    thrust_model_binding: Mapping[str, object] | None = None,
+) -> dict[str, object]:
     guidance = _required_mapping(runtime, "guidance")
     if str(guidance.get("law", "")).strip() != "velocity_establishing_png":
         raise ValueError("runtime binding requires velocity_establishing_png guidance")
@@ -448,7 +533,14 @@ def _derive_runtime_simulation(runtime: Mapping[str, object]) -> dict[str, objec
                 )
     gravity = float(velocity.get("gravity_m_s2", accel["gravity_mps2"]))
     throttle_dynamics_enabled = bool(thrust.get("enabled", False))
-    return {
+    if throttle_dynamics_enabled:
+        if str(thrust.get("model", "")).strip() != "voltage_throttle_lut":
+            raise ValueError(
+                "runtime throttle dynamics require voltage_throttle_lut"
+            )
+        if thrust_model_binding is None:
+            raise ValueError("runtime thrust LUT binding is missing")
+    derived = {
         "navigation_constant": float(velocity["navigation_constant"]),
         "guidance_accel_limit_m_s2": float(velocity["png_accel_limit_m_s2"]),
         "gravity_m_s2": gravity,
@@ -533,6 +625,72 @@ def _derive_runtime_simulation(runtime: Mapping[str, object]) -> dict[str, objec
         ),
         "candidate_blind_hold_s": float(velocity.get("blind_hold_s", 0.20)),
     }
+    if throttle_dynamics_enabled:
+        derived.update(
+            thrust_model_path=str(thrust_model_binding["path"]),
+            thrust_model_sha256=str(thrust_model_binding["sha256"]),
+            thrust_model_calibration_id=str(
+                thrust_model_binding["calibration_id"]
+            ),
+        )
+    return derived
+
+
+def _runtime_thrust_model_binding(
+    runtime: Mapping[str, object],
+    *,
+    config_path: Path,
+) -> dict[str, object] | None:
+    command = _required_mapping(runtime, "guidance_command")
+    accel = _required_mapping(command, "accel_tilt_rate")
+    thrust = _required_mapping(accel, "thrust_feedforward")
+    if not bool(thrust.get("enabled", False)):
+        return None
+    if str(thrust.get("model", "")).strip() != "voltage_throttle_lut":
+        raise ValueError("release runtime requires a voltage_throttle_lut")
+    raw_model_path = str(thrust.get("model_path", "")).strip()
+    if not raw_model_path:
+        raise ValueError("runtime thrust LUT model_path is missing")
+    raw_path = Path(raw_model_path).expanduser()
+    model_path = _resolve_config_artifact_path(raw_path, config_path=config_path)
+    try:
+        model = VoltageThrottleThrustModel.from_file(
+            model_path,
+            expected_sha256=str(thrust.get("model_sha256", "")),
+            expected_calibration_id=str(thrust.get("calibration_id", "")),
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"runtime thrust LUT cannot be loaded: {exc}") from exc
+    if (
+        model.minimum_voltage_v > RELEASE_THRUST_VOLTAGE_MIN_V
+        or model.maximum_voltage_v < RELEASE_THRUST_VOLTAGE_MAX_V
+    ):
+        raise ValueError("runtime thrust LUT must cover 20.0-25.2 V")
+    try:
+        validation_samples = int(model.validation["sample_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("runtime thrust LUT sample_count is missing") from exc
+    if validation_samples < RELEASE_THRUST_VALIDATION_SAMPLES_MIN:
+        raise ValueError("runtime thrust LUT validation sample count is insufficient")
+    rc = _required_mapping(runtime, "rc_mapping")
+    throttle_min = float(rc["throttle_min_us"])
+    throttle_max = float(rc["throttle_max_us"])
+    if (
+        float(model.throttle_us[0]) > throttle_min
+        or float(model.throttle_us[-1]) < throttle_max
+    ):
+        raise ValueError("runtime thrust LUT does not cover the throttle envelope")
+    return model.metadata()
+
+
+def _resolve_config_artifact_path(path: Path, *, config_path: Path) -> Path:
+    if path.is_absolute():
+        return path.resolve()
+    repository_candidate = (ROOT / path).resolve()
+    config_candidate = (config_path.resolve().parent / path).resolve()
+    if repository_candidate.is_file() or not config_candidate.is_file():
+        return repository_candidate
+    return config_candidate
 
 
 def _required_mapping(values: Mapping[str, object], key: str) -> Mapping[str, object]:
@@ -671,6 +829,236 @@ def _initial_performance_verdict(
     }
 
 
+def _release_policy_verdict(
+    *,
+    config_schema_version: int,
+    rows: list[dict[str, object]],
+    summaries: list[dict[str, object]],
+    scenarios: list[dict[str, object]],
+    evaluations: list[dict[str, object]],
+    paired_screening: Mapping[str, object] | None,
+    noncollision_acceptance: object,
+    runtime_binding: Mapping[str, object] | None,
+) -> dict[str, object]:
+    if config_schema_version < 2:
+        return {
+            "passed": False,
+            "reason": "legacy_config_does_not_separate_contact_and_noncollision_evidence",
+            "contact_performance": None,
+            "noncollision_safety": None,
+        }
+    if runtime_binding is None:
+        raise ValueError("release Monte Carlo requires runtime_binding")
+    derived = runtime_binding.get("derived_simulation")
+    if not isinstance(derived, Mapping):
+        raise ValueError("runtime_binding derived_simulation is missing")
+    runtime_policy = str(derived.get("candidate_engagement_policy", ""))
+    if runtime_policy != "noncollision":
+        raise ValueError("supervised release runtime must use noncollision policy")
+    if paired_screening is None or paired_screening.get("passed") is not True:
+        paired_selected = None
+    else:
+        paired_selected = str(paired_screening.get("selected_evaluation", ""))
+
+    scenario_names = {str(scenario["name"]) for scenario in scenarios}
+    contact_evaluations = [
+        evaluation
+        for evaluation in evaluations
+        if evaluation.get("evidence_role") == "contact_performance"
+        and evaluation.get("required_for_release") is True
+    ]
+    if len(contact_evaluations) != 1:
+        raise ValueError(
+            "release Monte Carlo requires exactly one contact_performance evaluation"
+        )
+    contact_name = str(contact_evaluations[0]["name"])
+    contact_summaries = [
+        summary
+        for summary in summaries
+        if summary["evaluation_name"] == contact_name
+        and summary["evidence_role"] == "contact_performance"
+    ]
+    contact_coverage = {
+        str(summary["scenario_name"]) for summary in contact_summaries
+    } == scenario_names
+    contact_passed = bool(
+        paired_selected == contact_name
+        and contact_coverage
+        and contact_summaries
+        and all(
+            summary.get("engagement_policy") == "contact"
+            and summary.get("passed") is True
+            for summary in contact_summaries
+        )
+    )
+    contact_result = {
+        "engagement_policy": "contact",
+        "evaluation_name": contact_name,
+        "scenario_count": len(contact_summaries),
+        "scenario_names": sorted(
+            str(summary["scenario_name"]) for summary in contact_summaries
+        ),
+        "paired_screening_selected": paired_selected == contact_name,
+        "hit_rate_and_fov_hit_rate_required": True,
+        "passed": contact_passed,
+        "authorizes_contact_flight": False,
+    }
+
+    safety_acceptance = _noncollision_acceptance(noncollision_acceptance)
+    safety_evaluations = [
+        evaluation
+        for evaluation in evaluations
+        if evaluation.get("evidence_role") == "noncollision_safety"
+        and evaluation.get("required_for_release") is True
+    ]
+    if len(safety_evaluations) != 1:
+        raise ValueError(
+            "release Monte Carlo requires exactly one noncollision_safety evaluation"
+        )
+    safety_name = str(safety_evaluations[0]["name"])
+    safety_summaries = []
+    for scenario_name in sorted(scenario_names):
+        selected = [
+            row
+            for row in rows
+            if row["scenario_name"] == scenario_name
+            and row["evaluation_name"] == safety_name
+        ]
+        safety_summaries.append(
+            _noncollision_safety_summary(
+                selected,
+                scenario_name=scenario_name,
+                evaluation_name=safety_name,
+                acceptance=safety_acceptance,
+            )
+        )
+    noncollision_passed = bool(safety_summaries) and all(
+        summary["passed"] for summary in safety_summaries
+    )
+    noncollision_result = {
+        "engagement_policy": "noncollision",
+        "evaluation_name": safety_name,
+        "acceptance": safety_acceptance,
+        "scenario_count": len(safety_summaries),
+        "summaries": safety_summaries,
+        "passed": noncollision_passed,
+        "requires_pilot_action_after_abort": True,
+    }
+    return {
+        "runtime_engagement_policy": runtime_policy,
+        "contact_performance": contact_result,
+        "noncollision_safety": noncollision_result,
+        "contact_evidence_is_not_noncollision_flight_authority": True,
+        "passed": bool(contact_passed and noncollision_passed),
+        "reason": (
+            "contact_and_noncollision_checks_passed"
+            if contact_passed and noncollision_passed
+            else "contact_or_noncollision_check_failed"
+        ),
+    }
+
+
+def _noncollision_acceptance(raw: object) -> dict[str, float]:
+    if not isinstance(raw, Mapping):
+        raise ValueError("noncollision_acceptance must be an object")
+    allowed = {
+        "timely_abort_rate_min",
+        "unsafe_contact_rate_max",
+        "minimum_abort_lead_time_s",
+    }
+    unknown = sorted(set(raw) - allowed)
+    if unknown:
+        raise ValueError(
+            "unknown noncollision_acceptance fields: " + ", ".join(unknown)
+        )
+    try:
+        result = {
+            "timely_abort_rate_min": float(raw["timely_abort_rate_min"]),
+            "unsafe_contact_rate_max": float(raw["unsafe_contact_rate_max"]),
+            "minimum_abort_lead_time_s": float(raw["minimum_abort_lead_time_s"]),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("noncollision_acceptance fields must be numeric") from exc
+    if not 0.0 <= result["timely_abort_rate_min"] <= 1.0:
+        raise ValueError("timely_abort_rate_min must be in [0, 1]")
+    if not 0.0 <= result["unsafe_contact_rate_max"] <= 1.0:
+        raise ValueError("unsafe_contact_rate_max must be in [0, 1]")
+    if result["minimum_abort_lead_time_s"] <= 0.0:
+        raise ValueError("minimum_abort_lead_time_s must be positive")
+    return result
+
+
+def _noncollision_safety_summary(
+    rows: list[Mapping[str, object]],
+    *,
+    scenario_name: str,
+    evaluation_name: str,
+    acceptance: Mapping[str, float],
+) -> dict[str, object]:
+    visible = [row for row in rows if bool(row["initial_target_in_fov"])]
+    lead_threshold = float(acceptance["minimum_abort_lead_time_s"])
+    timely_count = 0
+    unsafe_contact_count = 0
+    abort_count = 0
+    contact_leads = []
+    for row in visible:
+        raw_abort = row.get("controller_abort_time_s")
+        abort_time = None if raw_abort is None else float(raw_abort)
+        hit = bool(row["hit"])
+        lead_time = None
+        if abort_time is not None:
+            abort_count += 1
+            if hit:
+                lead_time = max(0.0, float(row["elapsed_s"]) - abort_time)
+                contact_leads.append(lead_time)
+            if not hit or (lead_time is not None and lead_time >= lead_threshold):
+                timely_count += 1
+        if hit and (abort_time is None or lead_time is None or lead_time < lead_threshold):
+            unsafe_contact_count += 1
+    denominator = len(visible)
+    timely_rate = timely_count / denominator if denominator else 0.0
+    unsafe_rate = unsafe_contact_count / denominator if denominator else 1.0
+    passed = bool(
+        denominator
+        and timely_rate >= float(acceptance["timely_abort_rate_min"])
+        and unsafe_rate <= float(acceptance["unsafe_contact_rate_max"])
+    )
+    return {
+        "scenario_name": scenario_name,
+        "evaluation_name": evaluation_name,
+        "engagement_policy": "noncollision",
+        "initially_visible_count": denominator,
+        "controller_abort_count": abort_count,
+        "timely_abort_count": timely_count,
+        "timely_abort_rate": timely_rate,
+        "unsafe_contact_count": unsafe_contact_count,
+        "unsafe_contact_rate": unsafe_rate,
+        "minimum_observed_abort_to_contact_s": (
+            min(contact_leads) if contact_leads else None
+        ),
+        "passed": passed,
+    }
+
+
+def _release_source_bindings() -> dict[str, dict[str, str]]:
+    return {
+        name: _file_binding(path) for name, path in RELEASE_SOURCE_PATHS.items()
+    }
+
+
+def _file_binding(path: Path) -> dict[str, str]:
+    resolved = path.expanduser().resolve()
+    binding = {
+        "path": str(resolved),
+        "sha256": hashlib.sha256(resolved.read_bytes()).hexdigest(),
+    }
+    try:
+        binding["repository_path"] = str(resolved.relative_to(ROOT))
+    except ValueError:
+        pass
+    return binding
+
+
 def _paired_screening_verdict(
     raw: object,
     *,
@@ -738,6 +1126,7 @@ def _paired_screening_verdict(
         "candidate_fov_priority_enabled",
         "candidate_fov_priority_start_ratio",
         "candidate_fov_priority_full_ratio",
+        "candidate_engagement_policy",
     }
     candidate_results = []
     for candidate_name in candidate_names:
@@ -948,7 +1337,7 @@ def _read_json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise ValueError("Monte Carlo config root must be an object")
-    if int(data.get("schema_version", 0)) != 1:
+    if int(data.get("schema_version", 0)) not in {1, 2}:
         raise ValueError("unsupported Monte Carlo config schema_version")
     return data
 

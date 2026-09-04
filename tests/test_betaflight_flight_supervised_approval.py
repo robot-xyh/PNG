@@ -14,6 +14,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from create_betaflight_flight_supervised_approval import (  # noqa: E402
+    RELEASE_SOURCE_PATHS,
     validate_rc_interlock_evidence,
     validate_finalized_run_evidence,
     validate_release_evidence,
@@ -170,12 +171,32 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             report_path = Path(directory) / "mc100.json"
             config_sha256 = "a" * 64
-            def summary(scenario_name):
+            scenario_names = [
+                "final_chain_software_p95",
+                "observed_active_flight_p95",
+                "conservative_physical_p95_budget",
+            ]
+            thrust = self.config["guidance_command"]["accel_tilt_rate"][
+                "thrust_feedforward"
+            ]
+            thrust_evidence = {
+                "path": str(self.thrust_model_path.resolve()),
+                "sha256": thrust["model_sha256"],
+                "calibration_id": thrust["calibration_id"],
+                "voltage_coverage_v": [20.0, 25.2],
+                "throttle_coverage_us": [1200.0, 1500.0],
+            }
+
+            def summary(scenario_name, *, role, policy, passed):
                 return {
                     "scenario_name": scenario_name,
-                    "evaluation_name": "candidate",
+                    "evaluation_name": (
+                        "candidate" if role == "contact_performance" else "safety"
+                    ),
                     "required_for_release": True,
-                    "passed": True,
+                    "evidence_role": role,
+                    "engagement_policy": policy,
+                    "passed": passed,
                     "initially_visible_hit_rate": 0.8,
                     "initially_visible_fov_hit_rate": 0.8,
                     "checks": {
@@ -186,11 +207,46 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                         }
                     },
                 }
+
+            safety_summaries = [
+                {
+                    "scenario_name": name,
+                    "evaluation_name": "safety",
+                    "engagement_policy": "noncollision",
+                    "initially_visible_count": 3000,
+                    "timely_abort_rate": 1.0,
+                    "unsafe_contact_rate": 0.0,
+                    "passed": True,
+                }
+                for name in scenario_names
+            ]
             report = {
                 "schema_version": 3,
                 "purpose": "stochastic interception release evaluation",
                 "release_passed": True,
-                "runtime_binding": {"sha256": config_sha256},
+                "runtime_binding": {
+                    "sha256": config_sha256,
+                    "thrust_model": dict(thrust_evidence),
+                },
+                "thrust_model_binding": dict(thrust_evidence),
+                "source_bindings": {
+                    name: {
+                        "path": str(path.resolve()),
+                        "repository_path": str(path.resolve().relative_to(ROOT)),
+                        "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    }
+                    for name, path in RELEASE_SOURCE_PATHS.items()
+                },
+                "simulation": {
+                    "battery_voltage_v": 22.6,
+                    "thrust_model_sha256": thrust["model_sha256"],
+                    "thrust_model_calibration_id": thrust["calibration_id"],
+                },
+                "scenarios": [
+                    {"name": scenario_names[0], "battery_voltage_v": 25.2},
+                    {"name": scenario_names[1], "battery_voltage_v": 22.6},
+                    {"name": scenario_names[2], "battery_voltage_v": 20.0},
+                ],
                 "acceptance": {
                     "initially_visible_hit_rate_min": 0.8,
                     "initially_visible_fov_hit_rate_min": 0.8,
@@ -202,13 +258,52 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 },
                 "trials_per_case": 100,
                 "case_count": 30,
-                "row_count": 18000,
-                "required_summary_count": 3,
+                "row_count": 27000,
+                "required_summary_count": 6,
                 "summaries": [
-                    summary("final_chain_software_p95"),
-                    summary("observed_active_flight_p95"),
-                    summary("conservative_physical_p95_budget"),
+                    *[
+                        summary(
+                            name,
+                            role="contact_performance",
+                            policy="contact",
+                            passed=True,
+                        )
+                        for name in scenario_names
+                    ],
+                    *[
+                        summary(
+                            name,
+                            role="noncollision_safety",
+                            policy="noncollision",
+                            passed=False,
+                        )
+                        for name in scenario_names
+                    ],
                 ],
+                "policy_results": {
+                    "passed": True,
+                    "runtime_engagement_policy": "noncollision",
+                    "contact_evidence_is_not_noncollision_flight_authority": True,
+                    "contact_performance": {
+                        "passed": True,
+                        "engagement_policy": "contact",
+                        "evaluation_name": "candidate",
+                        "authorizes_contact_flight": False,
+                        "scenario_names": scenario_names,
+                    },
+                    "noncollision_safety": {
+                        "passed": True,
+                        "engagement_policy": "noncollision",
+                        "evaluation_name": "safety",
+                        "requires_pilot_action_after_abort": True,
+                        "acceptance": {
+                            "timely_abort_rate_min": 0.99,
+                            "unsafe_contact_rate_max": 0.01,
+                            "minimum_abort_lead_time_s": 0.75,
+                        },
+                        "summaries": safety_summaries,
+                    },
+                },
             }
             report_path.write_text(json.dumps(report), encoding="utf-8")
 
@@ -216,8 +311,10 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 report,
                 report_path,
                 runtime_config_sha256=config_sha256,
+                runtime_thrust_model=thrust_evidence,
             )
             self.assertEqual(evidence["required_scenario_count"], 3)
+            self.assertEqual(evidence["required_noncollision_scenario_count"], 3)
 
             report["release_passed"] = False
             with self.assertRaisesRegex(RuntimeError, "did not pass"):
@@ -225,6 +322,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                     report,
                     report_path,
                     runtime_config_sha256=config_sha256,
+                    runtime_thrust_model=thrust_evidence,
                 )
 
             report["release_passed"] = True
@@ -234,6 +332,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                     report,
                     report_path,
                     runtime_config_sha256=config_sha256,
+                    runtime_thrust_model=thrust_evidence,
                 )
 
             report["summaries"] = ["not-an-object"]
@@ -242,6 +341,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                     report,
                     report_path,
                     runtime_config_sha256=config_sha256,
+                    runtime_thrust_model=thrust_evidence,
                 )
 
     def test_rc_interlock_evidence_is_hash_bound_and_under_200_ms(self):

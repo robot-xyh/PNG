@@ -1,12 +1,15 @@
 import unittest
 import hashlib
+import json
 from pathlib import Path
+import tempfile
 
 from tools.run_betaflight_intercept_monte_carlo import (
     _bind_runtime_config,
     _build_tasks,
     _cases,
     _initial_performance_verdict,
+    _release_policy_verdict,
     _paired_screening_verdict,
 )
 from vision_guidance.betaflight_intercept_eval import (
@@ -111,34 +114,65 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
         self.assertEqual(cases[1].target_course_deg, 285.0)
 
     def test_runtime_binding_derives_fidelity_parameters_and_rejects_drift(self):
-        runtime_path = Path(
+        source_path = Path(
             "config/betaflight.rk3588.velocity_png.flight_supervised.json"
         ).resolve()
-        digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
-        bound, metadata = _bind_runtime_config(
-            {},
-            {"config": str(runtime_path), "sha256": digest},
-        )
-
-        self.assertEqual(bound["control_rate_hz"], 50.0)
-        self.assertEqual(bound["entry_handoff_duration_s"], 0.8)
-        self.assertEqual(bound["throttle_handover_duration_s"], 0.8)
-        self.assertEqual(bound["throttle_slew_limit_us_per_s"], 600.0)
-        self.assertTrue(bound["throttle_dynamics_enabled"])
-        self.assertAlmostEqual(bound["max_load_factor_g"], 2.37)
-        self.assertGreater(bound["camera_horizontal_half_fov_deg"], 30.0)
-        self.assertEqual(metadata["sha256"], digest)
-
-        with self.assertRaisesRegex(ValueError, "disagree"):
-            _bind_runtime_config(
-                {"control_rate_hz": 100.0},
+        runtime = json.loads(source_path.read_text(encoding="utf-8"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            model_path = root / "thrust_lut.json"
+            model = self._thrust_model_values()
+            model_path.write_text(json.dumps(model), encoding="utf-8")
+            thrust = runtime["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
+            thrust["model_path"] = str(model_path)
+            thrust["model_sha256"] = hashlib.sha256(model_path.read_bytes()).hexdigest()
+            thrust["calibration_id"] = model["calibration_id"]
+            runtime_path = root / "runtime.json"
+            runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+            digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+            bound, metadata = _bind_runtime_config(
+                {"battery_voltage_v": 22.6},
                 {"config": str(runtime_path), "sha256": digest},
             )
-        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
-            _bind_runtime_config(
-                {},
-                {"config": str(runtime_path), "sha256": "0" * 64},
+
+            self.assertEqual(bound["control_rate_hz"], 50.0)
+            self.assertEqual(bound["entry_handoff_duration_s"], 0.8)
+            self.assertEqual(bound["throttle_handover_duration_s"], 0.8)
+            self.assertEqual(bound["throttle_slew_limit_us_per_s"], 600.0)
+            self.assertTrue(bound["throttle_dynamics_enabled"])
+            self.assertEqual(bound["thrust_model_sha256"], thrust["model_sha256"])
+            self.assertAlmostEqual(bound["max_load_factor_g"], 2.37)
+            self.assertGreater(bound["camera_horizontal_half_fov_deg"], 30.0)
+            self.assertEqual(metadata["sha256"], digest)
+            self.assertEqual(
+                metadata["thrust_model"]["calibration_id"],
+                model["calibration_id"],
             )
+
+            with self.assertRaisesRegex(ValueError, "disagree"):
+                _bind_runtime_config(
+                    {"battery_voltage_v": 22.6, "control_rate_hz": 100.0},
+                    {"config": str(runtime_path), "sha256": digest},
+                )
+            with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+                _bind_runtime_config(
+                    {"battery_voltage_v": 22.6},
+                    {"config": str(runtime_path), "sha256": "0" * 64},
+                )
+
+            narrow = self._thrust_model_values()
+            narrow["voltage_v"] = [21.0, 25.2]
+            narrow_path = root / "narrow_lut.json"
+            narrow_path.write_text(json.dumps(narrow), encoding="utf-8")
+            thrust["model_path"] = str(narrow_path)
+            thrust["model_sha256"] = hashlib.sha256(narrow_path.read_bytes()).hexdigest()
+            runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
+            narrow_digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+            with self.assertRaisesRegex(ValueError, "20.0-25.2"):
+                _bind_runtime_config(
+                    {"battery_voltage_v": 22.6},
+                    {"config": str(runtime_path), "sha256": narrow_digest},
+                )
 
     def test_scenario_seed_is_stable_between_full_and_subset_runs(self):
         target = {"name": "target", "perception_latency_s": 0.1}
@@ -295,6 +329,81 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
         self.assertGreater(first.maximum_relative_velocity_error_m_s, 0.0)
         self.assertGreater(first.maximum_wind_accel_m_s2, 0.0)
 
+    def test_release_policy_separates_contact_performance_from_noncollision(self):
+        scenarios = [{"name": "latency"}]
+        evaluations = [
+            {
+                "name": "contact",
+                "evidence_role": "contact_performance",
+                "required_for_release": True,
+            },
+            {
+                "name": "safety",
+                "evidence_role": "noncollision_safety",
+                "required_for_release": True,
+            },
+        ]
+        summaries = [
+            {
+                "scenario_name": "latency",
+                "evaluation_name": "contact",
+                "evidence_role": "contact_performance",
+                "engagement_policy": "contact",
+                "passed": True,
+            },
+            {
+                "scenario_name": "latency",
+                "evaluation_name": "safety",
+                "evidence_role": "noncollision_safety",
+                "engagement_policy": "noncollision",
+                "passed": False,
+            },
+        ]
+        rows = [
+            {
+                "scenario_name": "latency",
+                "evaluation_name": "safety",
+                "initial_target_in_fov": True,
+                "controller_abort_time_s": 0.2,
+                "hit": True,
+                "elapsed_s": 1.1,
+            },
+            {
+                "scenario_name": "latency",
+                "evaluation_name": "safety",
+                "initial_target_in_fov": True,
+                "controller_abort_time_s": 0.3,
+                "hit": False,
+                "elapsed_s": 2.0,
+            },
+        ]
+
+        result = _release_policy_verdict(
+            config_schema_version=2,
+            rows=rows,
+            summaries=summaries,
+            scenarios=scenarios,
+            evaluations=evaluations,
+            paired_screening={"passed": True, "selected_evaluation": "contact"},
+            noncollision_acceptance={
+                "timely_abort_rate_min": 0.99,
+                "unsafe_contact_rate_max": 0.01,
+                "minimum_abort_lead_time_s": 0.75,
+            },
+            runtime_binding={
+                "derived_simulation": {
+                    "candidate_engagement_policy": "noncollision"
+                }
+            },
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertTrue(result["contact_performance"]["passed"])
+        self.assertTrue(result["noncollision_safety"]["passed"])
+        self.assertFalse(
+            result["contact_performance"]["authorizes_contact_flight"]
+        )
+
     def test_full_dropout_never_delivers_visible_measurement(self):
         config = ClosedLoopSimulationConfig(
             duration_s=0.2,
@@ -394,6 +503,26 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
             "minimum_range_m": 0.95,
             "tilt_saturation_fraction": 0.01,
             "rate_saturation_fraction": 0.01,
+        }
+
+    @staticmethod
+    def _thrust_model_values():
+        return {
+            "schema_version": 1,
+            "model_type": "voltage_throttle_specific_force_lut",
+            "calibration_id": "mc-unit-test-lut",
+            "voltage_v": [20.0, 25.2],
+            "throttle_us": [1200.0, 1275.0, 1500.0],
+            "specific_force_m_s2": [
+                [4.0, 9.5, 20.0],
+                [4.5, 10.2, 22.0],
+            ],
+            "validation": {
+                "passed": True,
+                "sample_count": 200,
+                "median_relative_error": 0.05,
+                "p95_relative_error": 0.15,
+            },
         }
 
 

@@ -57,11 +57,21 @@ RELEASE_HIT_RATE_MIN = 0.80
 RELEASE_FOV_HIT_RATE_MIN = 0.80
 RELEASE_TRIALS_PER_CASE_MIN = 100
 RELEASE_CASE_COUNT_MIN = 30
-RELEASE_ROW_COUNT_MIN = 18000
+RELEASE_ROW_COUNT_MIN = 27000
+RELEASE_NONCOLLISION_TIMELY_ABORT_RATE_MIN = 0.99
+RELEASE_NONCOLLISION_UNSAFE_CONTACT_RATE_MAX = 0.01
+RELEASE_NONCOLLISION_ABORT_LEAD_TIME_S = 0.75
 RELEASE_REQUIRED_SCENARIOS = {
     "final_chain_software_p95",
     "observed_active_flight_p95",
     "conservative_physical_p95_budget",
+}
+RELEASE_SOURCE_PATHS = {
+    "controller": ROOT / "vision_guidance" / "betaflight_intercept_controller.py",
+    "flight_control": ROOT / "vision_guidance" / "flight_control.py",
+    "simulation": ROOT / "vision_guidance" / "betaflight_png_sim.py",
+    "thrust_model": ROOT / "vision_guidance" / "thrust_model.py",
+    "monte_carlo_runner": ROOT / "tools" / "run_betaflight_intercept_monte_carlo.py",
 }
 EXPECTED_POLL_HZ = {
     "status_poll_hz": 5.0,
@@ -104,11 +114,6 @@ def main() -> None:
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
     config_sha256 = _sha256(config_path)
-    release_evidence = validate_release_evidence(
-        _read_json(release_evidence_path),
-        release_evidence_path,
-        runtime_config_sha256=config_sha256,
-    )
     rc_interlock_evidence = validate_rc_interlock_evidence(
         _read_json(rc_interlock_path),
         rc_interlock_path,
@@ -132,6 +137,12 @@ def main() -> None:
         parsed_cli=parsed_cli,
         fc_identity=dict(snapshot["fc_identity"]),
         config_path=config_path,
+    )
+    release_evidence = validate_release_evidence(
+        _read_json(release_evidence_path),
+        release_evidence_path,
+        runtime_config_sha256=config_sha256,
+        runtime_thrust_model=evidence["guidance_command"]["thrust_model"],
     )
     approval = {
         "schema_version": 4,
@@ -182,6 +193,7 @@ def validate_release_evidence(
     report_path: Path,
     *,
     runtime_config_sha256: str,
+    runtime_thrust_model: dict[str, Any],
 ) -> dict[str, Any]:
     if report.get("schema_version") != 3:
         raise RuntimeError("release evidence schema_version must be 3")
@@ -193,6 +205,11 @@ def validate_release_evidence(
     runtime_binding = _release_mapping(report.get("runtime_binding"), "runtime_binding")
     if runtime_binding.get("sha256") != runtime_config_sha256:
         raise RuntimeError("release evidence runtime config SHA256 mismatch")
+    _validate_release_source_bindings(report)
+    _validate_release_thrust_binding(
+        report,
+        runtime_thrust_model=runtime_thrust_model,
+    )
     acceptance = _release_mapping(report.get("acceptance"), "acceptance")
     try:
         hit_rate_min = float(acceptance["initially_visible_hit_rate_min"])
@@ -227,17 +244,32 @@ def validate_release_evidence(
         not isinstance(summary, dict) for summary in raw_summaries
     ):
         raise RuntimeError("release evidence summaries must be a list of objects")
-    summaries = [
+    required_summaries = [
         summary
         for summary in raw_summaries
         if summary.get("required_for_release") is True
+    ]
+    summaries = [
+        summary
+        for summary in required_summaries
+        if summary.get("evidence_role") == "contact_performance"
+    ]
+    noncollision_summaries = [
+        summary
+        for summary in required_summaries
+        if summary.get("evidence_role") == "noncollision_safety"
     ]
     scenario_names = {summary.get("scenario_name") for summary in summaries}
     selected_evaluation = paired.get("selected_evaluation")
     if (
         len(summaries) != len(RELEASE_REQUIRED_SCENARIOS)
-        or len(summaries) != required_summary_count
+        or len(noncollision_summaries) != len(RELEASE_REQUIRED_SCENARIOS)
+        or len(required_summaries) != required_summary_count
         or scenario_names != RELEASE_REQUIRED_SCENARIOS
+        or {
+            summary.get("scenario_name") for summary in noncollision_summaries
+        }
+        != RELEASE_REQUIRED_SCENARIOS
         or not isinstance(selected_evaluation, str)
         or not selected_evaluation
         or any(
@@ -247,7 +279,10 @@ def validate_release_evidence(
     ):
         raise RuntimeError("release evidence required scenario coverage is incomplete")
     for summary in summaries:
-        if summary.get("passed") is not True:
+        if (
+            summary.get("passed") is not True
+            or summary.get("engagement_policy") != "contact"
+        ):
             raise RuntimeError("release evidence contains a failed required scenario")
         try:
             hit_rate = float(summary["initially_visible_hit_rate"])
@@ -266,6 +301,10 @@ def validate_release_evidence(
             or range_check.get("required") is not False
         ):
             raise RuntimeError("release evidence worst range must remain report-only")
+    _validate_release_policy_results(
+        report,
+        selected_evaluation=selected_evaluation,
+    )
     return {
         "path": str(report_path),
         "sha256": _sha256(report_path),
@@ -277,7 +316,140 @@ def validate_release_evidence(
         "case_count": case_count,
         "row_count": row_count,
         "required_scenario_count": len(summaries),
+        "required_noncollision_scenario_count": len(noncollision_summaries),
+        "source_bindings": dict(report["source_bindings"]),
+        "thrust_model_binding": dict(report["thrust_model_binding"]),
     }
+
+
+def _validate_release_source_bindings(report: dict[str, Any]) -> None:
+    bindings = _release_mapping(report.get("source_bindings"), "source_bindings")
+    if set(bindings) != set(RELEASE_SOURCE_PATHS):
+        raise RuntimeError("release evidence source binding set is incomplete")
+    for name, expected_path in RELEASE_SOURCE_PATHS.items():
+        binding = _release_mapping(bindings.get(name), f"source binding {name}")
+        expected_repository_path = str(expected_path.resolve().relative_to(ROOT))
+        if binding.get("repository_path") != expected_repository_path:
+            raise RuntimeError(f"release evidence {name} source path mismatch")
+        if binding.get("sha256") != _sha256(expected_path.resolve()):
+            raise RuntimeError(f"release evidence {name} source SHA256 mismatch")
+
+
+def _validate_release_thrust_binding(
+    report: dict[str, Any],
+    *,
+    runtime_thrust_model: dict[str, Any],
+) -> None:
+    binding = _release_mapping(
+        report.get("thrust_model_binding"), "thrust_model_binding"
+    )
+    runtime_binding = _release_mapping(report.get("runtime_binding"), "runtime_binding")
+    nested = _release_mapping(
+        runtime_binding.get("thrust_model"), "runtime thrust_model"
+    )
+    for key in ("sha256", "calibration_id"):
+        expected = runtime_thrust_model.get(key)
+        if binding.get(key) != expected or nested.get(key) != expected:
+            raise RuntimeError(f"release evidence thrust LUT {key} mismatch")
+    for key in ("voltage_coverage_v", "throttle_coverage_us"):
+        expected = runtime_thrust_model.get(key)
+        if binding.get(key) != expected or nested.get(key) != expected:
+            raise RuntimeError(f"release evidence thrust LUT {key} mismatch")
+    simulation = _release_mapping(report.get("simulation"), "simulation")
+    if (
+        simulation.get("thrust_model_sha256") != runtime_thrust_model.get("sha256")
+        or simulation.get("thrust_model_calibration_id")
+        != runtime_thrust_model.get("calibration_id")
+    ):
+        raise RuntimeError("release simulation thrust LUT binding mismatch")
+    voltage_coverage = runtime_thrust_model.get("voltage_coverage_v")
+    if not isinstance(voltage_coverage, list) or len(voltage_coverage) != 2:
+        raise RuntimeError("runtime thrust LUT voltage coverage is invalid")
+    minimum_voltage = float(voltage_coverage[0])
+    maximum_voltage = float(voltage_coverage[1])
+    scenarios = report.get("scenarios")
+    if not isinstance(scenarios, list) or not scenarios:
+        raise RuntimeError("release evidence scenarios are missing")
+    try:
+        base_voltage = float(simulation["battery_voltage_v"])
+        scenario_voltages = [
+            float(scenario.get("battery_voltage_v", base_voltage))
+            for scenario in scenarios
+            if isinstance(scenario, dict)
+        ]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("release simulation battery voltage is invalid") from exc
+    if len(scenario_voltages) != len(scenarios) or any(
+        not minimum_voltage <= voltage <= maximum_voltage
+        for voltage in scenario_voltages
+    ):
+        raise RuntimeError("release simulation voltage is outside thrust LUT coverage")
+    if min(scenario_voltages) > REQUIRED_THRUST_VOLTAGE_MIN_V or max(
+        scenario_voltages
+    ) < REQUIRED_THRUST_VOLTAGE_MAX_V:
+        raise RuntimeError("release simulation must exercise the 20.0-25.2 V endpoints")
+
+
+def _validate_release_policy_results(
+    report: dict[str, Any],
+    *,
+    selected_evaluation: str,
+) -> None:
+    policy = _release_mapping(report.get("policy_results"), "policy_results")
+    if (
+        policy.get("passed") is not True
+        or policy.get("runtime_engagement_policy") != "noncollision"
+        or policy.get("contact_evidence_is_not_noncollision_flight_authority") is not True
+    ):
+        raise RuntimeError("release evidence policy separation did not pass")
+    contact = _release_mapping(
+        policy.get("contact_performance"), "contact performance"
+    )
+    if (
+        contact.get("passed") is not True
+        or contact.get("engagement_policy") != "contact"
+        or contact.get("evaluation_name") != selected_evaluation
+        or contact.get("authorizes_contact_flight") is not False
+        or set(contact.get("scenario_names", [])) != RELEASE_REQUIRED_SCENARIOS
+    ):
+        raise RuntimeError("release contact-performance evidence is invalid")
+    noncollision = _release_mapping(
+        policy.get("noncollision_safety"), "noncollision safety"
+    )
+    acceptance = _release_mapping(
+        noncollision.get("acceptance"), "noncollision acceptance"
+    )
+    if (
+        noncollision.get("passed") is not True
+        or noncollision.get("engagement_policy") != "noncollision"
+        or noncollision.get("requires_pilot_action_after_abort") is not True
+        or float(acceptance.get("timely_abort_rate_min", math.nan))
+        != RELEASE_NONCOLLISION_TIMELY_ABORT_RATE_MIN
+        or float(acceptance.get("unsafe_contact_rate_max", math.nan))
+        != RELEASE_NONCOLLISION_UNSAFE_CONTACT_RATE_MAX
+        or float(acceptance.get("minimum_abort_lead_time_s", math.nan))
+        != RELEASE_NONCOLLISION_ABORT_LEAD_TIME_S
+    ):
+        raise RuntimeError("release noncollision policy or acceptance is invalid")
+    summaries = noncollision.get("summaries")
+    if not isinstance(summaries, list) or any(
+        not isinstance(summary, dict) for summary in summaries
+    ):
+        raise RuntimeError("release noncollision summaries are invalid")
+    if {
+        summary.get("scenario_name") for summary in summaries
+    } != RELEASE_REQUIRED_SCENARIOS:
+        raise RuntimeError("release noncollision scenario coverage is incomplete")
+    for summary in summaries:
+        if (
+            summary.get("passed") is not True
+            or summary.get("engagement_policy") != "noncollision"
+            or float(summary.get("timely_abort_rate", -1.0))
+            < RELEASE_NONCOLLISION_TIMELY_ABORT_RATE_MIN
+            or float(summary.get("unsafe_contact_rate", math.inf))
+            > RELEASE_NONCOLLISION_UNSAFE_CONTACT_RATE_MAX
+        ):
+            raise RuntimeError("release noncollision scenario failed")
 
 
 def validate_rc_interlock_evidence(

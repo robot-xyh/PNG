@@ -1,26 +1,27 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "base_seed": 20260903,
   "trials_per_case": 100,
   "runtime_binding": {
     "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
-    "sha256": "4032482c47496c89d52f3cb09bfcef04b6c028de9012d10433d0aed4751865ff"
+    "sha256": "fa5e3ee90a0fb7b5657b073da8bd91506712758d3c14fd1bbc7a2440fe4c8550"
   },
   "evidence": {
     "controller": "velocity_establishing_png",
     "velocity_source": "msp_kinematics",
-    "evaluation_stage": "paired_baseline_selected_fov_priority_mc100",
-    "selected_candidate": "fov_s75_f95",
+    "evaluation_stage": "policy_separated_contact_and_noncollision_mc100",
+    "selected_candidate": "contact_fov_s75_f95",
     "screening_report": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.json",
     "software_result_age_p95_s": 0.084556,
     "active_flight_result_age_p95_s": 0.1277,
     "conservative_physical_latency_budget_s": 0.154139,
     "body_rate_delay_source": "LOG00063_65_HOVER_ACRO",
-    "thrust_calibration_id": "LOG00062_1275_1500"
+    "thrust_calibration_id": "PENDING_FULL_6S_THRUST_LUT"
   },
   "simulation": {
     "dt_s": 0.01,
     "duration_s": 40.0,
+    "battery_voltage_v": 22.6,
     "body_rate_command_delay_s": 0.011,
     "body_rate_response_tau_s": 0.04,
     "perception_fov_gate_enabled": true,
@@ -41,9 +42,14 @@
     "mean_tilt_saturation_fraction_max": 0.1,
     "mean_rate_saturation_fraction_max": 0.1
   },
+  "noncollision_acceptance": {
+    "timely_abort_rate_min": 0.99,
+    "unsafe_contact_rate_max": 0.01,
+    "minimum_abort_lead_time_s": 0.75
+  },
   "paired_screening": {
-    "baseline_evaluation": "fov_priority_disabled",
-    "candidate_evaluations": ["fov_s75_f95"],
+    "baseline_evaluation": "contact_fov_priority_disabled",
+    "candidate_evaluations": ["contact_fov_s75_f95"],
     "scenario_hit_rate_min": 0.8,
     "scenario_fov_hit_rate_min": 0.8,
     "outward_fov_improvement_min": 0.1,
@@ -68,12 +74,13 @@
     {"case_id": "U15", "horizontal_range_m": 6.0, "lateral_offset_m": 5.0, "altitude_offset_m": 20.0, "target_speed_m_s": 3.0}
   ],
   "scenarios": [
-    {"name": "final_chain_software_p95", "perception_latency_s": 0.084556, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
-    {"name": "observed_active_flight_p95", "perception_latency_s": 0.1277, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
-    {"name": "conservative_physical_p95_budget", "perception_latency_s": 0.154139, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25}
+    {"name": "final_chain_software_p95", "battery_voltage_v": 25.2, "perception_latency_s": 0.084556, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
+    {"name": "observed_active_flight_p95", "battery_voltage_v": 22.6, "perception_latency_s": 0.1277, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
+    {"name": "conservative_physical_p95_budget", "battery_voltage_v": 20.0, "perception_latency_s": 0.154139, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25}
   ],
   "evaluations": [
-    {"name": "fov_priority_disabled", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "required_for_release": false, "simulation_overrides": {"candidate_fov_priority_enabled": false}},
-    {"name": "fov_s75_f95", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "required_for_release": true}
+    {"name": "contact_fov_priority_disabled", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "screening_baseline", "required_for_release": false, "simulation_overrides": {"candidate_engagement_policy": "contact", "candidate_fov_priority_enabled": false}},
+    {"name": "contact_fov_s75_f95", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "contact_performance", "required_for_release": true, "simulation_overrides": {"candidate_engagement_policy": "contact"}},
+    {"name": "runtime_noncollision_safety", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "noncollision_safety", "required_for_release": true, "simulation_overrides": {"candidate_engagement_policy": "noncollision"}}
   ]
 }
