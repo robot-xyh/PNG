@@ -1,0 +1,174 @@
+{
+  "scope": "Only the final FLIGHT_ACTIVE_05S_VIDEO_20260904_183721 / LOG00106 flight",
+  "alignment": {
+    "method": "Host and Blackbox curves normalized to their own first algorithm command",
+    "blackbox_sync_beep_us": 274100030,
+    "blackbox_algorithm_onset_s": 18.128333,
+    "algorithm_publish_duration_s": 1.6708039999999968,
+    "latency_rule": "Only Blackbox setpoint-to-gyro lag is treated as a latency measurement"
+  },
+  "host_expected": {
+    "roll_rate_deg_s": {
+      "min": -31.737508,
+      "p50": 2.6035375,
+      "p95": 20.455672249999967,
+      "max": 22.870704
+    },
+    "pitch_rate_deg_s": {
+      "min": -34.135062,
+      "p50": 1.6907995,
+      "p95": 13.751418999999999,
+      "max": 15.640433
+    },
+    "yaw_rate_deg_s": {
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "load_factor_g": {
+      "min": 1.548414,
+      "p50": 1.649981,
+      "p95": 1.73009825,
+      "max": 1.735576
+    },
+    "handover_source_us": {
+      "min": 1303.0,
+      "p50": 1303.0,
+      "p95": 1303.0,
+      "max": 1303.0
+    },
+    "target_throttle_us": {
+      "min": 1367.0,
+      "p50": 1382.0,
+      "p95": 1395.0,
+      "max": 1396.0
+    },
+    "sent_throttle_us": {
+      "min": 1305.0,
+      "p50": 1375.0,
+      "p95": 1395.0,
+      "max": 1396.0
+    }
+  },
+  "blackbox_actual": {
+    "roll_setpoint_deg_s": {
+      "min": -32.0,
+      "p50": 1.0,
+      "p95": 20.0,
+      "max": 25.0
+    },
+    "pitch_setpoint_deg_s": {
+      "min": -34.0,
+      "p50": 4.0,
+      "p95": 15.0,
+      "max": 18.0
+    },
+    "yaw_setpoint_deg_s": {
+      "min": 0.0,
+      "p50": 0.0,
+      "p95": 0.0,
+      "max": 0.0
+    },
+    "roll_gyro_deg_s": {
+      "min": -39.0,
+      "p50": 1.0,
+      "p95": 19.0,
+      "max": 32.0
+    },
+    "pitch_gyro_deg_s": {
+      "min": -36.0,
+      "p50": 3.0,
+      "p95": 16.0,
+      "max": 19.0
+    },
+    "yaw_gyro_deg_s": {
+      "min": -1.0,
+      "p50": 0.0,
+      "p95": 1.0,
+      "max": 2.0
+    },
+    "specific_force_norm_g": {
+      "min": 0.9961057176058035,
+      "p50": 1.2978502765818498,
+      "p95": 1.4500444717360954,
+      "max": 1.467904435921718
+    },
+    "internal_throttle": {
+      "min": 1266.0,
+      "p50": 1343.0,
+      "p95": 1363.0,
+      "max": 1364.0
+    },
+    "motor_raw": {
+      "min": 573.0,
+      "p50": 794.0,
+      "p95": 871.0,
+      "max": 936.0
+    },
+    "motor_spread_raw": {
+      "min": 3.0,
+      "p50": 49.0,
+      "p95": 115.0,
+      "max": 242.0
+    },
+    "battery_voltage_v": {
+      "min": 22.65,
+      "p50": 22.76,
+      "p95": 22.93,
+      "max": 22.95
+    },
+    "battery_current_a": {
+      "min": 2.23,
+      "p50": 8.9,
+      "p95": 13.68,
+      "max": 21.01
+    },
+    "specific_force_to_model_ratio": {
+      "min": 0.6034815713593071,
+      "p50": 0.7934005719186993,
+      "p95": 0.8423094851182222,
+      "max": 0.8483597118746348
+    },
+    "specific_force_to_model_ratio_after_0p8s_handover": {
+      "min": 0.756651671590709,
+      "p50": 0.8091833112775526,
+      "p95": 0.8465310573887221,
+      "max": 0.8483597118746348
+    }
+  },
+  "same_clock_tracking": {
+    "roll": {
+      "lag_ms": 15.0,
+      "correlation": 0.9909958341439118,
+      "gain": 1.0255400934773922,
+      "intercept_deg_s": -0.05272764878017288,
+      "absolute_error_p95_deg_s": 4.410435019892403
+    },
+    "pitch": {
+      "lag_ms": 15.0,
+      "correlation": 0.9943983184504983,
+      "gain": 1.0085395351337798,
+      "intercept_deg_s": -0.29704352688307367,
+      "absolute_error_p95_deg_s": 3.5083201269404825
+    }
+  },
+  "interpretation": {
+    "rate_chain": "Direction, mapping, and closed-loop rate tracking are consistent",
+    "throttle_chain": "Throttle handover and FC reception are consistent; no 1500 us limit violation",
+    "thrust_model": "Measured specific force is about 15-20 percent below model demand in this transient",
+    "collision_samples_excluded": true
+  },
+  "inputs": {
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv": "2f4cba58655be4d142237fc5e05c7ad16b0c3c9131a838d1413e9676cdc557a6",
+    "logs/blackbox_import/LOG00106.BFL": "fc58d049df776a6a771f312ec5ad71bbd96763b5db7ed60f1b00116f6ed748ec",
+    "logs/target-log/10_35_19.ulg": "366fbea3ab9d322efe7e597161a32ad48e1caaf3a627b9bed990f715ced7ec96",
+    "logs/analysis/LOG00106_target_joint/joint_timeseries_50hz.csv": "fee380cfc5fa12e753bf4440f2f026b11836baf7669066ed7164d6daa2da128c",
+    "logs/analysis/LOG00106_target_joint/metrics.json": "9b9a4c9c9d39bdd54d45c9279d3e75ef6363a4700675d24a0c09d10ef1334d59"
+  },
+  "figures": [
+    "doc/figures/log00106_control_response/01_angle_rate_tracking.png",
+    "doc/figures/log00106_control_response/02_throttle_and_load_response.png",
+    "doc/figures/log00106_control_response/03_guidance_closure_timeline.png"
+  ]
+}
