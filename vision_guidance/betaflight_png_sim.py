@@ -124,6 +124,7 @@ class ClosedLoopSimulationConfig:
     los_filter_measurement_noise: float = 5.0e-3
     los_filter_innovation_reject: float = 0.25
     candidate_png_track_speed_ratio: float = 0.8
+    candidate_velocity_reference_slew_m_s2: float = 3.0
     candidate_acquire_consecutive_frames: int = 5
     candidate_los_prediction_max_s: float = 0.0
     candidate_fixed_vm_m_s: float = 0.0
@@ -131,6 +132,13 @@ class ClosedLoopSimulationConfig:
     candidate_fov_priority_enabled: bool = False
     candidate_fov_priority_start_ratio: float = 0.70
     candidate_fov_priority_full_ratio: float = 0.90
+    candidate_engagement_policy: str = "contact"
+    candidate_noncollision_bbox_abort_ratio: float = 0.012
+    candidate_noncollision_ttc_abort_s: float = 2.0
+    candidate_contact_bbox_terminal_ratio: float = 0.05
+    candidate_contact_ttc_terminal_s: float = 1.0
+    candidate_contact_bbox_complete_ratio: float = 0.25
+    candidate_blind_hold_s: float = 0.20
 
     def __post_init__(self) -> None:
         positive = (
@@ -162,6 +170,13 @@ class ClosedLoopSimulationConfig:
             "kinematic_stale_timeout_s",
             "los_filter_measurement_noise",
             "los_filter_innovation_reject",
+            "candidate_velocity_reference_slew_m_s2",
+            "candidate_noncollision_bbox_abort_ratio",
+            "candidate_noncollision_ttc_abort_s",
+            "candidate_contact_bbox_terminal_ratio",
+            "candidate_contact_ttc_terminal_s",
+            "candidate_contact_bbox_complete_ratio",
+            "candidate_blind_hold_s",
         )
         for name in positive:
             value = float(getattr(self, name))
@@ -263,6 +278,8 @@ class ClosedLoopSimulationConfig:
             raise ValueError("collision radius cannot exceed near-hit radius")
         if not 0.0 < float(self.candidate_png_track_speed_ratio) <= 1.0:
             raise ValueError("candidate_png_track_speed_ratio must be in (0, 1]")
+        if self.candidate_engagement_policy not in {"noncollision", "contact"}:
+            raise ValueError("candidate_engagement_policy must be noncollision or contact")
         if self.candidate_fov_constraint_half_angle_deg >= 90.0:
             raise ValueError("candidate_fov_constraint_half_angle_deg must be below 90")
         for name in (
@@ -492,6 +509,7 @@ def simulate_case(
                 total_accel_limit_m_s2=cfg.total_accel_limit_m_s2,
                 vertical_speed_reference_limit_m_s=cfg.vertical_speed_reference_limit_m_s,
                 png_track_speed_ratio=cfg.candidate_png_track_speed_ratio,
+                velocity_reference_slew_m_s2=cfg.candidate_velocity_reference_slew_m_s2,
                 acquire_consecutive_frames=cfg.candidate_acquire_consecutive_frames,
                 detection_timeout_s=cfg.perception_stale_timeout_s,
                 velocity_timeout_s=cfg.kinematic_stale_timeout_s,
@@ -505,6 +523,13 @@ def simulate_case(
                     horizontal_half_fov_deg=cfg.camera_horizontal_half_fov_deg,
                     vertical_half_fov_deg=cfg.camera_vertical_half_fov_deg,
                 ),
+                engagement_policy=cfg.candidate_engagement_policy,
+                noncollision_bbox_abort_ratio=cfg.candidate_noncollision_bbox_abort_ratio,
+                noncollision_ttc_abort_s=cfg.candidate_noncollision_ttc_abort_s,
+                contact_bbox_terminal_ratio=cfg.candidate_contact_bbox_terminal_ratio,
+                contact_ttc_terminal_s=cfg.candidate_contact_ttc_terminal_s,
+                contact_bbox_complete_ratio=cfg.candidate_contact_bbox_complete_ratio,
+                blind_hold_s=cfg.candidate_blind_hold_s,
             )
         )
         if controller_mode == "candidate_velocity_hold_variable_thrust"
@@ -862,6 +887,7 @@ def simulate_case(
                         else last_kinematic_state.velocity_ned_m_s
                     ),
                     velocity_valid=kinematic_valid,
+                    track_id=1,
                 )
             )
             if candidate_output.phase == InterceptPhase.ABORT and controller_abort_time_s is None:

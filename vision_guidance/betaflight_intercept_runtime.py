@@ -59,7 +59,13 @@ class VelocityEstablishingPngRuntime:
         kinematics: VehicleKinematicState,
         engagement_active: bool = True,
     ) -> VelocityEstablishingRuntimeResult:
-        if not engagement_active and self.controller.phase == InterceptPhase.ABORT:
+        if (
+            not engagement_active
+            and self.controller.phase in (InterceptPhase.ABORT, InterceptPhase.COMPLETE)
+            and vision_result is not None
+            and vision_result.los is not None
+            and vision_result.los.valid
+        ):
             self.controller.reset()
         source_result = vision_result
         if (
@@ -86,6 +92,7 @@ class VelocityEstablishingPngRuntime:
             kinematics,
         )
         detection = None if source_result is None else source_result.detection
+        ttc = None if source_result is None else source_result.ttc
         bbox_area_ratio = (
             None if detection is None else float(detection.area) / self.image_area
         )
@@ -103,10 +110,11 @@ class VelocityEstablishingPngRuntime:
                 velocity_ned_m_s=velocity,
                 velocity_valid=velocity_valid,
                 tracking_reason=tracking_reason,
+                ttc_valid=bool(ttc is not None and ttc.valid),
+                ttc_s=None if ttc is None else ttc.ttc,
+                track_id=None if detection is None else detection.track_id,
             )
         )
-        if not engagement_active and controller_output.phase == InterceptPhase.ABORT:
-            self.controller.reset()
         quality = 0.0 if los is None else float(los.quality)
         guidance = GuidanceEval(
             timestamp=float(timestamp_s),
@@ -122,7 +130,7 @@ class VelocityEstablishingPngRuntime:
                 else _empty_detection(timestamp_s)
             ),
             los=los,
-            ttc=None if source_result is None else source_result.ttc,
+            ttc=ttc,
             guidance=guidance,
             R_IB=(
                 None

@@ -490,7 +490,12 @@ def _derive_runtime_simulation(runtime: Mapping[str, object]) -> dict[str, objec
         "perception_stale_timeout_s": float(velocity["detection_timeout_s"]),
         "kinematic_rate_hz": float(msp["raw_gps_poll_hz"]),
         "kinematic_stale_timeout_s": float(velocity["velocity_timeout_s"]),
-        "candidate_png_track_speed_ratio": float(velocity["png_track_speed_ratio"]),
+        "candidate_png_track_speed_ratio": float(
+            velocity.get("png_track_speed_ratio", 0.8)
+        ),
+        "candidate_velocity_reference_slew_m_s2": float(
+            velocity.get("velocity_reference_slew_m_s2", 3.0)
+        ),
         "candidate_acquire_consecutive_frames": int(
             velocity["acquire_consecutive_frames"]
         ),
@@ -508,6 +513,25 @@ def _derive_runtime_simulation(runtime: Mapping[str, object]) -> dict[str, objec
         "candidate_fov_priority_full_ratio": float(
             fov_priority.get("full_ratio", 0.90)
         ),
+        "candidate_engagement_policy": str(
+            velocity.get("engagement_policy", "noncollision")
+        ),
+        "candidate_noncollision_bbox_abort_ratio": float(
+            velocity.get("noncollision_bbox_abort_ratio", 0.012)
+        ),
+        "candidate_noncollision_ttc_abort_s": float(
+            velocity.get("noncollision_ttc_abort_s", 2.0)
+        ),
+        "candidate_contact_bbox_terminal_ratio": float(
+            velocity.get("contact_bbox_terminal_ratio", 0.05)
+        ),
+        "candidate_contact_ttc_terminal_s": float(
+            velocity.get("contact_ttc_terminal_s", 1.0)
+        ),
+        "candidate_contact_bbox_complete_ratio": float(
+            velocity.get("contact_bbox_complete_ratio", 0.25)
+        ),
+        "candidate_blind_hold_s": float(velocity.get("blind_hold_s", 0.20)),
     }
 
 

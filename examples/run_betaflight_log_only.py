@@ -109,7 +109,7 @@ from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetecti
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 19
+LOG_SCHEMA_VERSION = 20
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -2399,9 +2399,12 @@ def _velocity_establishing_config(
             vertical_speed_reference_limit_m_s=float(
                 raw.get("vertical_speed_reference_limit_m_s", 6.0)
             ),
+            velocity_reference_slew_m_s2=float(
+                raw.get("velocity_reference_slew_m_s2", 3.0)
+            ),
             png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
             acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
-            detection_timeout_s=float(raw.get("detection_timeout_s", 0.35)),
+            detection_timeout_s=float(raw.get("detection_timeout_s", 0.15)),
             velocity_timeout_s=float(raw.get("velocity_timeout_s", 0.5)),
             los_prediction_max_s=float(raw.get("los_prediction_max_s", 0.0)),
             gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),
@@ -2419,6 +2422,27 @@ def _velocity_establishing_config(
                     fov_priority_raw.get("vertical_half_fov_deg", 0.0)
                 ),
             ),
+            engagement_policy=str(raw.get("engagement_policy", "noncollision")),
+            noncollision_bbox_abort_ratio=float(
+                raw.get("noncollision_bbox_abort_ratio", 0.012)
+            ),
+            noncollision_ttc_abort_s=float(
+                raw.get("noncollision_ttc_abort_s", 2.0)
+            ),
+            contact_bbox_terminal_ratio=float(
+                raw.get("contact_bbox_terminal_ratio", 0.05)
+            ),
+            contact_ttc_terminal_s=float(
+                raw.get("contact_ttc_terminal_s", 1.0)
+            ),
+            contact_bbox_complete_ratio=float(
+                raw.get("contact_bbox_complete_ratio", 0.25)
+            ),
+            blind_hold_s=float(raw.get("blind_hold_s", 0.20)),
+            terminal_reacquire_frames=int(raw.get("terminal_reacquire_frames", 2)),
+            area_ttc_window_s=float(raw.get("area_ttc_window_s", 0.60)),
+            area_ttc_min_samples=int(raw.get("area_ttc_min_samples", 5)),
+            area_ttc_min_span_s=float(raw.get("area_ttc_min_span_s", 0.10)),
         )
     except (TypeError, ValueError) as exc:
         raise RuntimeError(f"invalid guidance.velocity_establishing_png: {exc}") from exc
@@ -2502,17 +2526,35 @@ def _velocity_establishing_log_stats(
         "intercept_prediction_horizon_s": output.los_prediction_horizon_s,
         "intercept_acquire_count": output.acquire_count,
         "intercept_los_speed_m_s": output.los_speed_m_s,
+        "intercept_png_speed_m_s": output.png_speed_m_s,
         "intercept_speed_saturated": int(output.speed_saturated),
         "intercept_png_saturated": int(output.png_saturated),
         "intercept_fov_saturated": int(output.fov_saturated),
         "intercept_fov_constraint_active": int(output.fov_constraint_active),
+        "intercept_fov_priority_active": int(output.fov_priority_active),
+        "intercept_fov_priority_weight": output.fov_priority_weight,
+        "intercept_protected_scale": output.protected_scale,
+        "intercept_speed_budget_scale": output.speed_budget_scale,
         "intercept_total_saturated": int(output.total_saturated),
+        "intercept_terminal_trigger": output.terminal_trigger,
+        "intercept_area_ttc_s": output.area_ttc_s,
+        "intercept_track_id": output.track_id,
+        "intercept_terminal_track_id": output.terminal_track_id,
+        "intercept_terminal_reacquire_count": output.terminal_reacquire_count,
+        "intercept_blind_age_s": output.blind_age_s,
+        "intercept_blind_scale": output.blind_scale,
     }
     for prefix, vector in (
+        ("intercept_velocity_reference_raw", output.velocity_reference_raw_ned_m_s),
         ("intercept_velocity_reference", output.velocity_reference_ned_m_s),
+        ("intercept_speed_accel_raw", output.speed_acceleration_raw_ned_m_s2),
         ("intercept_speed_accel", output.speed_acceleration_ned_m_s2),
+        ("intercept_png_accel_raw", output.png_acceleration_raw_ned_m_s2),
         ("intercept_png_accel", output.png_acceleration_ned_m_s2),
+        ("intercept_fov_accel_raw", output.fov_acceleration_raw_ned_m_s2),
         ("intercept_fov_accel", output.fov_acceleration_ned_m_s2),
+        ("intercept_protected_accel_raw", output.protected_acceleration_raw_ned_m_s2),
+        ("intercept_protected_accel", output.protected_acceleration_ned_m_s2),
         ("intercept_total_accel", output.acceleration_ned_m_s2),
     ):
         for axis, value in zip(("n", "e", "d"), vector):
@@ -3556,18 +3598,37 @@ def _log_fields(channel_count: int) -> list[str]:
         "intercept_prediction_horizon_s",
         "intercept_acquire_count",
         "intercept_los_speed_m_s",
+        "intercept_png_speed_m_s",
+        "intercept_velocity_reference_raw_n",
+        "intercept_velocity_reference_raw_e",
+        "intercept_velocity_reference_raw_d",
         "intercept_velocity_reference_n",
         "intercept_velocity_reference_e",
         "intercept_velocity_reference_d",
+        "intercept_speed_accel_raw_n",
+        "intercept_speed_accel_raw_e",
+        "intercept_speed_accel_raw_d",
         "intercept_speed_accel_n",
         "intercept_speed_accel_e",
         "intercept_speed_accel_d",
+        "intercept_png_accel_raw_n",
+        "intercept_png_accel_raw_e",
+        "intercept_png_accel_raw_d",
         "intercept_png_accel_n",
         "intercept_png_accel_e",
         "intercept_png_accel_d",
+        "intercept_fov_accel_raw_n",
+        "intercept_fov_accel_raw_e",
+        "intercept_fov_accel_raw_d",
         "intercept_fov_accel_n",
         "intercept_fov_accel_e",
         "intercept_fov_accel_d",
+        "intercept_protected_accel_raw_n",
+        "intercept_protected_accel_raw_e",
+        "intercept_protected_accel_raw_d",
+        "intercept_protected_accel_n",
+        "intercept_protected_accel_e",
+        "intercept_protected_accel_d",
         "intercept_total_accel_n",
         "intercept_total_accel_e",
         "intercept_total_accel_d",
@@ -3575,7 +3636,18 @@ def _log_fields(channel_count: int) -> list[str]:
         "intercept_png_saturated",
         "intercept_fov_saturated",
         "intercept_fov_constraint_active",
+        "intercept_fov_priority_active",
+        "intercept_fov_priority_weight",
+        "intercept_protected_scale",
+        "intercept_speed_budget_scale",
         "intercept_total_saturated",
+        "intercept_terminal_trigger",
+        "intercept_area_ttc_s",
+        "intercept_track_id",
+        "intercept_terminal_track_id",
+        "intercept_terminal_reacquire_count",
+        "intercept_blind_age_s",
+        "intercept_blind_scale",
         "ttc_valid",
         "ttc_reject_reason",
         "ttc_quality",
@@ -4113,21 +4185,42 @@ def _log_row(
         "intercept_los_speed_m_s": _stats_float(
             detector_stats, "intercept_los_speed_m_s", precision=6
         ),
+        "intercept_png_speed_m_s": _stats_float(
+            detector_stats, "intercept_png_speed_m_s", precision=6
+        ),
         **{
             key: _stats_float(detector_stats, key, precision=9)
             for key in (
+                "intercept_velocity_reference_raw_n",
+                "intercept_velocity_reference_raw_e",
+                "intercept_velocity_reference_raw_d",
                 "intercept_velocity_reference_n",
                 "intercept_velocity_reference_e",
                 "intercept_velocity_reference_d",
+                "intercept_speed_accel_raw_n",
+                "intercept_speed_accel_raw_e",
+                "intercept_speed_accel_raw_d",
                 "intercept_speed_accel_n",
                 "intercept_speed_accel_e",
                 "intercept_speed_accel_d",
+                "intercept_png_accel_raw_n",
+                "intercept_png_accel_raw_e",
+                "intercept_png_accel_raw_d",
                 "intercept_png_accel_n",
                 "intercept_png_accel_e",
                 "intercept_png_accel_d",
+                "intercept_fov_accel_raw_n",
+                "intercept_fov_accel_raw_e",
+                "intercept_fov_accel_raw_d",
                 "intercept_fov_accel_n",
                 "intercept_fov_accel_e",
                 "intercept_fov_accel_d",
+                "intercept_protected_accel_raw_n",
+                "intercept_protected_accel_raw_e",
+                "intercept_protected_accel_raw_d",
+                "intercept_protected_accel_n",
+                "intercept_protected_accel_e",
+                "intercept_protected_accel_d",
                 "intercept_total_accel_n",
                 "intercept_total_accel_e",
                 "intercept_total_accel_d",
@@ -4139,7 +4232,36 @@ def _log_row(
         "intercept_fov_constraint_active": detector_stats.get(
             "intercept_fov_constraint_active", ""
         ),
+        "intercept_fov_priority_active": detector_stats.get(
+            "intercept_fov_priority_active", ""
+        ),
+        "intercept_fov_priority_weight": _stats_float(
+            detector_stats, "intercept_fov_priority_weight", precision=6
+        ),
+        "intercept_protected_scale": _stats_float(
+            detector_stats, "intercept_protected_scale", precision=6
+        ),
+        "intercept_speed_budget_scale": _stats_float(
+            detector_stats, "intercept_speed_budget_scale", precision=6
+        ),
         "intercept_total_saturated": detector_stats.get("intercept_total_saturated", ""),
+        "intercept_terminal_trigger": detector_stats.get("intercept_terminal_trigger", ""),
+        "intercept_area_ttc_s": _stats_float(
+            detector_stats, "intercept_area_ttc_s", precision=6
+        ),
+        "intercept_track_id": detector_stats.get("intercept_track_id", ""),
+        "intercept_terminal_track_id": detector_stats.get(
+            "intercept_terminal_track_id", ""
+        ),
+        "intercept_terminal_reacquire_count": detector_stats.get(
+            "intercept_terminal_reacquire_count", ""
+        ),
+        "intercept_blind_age_s": _stats_float(
+            detector_stats, "intercept_blind_age_s", precision=6
+        ),
+        "intercept_blind_scale": _stats_float(
+            detector_stats, "intercept_blind_scale", precision=6
+        ),
         "ttc_valid": "" if ttc is None else int(ttc.valid),
         "ttc_reject_reason": "" if ttc is None else ttc.reject_reason or "",
         "ttc_quality": "" if ttc is None else f"{ttc.quality:.6f}",

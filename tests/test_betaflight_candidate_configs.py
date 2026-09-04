@@ -44,6 +44,9 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.flight_supervised = _read(
             "betaflight.rk3588.velocity_png.flight_supervised.json"
         )
+        self.contact_candidate = _read(
+            "betaflight.rk3588.velocity_png.flight_contact_candidate.json"
+        )
 
     def test_final_vm_log_only_contract(self):
         config = self.log_only
@@ -186,6 +189,7 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             self.limited,
             self.flight_active,
             self.flight_supervised,
+            self.contact_candidate,
         ):
             with self.subTest(profile=config["candidate_profile"]["id"]):
                 _, metadata = runner._guidance_evaluator(config)
@@ -202,6 +206,28 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
                 runner.GuidanceCommandShaperConfig.from_mapping(
                     config["guidance_command"]
                 )
+
+    def test_contact_candidate_is_log_only_and_requires_explicit_waiver(self):
+        config = self.contact_candidate
+        self.assertEqual(
+            config["candidate_profile"]["scope"],
+            "flight_contact_candidate_v1",
+        )
+        self.assertEqual(
+            config["guidance"]["velocity_establishing_png"]["engagement_policy"],
+            "contact",
+        )
+        self.assertFalse(config["control_authorization"]["enabled"])
+        self.assertFalse(config["runtime_policy"]["msp_set_raw_rc_permitted"])
+        self.assertTrue(config["contact_risk_policy"]["explicit_risk_waiver_required"])
+
+    def test_final_candidates_use_reduced_detection_and_fusion_waits(self):
+        for config in (self.log_only, self.flight_supervised, self.contact_candidate):
+            with self.subTest(profile=config["candidate_profile"]["id"]):
+                controller = config["guidance"]["velocity_establishing_png"]
+                self.assertEqual(controller["detection_timeout_s"], 0.15)
+                self.assertEqual(controller["velocity_reference_slew_m_s2"], 3)
+                self.assertEqual(config["attitude_fusion"]["max_wait_s"], 0.06)
 
     def test_limited_flight_is_not_authorized_for_control(self):
         config = self.limited

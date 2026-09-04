@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import asdict, dataclass, field
 from enum import Enum
 
@@ -9,9 +10,16 @@ import numpy as np
 
 class InterceptPhase(str, Enum):
     ACQUIRE = "ACQUIRE"
-    ACCELERATE = "ACCELERATE"
-    PNG_TRACK = "PNG_TRACK"
+    TRACKING = "TRACKING"
+    TERMINAL_VISUAL = "TERMINAL_VISUAL"
+    BLIND_HOLD = "BLIND_HOLD"
+    COMPLETE = "COMPLETE"
     ABORT = "ABORT"
+
+
+class EngagementPolicy(str, Enum):
+    NONCOLLISION = "noncollision"
+    CONTACT = "contact"
 
 
 @dataclass(frozen=True)
@@ -55,14 +63,26 @@ class VelocityEstablishingPngConfig:
     fov_centering_accel_limit_m_s2: float = 4.0
     total_accel_limit_m_s2: float = 28.0
     vertical_speed_reference_limit_m_s: float = 6.0
+    velocity_reference_slew_m_s2: float = 3.0
     png_track_speed_ratio: float = 0.8
     acquire_consecutive_frames: int = 5
-    detection_timeout_s: float = 0.35
+    detection_timeout_s: float = 0.15
     velocity_timeout_s: float = 0.5
     los_prediction_max_s: float = 0.0
     gravity_m_s2: float = 9.80665
     fov_constraint_half_angle_deg: float = 0.0
     fov_priority: FovPriorityConfig = field(default_factory=FovPriorityConfig)
+    engagement_policy: str = EngagementPolicy.NONCOLLISION.value
+    noncollision_bbox_abort_ratio: float = 0.012
+    noncollision_ttc_abort_s: float = 2.0
+    contact_bbox_terminal_ratio: float = 0.05
+    contact_ttc_terminal_s: float = 1.0
+    contact_bbox_complete_ratio: float = 0.25
+    blind_hold_s: float = 0.20
+    terminal_reacquire_frames: int = 2
+    area_ttc_window_s: float = 0.60
+    area_ttc_min_samples: int = 5
+    area_ttc_min_span_s: float = 0.10
 
     def __post_init__(self) -> None:
         positive = (
@@ -74,17 +94,38 @@ class VelocityEstablishingPngConfig:
             self.fov_centering_accel_limit_m_s2,
             self.total_accel_limit_m_s2,
             self.vertical_speed_reference_limit_m_s,
+            self.velocity_reference_slew_m_s2,
             self.detection_timeout_s,
             self.velocity_timeout_s,
+            self.noncollision_bbox_abort_ratio,
+            self.noncollision_ttc_abort_s,
+            self.contact_bbox_terminal_ratio,
+            self.contact_ttc_terminal_s,
+            self.contact_bbox_complete_ratio,
+            self.blind_hold_s,
+            self.area_ttc_window_s,
+            self.area_ttc_min_span_s,
         )
         if not all(math.isfinite(value) and value > 0.0 for value in positive):
             raise ValueError("velocity-establishing PNG limits must be finite and positive")
         if not math.isfinite(self.fov_centering_gain_s2) or self.fov_centering_gain_s2 < 0.0:
             raise ValueError("fov_centering_gain_s2 must be finite and non-negative")
-        if not 0.0 < self.png_track_speed_ratio <= 1.0:
-            raise ValueError("png_track_speed_ratio must be in (0, 1]")
         if self.acquire_consecutive_frames < 1:
             raise ValueError("acquire_consecutive_frames must be positive")
+        if not 0.0 < self.png_track_speed_ratio <= 1.0:
+            raise ValueError("png_track_speed_ratio must be in (0, 1]")
+        if self.terminal_reacquire_frames < 1:
+            raise ValueError("terminal_reacquire_frames must be positive")
+        if self.area_ttc_min_samples < 5:
+            raise ValueError("area_ttc_min_samples must be at least five")
+        if self.contact_bbox_complete_ratio <= self.contact_bbox_terminal_ratio:
+            raise ValueError("contact complete ratio must exceed terminal ratio")
+        try:
+            EngagementPolicy(self.engagement_policy)
+        except ValueError as exc:
+            raise ValueError(
+                "engagement_policy must be 'noncollision' or 'contact'"
+            ) from exc
         if not math.isfinite(self.los_prediction_max_s) or self.los_prediction_max_s < 0.0:
             raise ValueError("los_prediction_max_s must be finite and non-negative")
         if not math.isfinite(self.gravity_m_s2) or self.gravity_m_s2 <= 0.0:
@@ -110,6 +151,9 @@ class VelocityEstablishingPngInput:
     velocity_ned_m_s: np.ndarray | None
     velocity_valid: bool
     tracking_reason: str | None = None
+    ttc_valid: bool = False
+    ttc_s: float | None = None
+    track_id: int | None = None
 
 
 @dataclass(frozen=True)
@@ -119,10 +163,17 @@ class VelocityEstablishingPngOutput:
     valid: bool
     reason: str
     acceleration_ned_m_s2: tuple[float, float, float]
+    velocity_reference_raw_ned_m_s: tuple[float, float, float]
     speed_acceleration_ned_m_s2: tuple[float, float, float]
+    speed_acceleration_raw_ned_m_s2: tuple[float, float, float]
     png_acceleration_ned_m_s2: tuple[float, float, float]
+    png_acceleration_raw_ned_m_s2: tuple[float, float, float]
     fov_acceleration_ned_m_s2: tuple[float, float, float]
+    fov_acceleration_raw_ned_m_s2: tuple[float, float, float]
+    protected_acceleration_raw_ned_m_s2: tuple[float, float, float]
+    protected_acceleration_ned_m_s2: tuple[float, float, float]
     velocity_reference_ned_m_s: tuple[float, float, float]
+    png_speed_m_s: float
     los_speed_m_s: float | None
     detection_age_s: float | None
     velocity_age_s: float | None
@@ -134,7 +185,16 @@ class VelocityEstablishingPngOutput:
     fov_constraint_active: bool
     fov_priority_active: bool
     fov_priority_weight: float
+    protected_scale: float
+    speed_budget_scale: float
     total_saturated: bool
+    terminal_trigger: str | None
+    area_ttc_s: float | None
+    track_id: int | None
+    terminal_track_id: int | None
+    terminal_reacquire_count: int
+    blind_age_s: float | None
+    blind_scale: float
 
     def to_dict(self) -> dict[str, object]:
         values = asdict(self)
@@ -150,15 +210,35 @@ class VelocityEstablishingPngController:
         self.phase = InterceptPhase.ACQUIRE
         self._acquire_count = 0
         self._last_los_timestamp_s: float | None = None
-        self._has_valid_sample = False
         self._abort_reason = ""
+        self._terminal_trigger: str | None = None
+        self._active_track_id: int | None = None
+        self._terminal_track_id: int | None = None
+        self._terminal_reacquire_count = 0
+        self._last_reacquire_timestamp_s: float | None = None
+        self._velocity_reference: np.ndarray | None = None
+        self._last_control_timestamp_s: float | None = None
+        self._area_samples: deque[tuple[float, float]] = deque()
+        self._area_track_id: int | None = None
+        self._last_reliable_acceleration = np.zeros(3, dtype=float)
+        self._blind_started_s: float | None = None
 
     def reset(self) -> None:
         self.phase = InterceptPhase.ACQUIRE
         self._acquire_count = 0
         self._last_los_timestamp_s = None
-        self._has_valid_sample = False
         self._abort_reason = ""
+        self._terminal_trigger = None
+        self._active_track_id = None
+        self._terminal_track_id = None
+        self._terminal_reacquire_count = 0
+        self._last_reacquire_timestamp_s = None
+        self._velocity_reference = None
+        self._last_control_timestamp_s = None
+        self._area_samples.clear()
+        self._area_track_id = None
+        self._last_reliable_acceleration = np.zeros(3, dtype=float)
+        self._blind_started_s = None
 
     def update(self, value: VelocityEstablishingPngInput) -> VelocityEstablishingPngOutput:
         now = float(value.timestamp_s)
@@ -167,15 +247,28 @@ class VelocityEstablishingPngController:
         detection_age = _age(now, value.los_timestamp_s)
         velocity_age = _age(now, value.velocity_timestamp_s)
         invalid_reason = self._invalid_reason(value, detection_age, velocity_age)
-        if self.phase == InterceptPhase.ABORT:
+        if self.phase in (InterceptPhase.ABORT, InterceptPhase.COMPLETE):
             return self._empty(now, self._abort_reason or "abort_latched", detection_age, velocity_age)
+        if (
+            invalid_reason is None
+            and self._active_track_id is not None
+            and value.track_id is not None
+            and value.track_id != self._active_track_id
+        ):
+            invalid_reason = "track_id_changed"
         if invalid_reason is not None:
-            if self._has_valid_sample:
-                self.phase = InterceptPhase.ABORT
-                self._abort_reason = invalid_reason
-                return self._empty(now, invalid_reason, detection_age, velocity_age)
-            self._acquire_count = 0
-            return self._empty(now, invalid_reason, detection_age, velocity_age)
+            return self._handle_invalid(now, invalid_reason, detection_age, velocity_age)
+
+        if self.phase == InterceptPhase.BLIND_HOLD:
+            if value.track_id != self._terminal_track_id:
+                return self._blind_hold(now, "terminal_track_mismatch", detection_age, velocity_age)
+            if value.los_timestamp_s != self._last_reacquire_timestamp_s:
+                self._last_reacquire_timestamp_s = value.los_timestamp_s
+                self._terminal_reacquire_count += 1
+            if self._terminal_reacquire_count < self.config.terminal_reacquire_frames:
+                return self._blind_hold(now, "terminal_reacquiring", detection_age, velocity_age)
+            self.phase = InterceptPhase.TERMINAL_VISUAL
+            self._blind_started_s = None
 
         los = _unit(value.lambda_ned)
         los_dot = np.asarray(value.lambda_dot_ned_s, dtype=float)
@@ -186,33 +279,80 @@ class VelocityEstablishingPngController:
             self.config.los_prediction_max_s,
         )
         control_los = _unit(los + prediction_horizon * los_dot)
-        self._has_valid_sample = True
+        self._record_area_sample(value)
+        area_ttc_s = self._area_ttc_s()
+        terminal_trigger = self._terminal_trigger_for(value, area_ttc_s)
+        if terminal_trigger is not None:
+            self._terminal_trigger = terminal_trigger
+            if self.config.engagement_policy == EngagementPolicy.NONCOLLISION.value:
+                return self._latch_terminal(
+                    InterceptPhase.ABORT,
+                    terminal_trigger,
+                    now,
+                    detection_age,
+                    velocity_age,
+                    area_ttc_s,
+                    value.track_id,
+                )
+            if terminal_trigger == "contact_bbox_complete":
+                return self._latch_terminal(
+                    InterceptPhase.COMPLETE,
+                    terminal_trigger,
+                    now,
+                    detection_age,
+                    velocity_age,
+                    area_ttc_s,
+                    value.track_id,
+                )
+
         if value.los_timestamp_s != self._last_los_timestamp_s:
             self._last_los_timestamp_s = value.los_timestamp_s
             self._acquire_count += 1
         if self.phase == InterceptPhase.ACQUIRE:
             if self._acquire_count < self.config.acquire_consecutive_frames:
                 return self._empty(now, "acquiring", detection_age, velocity_age)
-            self.phase = InterceptPhase.ACCELERATE
+            self.phase = InterceptPhase.TRACKING
+            self._active_track_id = value.track_id
+            self._velocity_reference = np.array(velocity, dtype=float, copy=True)
+            self._last_control_timestamp_s = now
+        if (
+            self.config.engagement_policy == EngagementPolicy.CONTACT.value
+            and terminal_trigger is not None
+        ):
+            self.phase = InterceptPhase.TERMINAL_VISUAL
+            self._terminal_track_id = value.track_id
 
-        velocity_reference = self.config.fixed_vm_m_s * control_los
-        velocity_reference[2] = float(
+        velocity_reference_raw = self.config.fixed_vm_m_s * control_los
+        velocity_reference_raw[2] = float(
             np.clip(
-                velocity_reference[2],
+                velocity_reference_raw[2],
                 -self.config.vertical_speed_reference_limit_m_s,
                 self.config.vertical_speed_reference_limit_m_s,
             )
         )
+        velocity_reference = self._ramp_velocity_reference(
+            velocity_reference_raw,
+            velocity,
+            now,
+        )
+        speed_accel_raw = self.config.speed_gain_s_inv * (velocity_reference - velocity)
+        if self.phase == InterceptPhase.TERMINAL_VISUAL:
+            speed_accel_raw = np.zeros(3, dtype=float)
         speed_accel, speed_saturated = _clip_norm(
-            self.config.speed_gain_s_inv * (velocity_reference - velocity),
+            speed_accel_raw,
             self.config.speed_accel_limit_m_s2,
         )
+        png_speed_m_s = min(
+            self.config.fixed_vm_m_s,
+            max(float(np.linalg.norm(velocity)), float(np.linalg.norm(velocity_reference))),
+        )
+        png_accel_raw = self.config.navigation_constant * png_speed_m_s * los_dot
         png_accel, png_saturated = _clip_norm(
-            self.config.navigation_constant * self.config.fixed_vm_m_s * los_dot,
+            png_accel_raw,
             self.config.png_accel_limit_m_s2,
         )
         los_body = R_IB.T @ control_los
-        fov_body = np.array(
+        fov_body_raw = np.array(
             [
                 self.config.fov_centering_gain_s2 * los_body[0],
                 self.config.fov_centering_gain_s2 * los_body[1],
@@ -221,10 +361,21 @@ class VelocityEstablishingPngController:
             dtype=float,
         )
         fov_body, fov_saturated = _clip_norm(
-            fov_body, self.config.fov_centering_accel_limit_m_s2
+            fov_body_raw, self.config.fov_centering_accel_limit_m_s2
         )
+        fov_accel_raw = R_IB @ fov_body_raw
         fov_accel = R_IB @ fov_body
-        non_fov_accel = speed_accel + png_accel
+        protected_raw = png_accel + fov_accel
+        protected_accel, protected_saturated = _clip_norm(
+            protected_raw,
+            self.config.total_accel_limit_m_s2,
+        )
+        protected_norm = float(np.linalg.norm(protected_raw))
+        protected_scale = (
+            1.0
+            if protected_norm <= 1.0e-12
+            else min(1.0, self.config.total_accel_limit_m_s2 / protected_norm)
+        )
         priority_weight = _fov_priority_weight(
             control_los,
             R_IB,
@@ -232,15 +383,18 @@ class VelocityEstablishingPngController:
         )
         fov_priority_active = priority_weight > 0.0
         if fov_priority_active:
-            non_fov_accel = _suppress_fov_opposition(
-                non_fov_accel,
+            speed_accel = _suppress_fov_opposition(
+                speed_accel,
                 fov_accel,
                 priority_weight,
             )
-        total, total_saturated = _clip_norm(
-            non_fov_accel + fov_accel,
+        speed_budget_scale = _maximum_vector_budget_scale(
+            protected_accel,
+            speed_accel,
             self.config.total_accel_limit_m_s2,
         )
+        total = protected_accel + speed_budget_scale * speed_accel
+        total_saturated = protected_saturated or speed_budget_scale < 1.0 - 1.0e-12
         total, fov_constraint_active = _constrain_acceleration_to_los(
             total,
             control_los,
@@ -250,21 +404,25 @@ class VelocityEstablishingPngController:
         )
         total_saturated = total_saturated or fov_constraint_active
         los_speed = float(np.dot(velocity, los))
-        if (
-            self.phase == InterceptPhase.ACCELERATE
-            and los_speed >= self.config.png_track_speed_ratio * self.config.fixed_vm_m_s
-        ):
-            self.phase = InterceptPhase.PNG_TRACK
+        if self.phase == InterceptPhase.TERMINAL_VISUAL:
+            self._last_reliable_acceleration = np.array(total, dtype=float, copy=True)
         return VelocityEstablishingPngOutput(
             timestamp_s=now,
             phase=self.phase,
             valid=True,
             reason="active",
             acceleration_ned_m_s2=_tuple3(total),
+            velocity_reference_raw_ned_m_s=_tuple3(velocity_reference_raw),
             speed_acceleration_ned_m_s2=_tuple3(speed_accel),
+            speed_acceleration_raw_ned_m_s2=_tuple3(speed_accel_raw),
             png_acceleration_ned_m_s2=_tuple3(png_accel),
+            png_acceleration_raw_ned_m_s2=_tuple3(png_accel_raw),
             fov_acceleration_ned_m_s2=_tuple3(fov_accel),
+            fov_acceleration_raw_ned_m_s2=_tuple3(fov_accel_raw),
+            protected_acceleration_raw_ned_m_s2=_tuple3(protected_raw),
+            protected_acceleration_ned_m_s2=_tuple3(protected_accel),
             velocity_reference_ned_m_s=_tuple3(velocity_reference),
+            png_speed_m_s=png_speed_m_s,
             los_speed_m_s=los_speed,
             detection_age_s=detection_age,
             velocity_age_s=velocity_age,
@@ -276,7 +434,186 @@ class VelocityEstablishingPngController:
             fov_constraint_active=fov_constraint_active,
             fov_priority_active=fov_priority_active,
             fov_priority_weight=priority_weight,
+            protected_scale=protected_scale,
+            speed_budget_scale=speed_budget_scale,
             total_saturated=total_saturated,
+            terminal_trigger=self._terminal_trigger,
+            area_ttc_s=area_ttc_s,
+            track_id=value.track_id,
+            terminal_track_id=self._terminal_track_id,
+            terminal_reacquire_count=self._terminal_reacquire_count,
+            blind_age_s=None,
+            blind_scale=0.0,
+        )
+
+    def _ramp_velocity_reference(
+        self,
+        target: np.ndarray,
+        velocity: np.ndarray,
+        now: float,
+    ) -> np.ndarray:
+        if self._velocity_reference is None:
+            self._velocity_reference = np.array(velocity, dtype=float, copy=True)
+        previous_s = self._last_control_timestamp_s
+        dt = 0.0 if previous_s is None else max(0.0, now - previous_s)
+        self._last_control_timestamp_s = now
+        self._velocity_reference = _move_towards(
+            self._velocity_reference,
+            target,
+            self.config.velocity_reference_slew_m_s2 * dt,
+        )
+        return np.array(self._velocity_reference, dtype=float, copy=True)
+
+    def _handle_invalid(
+        self,
+        now: float,
+        reason: str,
+        detection_age_s: float | None,
+        velocity_age_s: float | None,
+    ) -> VelocityEstablishingPngOutput:
+        tracking_loss = reason in {
+            "tracking_invalid",
+            "detection_stale",
+            "track_id_changed",
+            "no_detection",
+        } or reason.startswith("track_")
+        if (
+            self.config.engagement_policy == EngagementPolicy.CONTACT.value
+            and self.phase in (InterceptPhase.TERMINAL_VISUAL, InterceptPhase.BLIND_HOLD)
+            and tracking_loss
+        ):
+            return self._blind_hold(now, reason, detection_age_s, velocity_age_s)
+        if self.phase == InterceptPhase.ACQUIRE:
+            self._acquire_count = 0
+            self._last_los_timestamp_s = None
+            return self._empty(now, reason, detection_age_s, velocity_age_s)
+        self.phase = InterceptPhase.ABORT
+        self._abort_reason = reason
+        return self._empty(now, reason, detection_age_s, velocity_age_s)
+
+    def _blind_hold(
+        self,
+        now: float,
+        reason: str,
+        detection_age_s: float | None,
+        velocity_age_s: float | None,
+    ) -> VelocityEstablishingPngOutput:
+        if self._blind_started_s is None:
+            self._blind_started_s = now
+            self._terminal_reacquire_count = 0
+            self._last_reacquire_timestamp_s = None
+        age_s = max(0.0, now - self._blind_started_s)
+        if age_s + 1.0e-12 >= self.config.blind_hold_s:
+            self.phase = InterceptPhase.ABORT
+            self._abort_reason = "blind_hold_expired"
+            return self._empty(now, self._abort_reason, detection_age_s, velocity_age_s)
+        self.phase = InterceptPhase.BLIND_HOLD
+        scale = max(0.0, 1.0 - age_s / self.config.blind_hold_s)
+        output = self._empty(now, reason, detection_age_s, velocity_age_s)
+        return VelocityEstablishingPngOutput(
+            **{
+                **output.__dict__,
+                "valid": True,
+                "reason": "blind_hold" if reason != "terminal_reacquiring" else reason,
+                "acceleration_ned_m_s2": _tuple3(
+                    scale * self._last_reliable_acceleration
+                ),
+                "velocity_reference_ned_m_s": _tuple3(
+                    np.zeros(3) if self._velocity_reference is None else self._velocity_reference
+                ),
+                "terminal_trigger": self._terminal_trigger,
+                "terminal_track_id": self._terminal_track_id,
+                "terminal_reacquire_count": self._terminal_reacquire_count,
+                "blind_age_s": age_s,
+                "blind_scale": scale,
+            }
+        )
+
+    def _record_area_sample(self, value: VelocityEstablishingPngInput) -> None:
+        if value.track_id is None or value.bbox_area_ratio is None or value.los_timestamp_s is None:
+            return
+        if self._area_track_id != value.track_id:
+            self._area_samples.clear()
+            self._area_track_id = value.track_id
+        timestamp_s = float(value.los_timestamp_s)
+        if self._area_samples and timestamp_s == self._area_samples[-1][0]:
+            return
+        self._area_samples.append((timestamp_s, float(value.bbox_area_ratio)))
+        cutoff = timestamp_s - self.config.area_ttc_window_s
+        while self._area_samples and self._area_samples[0][0] < cutoff:
+            self._area_samples.popleft()
+
+    def _area_ttc_s(self) -> float | None:
+        samples = list(self._area_samples)
+        if len(samples) < self.config.area_ttc_min_samples:
+            return None
+        if samples[-1][0] - samples[0][0] < self.config.area_ttc_min_span_s:
+            return None
+        slopes = [
+            (area_b - area_a) / (time_b - time_a)
+            for index, (time_a, area_a) in enumerate(samples[:-1])
+            for time_b, area_b in samples[index + 1 :]
+            if time_b - time_a > 1.0e-9
+        ]
+        if not slopes:
+            return None
+        slope = float(np.median(slopes))
+        if not math.isfinite(slope) or slope <= 1.0e-9:
+            return None
+        intercept = float(np.median([area - slope * timestamp for timestamp, area in samples]))
+        fitted_area = intercept + slope * samples[-1][0]
+        ttc_s = 2.0 * fitted_area / slope
+        if not math.isfinite(ttc_s) or ttc_s <= 0.0:
+            return None
+        return ttc_s
+
+    def _terminal_trigger_for(
+        self,
+        value: VelocityEstablishingPngInput,
+        area_ttc_s: float | None,
+    ) -> str | None:
+        bbox_ratio = value.bbox_area_ratio
+        valid_ttc = value.ttc_s if value.ttc_valid else None
+        if self.config.engagement_policy == EngagementPolicy.NONCOLLISION.value:
+            if bbox_ratio is not None and bbox_ratio >= self.config.noncollision_bbox_abort_ratio:
+                return "noncollision_bbox_abort"
+            if valid_ttc is not None and valid_ttc <= self.config.noncollision_ttc_abort_s:
+                return "noncollision_ttc_abort"
+            if area_ttc_s is not None and area_ttc_s <= self.config.noncollision_ttc_abort_s:
+                return "noncollision_area_ttc_abort"
+            return None
+        if bbox_ratio is not None and bbox_ratio >= self.config.contact_bbox_complete_ratio:
+            return "contact_bbox_complete"
+        if bbox_ratio is not None and bbox_ratio >= self.config.contact_bbox_terminal_ratio:
+            return "contact_bbox_terminal"
+        if valid_ttc is not None and valid_ttc <= self.config.contact_ttc_terminal_s:
+            return "contact_ttc_terminal"
+        if area_ttc_s is not None and area_ttc_s <= self.config.contact_ttc_terminal_s:
+            return "contact_area_ttc_terminal"
+        return None
+
+    def _latch_terminal(
+        self,
+        phase: InterceptPhase,
+        reason: str,
+        timestamp_s: float,
+        detection_age_s: float | None,
+        velocity_age_s: float | None,
+        area_ttc_s: float | None,
+        track_id: int | None,
+    ) -> VelocityEstablishingPngOutput:
+        self.phase = phase
+        self._abort_reason = reason
+        self._terminal_track_id = track_id
+        output = self._empty(timestamp_s, reason, detection_age_s, velocity_age_s)
+        return VelocityEstablishingPngOutput(
+            **{
+                **output.__dict__,
+                "terminal_trigger": reason,
+                "area_ttc_s": area_ttc_s,
+                "track_id": track_id,
+                "terminal_track_id": track_id,
+            }
         )
 
     def _invalid_reason(
@@ -312,6 +649,12 @@ class VelocityEstablishingPngController:
             not math.isfinite(value.bbox_area_ratio) or value.bbox_area_ratio < 0.0
         ):
             return "bbox_area_invalid"
+        if value.ttc_valid and (
+            value.ttc_s is None
+            or not math.isfinite(float(value.ttc_s))
+            or float(value.ttc_s) <= 0.0
+        ):
+            return "ttc_invalid"
         return None
 
     def _empty(
@@ -328,10 +671,17 @@ class VelocityEstablishingPngController:
             valid=False,
             reason=reason,
             acceleration_ned_m_s2=zero,
+            velocity_reference_raw_ned_m_s=zero,
             speed_acceleration_ned_m_s2=zero,
+            speed_acceleration_raw_ned_m_s2=zero,
             png_acceleration_ned_m_s2=zero,
+            png_acceleration_raw_ned_m_s2=zero,
             fov_acceleration_ned_m_s2=zero,
+            fov_acceleration_raw_ned_m_s2=zero,
+            protected_acceleration_raw_ned_m_s2=zero,
+            protected_acceleration_ned_m_s2=zero,
             velocity_reference_ned_m_s=zero,
+            png_speed_m_s=0.0,
             los_speed_m_s=None,
             detection_age_s=detection_age_s,
             velocity_age_s=velocity_age_s,
@@ -343,7 +693,16 @@ class VelocityEstablishingPngController:
             fov_constraint_active=False,
             fov_priority_active=False,
             fov_priority_weight=0.0,
+            protected_scale=1.0,
+            speed_budget_scale=0.0,
             total_saturated=False,
+            terminal_trigger=self._terminal_trigger,
+            area_ttc_s=self._area_ttc_s(),
+            track_id=self._active_track_id,
+            terminal_track_id=self._terminal_track_id,
+            terminal_reacquire_count=self._terminal_reacquire_count,
+            blind_age_s=None,
+            blind_scale=0.0,
         )
 
 
@@ -468,6 +827,34 @@ def _clip_norm(vector: np.ndarray, limit: float) -> tuple[np.ndarray, bool]:
     if norm <= limit:
         return value, False
     return value * (limit / max(norm, 1.0e-12)), True
+
+
+def _move_towards(current: np.ndarray, target: np.ndarray, max_delta: float) -> np.ndarray:
+    current_value = np.asarray(current, dtype=float)
+    delta = np.asarray(target, dtype=float) - current_value
+    distance = float(np.linalg.norm(delta))
+    if distance <= max_delta or distance <= 1.0e-12:
+        return np.asarray(target, dtype=float)
+    return current_value + delta * (max_delta / distance)
+
+
+def _maximum_vector_budget_scale(
+    protected: np.ndarray,
+    candidate: np.ndarray,
+    limit: float,
+) -> float:
+    protected_value = np.asarray(protected, dtype=float)
+    candidate_value = np.asarray(candidate, dtype=float)
+    if float(np.linalg.norm(protected_value + candidate_value)) <= limit + 1.0e-12:
+        return 1.0
+    quadratic = float(np.dot(candidate_value, candidate_value))
+    if quadratic <= 1.0e-18:
+        return 0.0
+    linear = 2.0 * float(np.dot(protected_value, candidate_value))
+    constant = float(np.dot(protected_value, protected_value)) - limit**2
+    discriminant = max(0.0, linear**2 - 4.0 * quadratic * constant)
+    upper_root = (-linear + math.sqrt(discriminant)) / (2.0 * quadratic)
+    return float(np.clip(upper_root, 0.0, 1.0))
 
 
 def _tuple3(vector: np.ndarray) -> tuple[float, float, float]:

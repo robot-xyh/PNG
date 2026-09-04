@@ -164,7 +164,7 @@ class BetaflightWebTest(unittest.TestCase):
             "g_eval_body_frd_x": "0.4",
             "g_eval_body_frd_y": "0.5",
             "g_eval_body_frd_z": "0.6",
-            "intercept_phase": "ACCELERATE",
+            "intercept_phase": "TRACKING",
             "intercept_valid": "1",
             "intercept_reason": "active",
             "intercept_velocity_source": "bench_zero_velocity",
@@ -174,6 +174,13 @@ class BetaflightWebTest(unittest.TestCase):
             "intercept_prediction_horizon_s": "0.04",
             "intercept_acquire_count": "3",
             "intercept_los_speed_m_s": "0.0",
+            "intercept_png_speed_m_s": "2.5",
+            "intercept_velocity_reference_raw_n": "3.0",
+            "intercept_velocity_reference_raw_e": "4.0",
+            "intercept_velocity_reference_raw_d": "-1.0",
+            "intercept_velocity_reference_n": "1.0",
+            "intercept_velocity_reference_e": "2.0",
+            "intercept_velocity_reference_d": "-0.5",
             "intercept_speed_accel_n": "0.1",
             "intercept_speed_accel_e": "0.2",
             "intercept_speed_accel_d": "-0.3",
@@ -183,6 +190,9 @@ class BetaflightWebTest(unittest.TestCase):
             "intercept_fov_accel_n": "0.6",
             "intercept_fov_accel_e": "0.7",
             "intercept_fov_accel_d": "0.0",
+            "intercept_protected_accel_n": "0.7",
+            "intercept_protected_accel_e": "0.8",
+            "intercept_protected_accel_d": "0.0",
             "intercept_total_accel_n": "0.8",
             "intercept_total_accel_e": "0.9",
             "intercept_total_accel_d": "-0.3",
@@ -190,7 +200,18 @@ class BetaflightWebTest(unittest.TestCase):
             "intercept_png_saturated": "0",
             "intercept_fov_saturated": "0",
             "intercept_fov_constraint_active": "0",
+            "intercept_fov_priority_active": "1",
+            "intercept_fov_priority_weight": "0.75",
+            "intercept_protected_scale": "1.0",
+            "intercept_speed_budget_scale": "0.4",
             "intercept_total_saturated": "1",
+            "intercept_terminal_trigger": "contact_ttc_terminal",
+            "intercept_area_ttc_s": "0.8",
+            "intercept_track_id": "7",
+            "intercept_terminal_track_id": "7",
+            "intercept_terminal_reacquire_count": "1",
+            "intercept_blind_age_s": "0.05",
+            "intercept_blind_scale": "0.75",
             "sp_valid": "1",
             "command_mapping_type": "accel_tilt_rate",
             "command_desired_roll_angle_deg": "5.0",
@@ -386,6 +407,8 @@ class BetaflightWebTest(unittest.TestCase):
                 "control_active": True,
                 "release_elapsed_s": 0.0,
                 "rearm_waiting": False,
+                "takeover_count": None,
+                "takeover_count_limit": None,
             },
         )
         self.assertEqual(payload["vision"]["bbox_xyxy"], [1.0, 2.0, 3.0, 4.0])
@@ -406,9 +429,14 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertEqual(payload["guidance"]["g_eval"], [0.1, 0.2, 0.3])
         self.assertEqual(payload["guidance"]["g_eval_body_frd"], [0.4, 0.5, 0.6])
         intercept = payload["guidance"]["intercept"]
-        self.assertEqual(intercept["phase"], "ACCELERATE")
+        self.assertEqual(intercept["phase"], "TRACKING")
         self.assertEqual(intercept["velocity_source"], "bench_zero_velocity")
+        self.assertEqual(intercept["velocity_reference_raw_ned_m_s"], [3.0, 4.0, -1.0])
+        self.assertEqual(intercept["velocity_reference_ned_m_s"], [1.0, 2.0, -0.5])
         self.assertEqual(intercept["png_acceleration_ned_m_s2"], [0.4, 0.5, 0.0])
+        self.assertEqual(intercept["budget"]["speed_scale"], 0.4)
+        self.assertEqual(intercept["terminal"]["trigger"], "contact_ttc_terminal")
+        self.assertEqual(intercept["terminal"]["blind_scale"], 0.75)
         self.assertEqual(
             intercept["saturation"],
             {"speed": True, "png": False, "fov": False, "fov_constraint": False, "total": True},

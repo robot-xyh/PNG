@@ -80,7 +80,7 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
                 VelocityEstablishingPngConfig(
                     fixed_vm_m_s=10.0,
                     acquire_consecutive_frames=1,
-                    detection_timeout_s=0.35,
+                    detection_timeout_s=0.15,
                     velocity_timeout_s=0.5,
                 )
             ),
@@ -99,22 +99,22 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
             kinematics=_kinematics(valid=False),
         )
         held = runtime.update(
-            timestamp_s=1.2,
+            timestamp_s=1.1,
             vision_result=None,
             attitude_R_IB=np.eye(3),
             attitude_valid=True,
             kinematics=_kinematics(valid=False),
         )
         stale = runtime.update(
-            timestamp_s=1.36,
+            timestamp_s=1.16,
             vision_result=None,
             attitude_R_IB=np.eye(3),
             attitude_valid=True,
             kinematics=_kinematics(valid=False),
         )
         recovered = runtime.update(
-            timestamp_s=1.4,
-            vision_result=_vision(1.4),
+            timestamp_s=1.2,
+            vision_result=_vision(1.2),
             attitude_R_IB=np.eye(3),
             attitude_valid=True,
             kinematics=_kinematics(valid=False),
@@ -122,7 +122,7 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
 
         self.assertTrue(first.result.guidance.valid)
         self.assertTrue(held.result.guidance.valid)
-        self.assertAlmostEqual(held.controller.detection_age_s, 0.2)
+        self.assertAlmostEqual(held.controller.detection_age_s, 0.1)
         self.assertEqual(stale.controller.phase, InterceptPhase.ABORT)
         self.assertEqual(stale.controller.reason, "detection_stale")
         self.assertFalse(recovered.result.guidance.valid)
@@ -159,7 +159,7 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
             engagement_active=False,
         )
         stale = runtime.update(
-            timestamp_s=1.36,
+            timestamp_s=1.16,
             vision_result=None,
             attitude_R_IB=np.eye(3),
             attitude_valid=True,
@@ -167,8 +167,8 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
             engagement_active=False,
         )
         recovered = runtime.update(
-            timestamp_s=1.4,
-            vision_result=_vision(1.4),
+            timestamp_s=1.2,
+            vision_result=_vision(1.2),
             attitude_R_IB=np.eye(3),
             attitude_valid=True,
             kinematics=_kinematics(valid=False),
@@ -176,7 +176,7 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
         )
 
         self.assertEqual(stale.controller.phase, InterceptPhase.ABORT)
-        self.assertEqual(runtime.controller.phase, InterceptPhase.ACCELERATE)
+        self.assertEqual(runtime.controller.phase, InterceptPhase.TRACKING)
         self.assertTrue(recovered.result.guidance.valid)
         self.assertEqual(recovered.controller.reason, "active")
 

@@ -1,11 +1,11 @@
 {
   "candidate_profile": {
-    "id": "velocity_png_flight_log_only",
-    "scope": "flight_log_only",
+    "id": "velocity_png_flight_contact_candidate_v1",
+    "scope": "flight_contact_candidate_v1",
     "runnable": true,
     "control_authorized": false,
     "propeller_control_authorized": false,
-    "purpose": "Final velocity-establishing PNG candidate logging with zero MSP_SET_RAW_RC output."
+    "purpose": "Contact-terminal PNG replay and LOG_ONLY evaluation; active control remains disabled pending an explicit contact-risk waiver."
   },
   "runtime_policy": {
     "allowed_control_modes": [
@@ -13,6 +13,12 @@
     ],
     "allow_control_flag_permitted": false,
     "msp_set_raw_rc_permitted": false
+  },
+  "contact_risk_policy": {
+    "active_control_permitted": false,
+    "explicit_risk_waiver_required": true,
+    "unbounded_takeover_requested": true,
+    "note": "This tracked candidate cannot publish MSP_SET_RAW_RC. A separately scoped approval and signed operator risk waiver are required before contact flight."
   },
   "serial": {
     "port": "/dev/ttyS1",
@@ -231,7 +237,7 @@
       "los_prediction_max_s": 0.15,
       "gravity_m_s2": 9.80665,
       "fov_constraint_half_angle_deg": 0,
-      "engagement_policy": "noncollision",
+      "engagement_policy": "contact",
       "noncollision_bbox_abort_ratio": 0.012,
       "noncollision_ttc_abort_s": 2,
       "contact_bbox_terminal_ratio": 0.05,

@@ -54,7 +54,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         self.assertEqual(result.control_update_count, 50)
         self.assertGreater(result.entry_handoff_active_fraction, 0.7)
         self.assertGreater(result.throttle_handover_active_fraction, 0.7)
-        self.assertGreater(result.throttle_slew_saturation_fraction, 0.0)
+        self.assertEqual(result.throttle_slew_saturation_fraction, 0.0)
         self.assertGreater(result.maximum_throttle_us, config.throttle_hover_us)
         self.assertLessEqual(result.maximum_throttle_us, config.throttle_max_us)
         self.assertLessEqual(result.maximum_load_factor_g, config.max_load_factor_g)
@@ -146,6 +146,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
             kinematic_rate_hz=5.0,
             kinematic_latency_s=0.15,
             kinematic_velocity_noise_std_m_s=0.25,
+            kinematic_dropout_probability=0.0,
         )
 
         result = simulate_case(
@@ -158,7 +159,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         self.assertGreater(result.measurement_delivered_count, 5)
         self.assertGreater(result.kinematic_valid_fraction, 0.8)
         self.assertGreater(result.maximum_kinematic_velocity_error_m_s, 0.0)
-        self.assertIn(result.controller_final_phase, {"ACCELERATE", "PNG_TRACK"})
+        self.assertEqual(result.controller_final_phase, "COMPLETE")
         self.assertNotEqual(result.outcome_reason, "controller_abort")
 
     def test_candidate_does_not_consume_relative_velocity_measurement(self):

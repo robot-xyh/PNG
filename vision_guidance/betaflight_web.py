@@ -16,7 +16,7 @@ from typing import Any, Mapping
 from urllib.parse import parse_qs, urlsplit
 
 
-WEB_SCHEMA_VERSION = 14
+WEB_SCHEMA_VERSION = 15
 DEFAULT_DASHBOARD_PATH = Path(__file__).with_name("web") / "betaflight_telemetry.html"
 VISION_MEASUREMENT_KEYS = (
     "camera_ok",
@@ -509,12 +509,29 @@ def telemetry_payload_from_log_row(
                 ),
                 "acquire_count": _integer(row.get("intercept_acquire_count")),
                 "los_speed_m_s": _number(row.get("intercept_los_speed_m_s")),
+                "png_speed_m_s": _number(row.get("intercept_png_speed_m_s")),
+                "velocity_reference_raw_ned_m_s": _vector(
+                    row,
+                    (
+                        "intercept_velocity_reference_raw_n",
+                        "intercept_velocity_reference_raw_e",
+                        "intercept_velocity_reference_raw_d",
+                    ),
+                ),
                 "velocity_reference_ned_m_s": _vector(
                     row,
                     (
                         "intercept_velocity_reference_n",
                         "intercept_velocity_reference_e",
                         "intercept_velocity_reference_d",
+                    ),
+                ),
+                "speed_acceleration_raw_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_speed_accel_raw_n",
+                        "intercept_speed_accel_raw_e",
+                        "intercept_speed_accel_raw_d",
                     ),
                 ),
                 "speed_acceleration_ned_m_s2": _vector(
@@ -525,12 +542,28 @@ def telemetry_payload_from_log_row(
                         "intercept_speed_accel_d",
                     ),
                 ),
+                "png_acceleration_raw_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_png_accel_raw_n",
+                        "intercept_png_accel_raw_e",
+                        "intercept_png_accel_raw_d",
+                    ),
+                ),
                 "png_acceleration_ned_m_s2": _vector(
                     row,
                     (
                         "intercept_png_accel_n",
                         "intercept_png_accel_e",
                         "intercept_png_accel_d",
+                    ),
+                ),
+                "fov_acceleration_raw_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_fov_accel_raw_n",
+                        "intercept_fov_accel_raw_e",
+                        "intercept_fov_accel_raw_d",
                     ),
                 ),
                 "fov_acceleration_ned_m_s2": _vector(
@@ -541,6 +574,22 @@ def telemetry_payload_from_log_row(
                         "intercept_fov_accel_d",
                     ),
                 ),
+                "protected_acceleration_raw_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_protected_accel_raw_n",
+                        "intercept_protected_accel_raw_e",
+                        "intercept_protected_accel_raw_d",
+                    ),
+                ),
+                "protected_acceleration_ned_m_s2": _vector(
+                    row,
+                    (
+                        "intercept_protected_accel_n",
+                        "intercept_protected_accel_e",
+                        "intercept_protected_accel_d",
+                    ),
+                ),
                 "total_acceleration_ned_m_s2": _vector(
                     row,
                     (
@@ -549,6 +598,29 @@ def telemetry_payload_from_log_row(
                         "intercept_total_accel_d",
                     ),
                 ),
+                "budget": {
+                    "protected_scale": _number(row.get("intercept_protected_scale")),
+                    "speed_scale": _number(row.get("intercept_speed_budget_scale")),
+                    "fov_priority_active": _boolean(
+                        row.get("intercept_fov_priority_active")
+                    ),
+                    "fov_priority_weight": _number(
+                        row.get("intercept_fov_priority_weight")
+                    ),
+                },
+                "terminal": {
+                    "trigger": _text(row.get("intercept_terminal_trigger")),
+                    "area_ttc_s": _number(row.get("intercept_area_ttc_s")),
+                    "track_id": _integer(row.get("intercept_track_id")),
+                    "terminal_track_id": _integer(
+                        row.get("intercept_terminal_track_id")
+                    ),
+                    "reacquire_count": _integer(
+                        row.get("intercept_terminal_reacquire_count")
+                    ),
+                    "blind_age_s": _number(row.get("intercept_blind_age_s")),
+                    "blind_scale": _number(row.get("intercept_blind_scale")),
+                },
                 "saturation": {
                     "speed": _boolean(row.get("intercept_speed_saturated")),
                     "png": _boolean(row.get("intercept_png_saturated")),
