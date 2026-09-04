@@ -960,6 +960,43 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(events[1]["new"], 1)
             self.assertEqual(events[1]["context"]["rc_sent"][2], 1000)
 
+    def test_track_id_event_update_ignores_perception_wait_cycles(self):
+        detection = FrameDetection(1, 10.0, (1.0, 2.0, 10.0, 12.0), 7, 0.8)
+
+        self.assertEqual(
+            runner._track_id_event_update(detection, perception_new_result=0),
+            {},
+        )
+        self.assertEqual(
+            runner._track_id_event_update(None, perception_new_result="0"),
+            {},
+        )
+
+    def test_track_id_event_update_records_new_detection_and_real_loss(self):
+        detection = FrameDetection(1, 10.0, (1.0, 2.0, 10.0, 12.0), 7, 0.8)
+
+        self.assertEqual(
+            runner._track_id_event_update(detection, perception_new_result=1),
+            {"track_id": 7},
+        )
+        self.assertEqual(
+            runner._track_id_event_update(None, perception_new_result=1),
+            {"track_id": None},
+        )
+
+    def test_durable_transition_state_ignores_non_algorithm_publish_substates(self):
+        common = {"armed": False, "override_active": False, "safety_state": "READY"}
+
+        states = {
+            runner._durable_transition_state(**common, publish_mode=mode)
+            for mode in ("disabled", "prefill", "passthrough", "physical_rc_stale")
+        }
+        self.assertEqual(len(states), 1)
+        self.assertNotEqual(
+            states.pop(),
+            runner._durable_transition_state(**common, publish_mode="algorithm"),
+        )
+
     def test_durable_csv_flushes_periodically_and_syncs_transitions_and_close(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "durable.csv"
@@ -1013,6 +1050,37 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertAlmostEqual(snapshot["python_gc_last_pause_ms"], 3.0)
         self.assertAlmostEqual(snapshot["python_gc_max_pause_ms"], 12.5)
         self.assertAlmostEqual(snapshot["python_gc_total_pause_ms"], 15.5)
+
+    def test_realtime_gc_guard_collects_disables_and_restores_gc(self):
+        with mock.patch.object(runner.gc, "isenabled", return_value=True), mock.patch.object(
+            runner.gc, "collect"
+        ) as collect, mock.patch.object(runner.gc, "disable") as disable, mock.patch.object(
+            runner.gc, "enable"
+        ) as enable:
+            guard = runner.RealtimeGcGuard()
+            guard.start()
+            guard.start()
+            guard.close()
+            guard.close()
+
+        collect.assert_called_once_with()
+        disable.assert_called_once_with()
+        enable.assert_called_once_with()
+        self.assertTrue(guard.metadata()["automatic_gc_disabled_during_run"])
+
+    def test_realtime_gc_guard_preserves_preexisting_disabled_state(self):
+        with mock.patch.object(runner.gc, "isenabled", return_value=False), mock.patch.object(
+            runner.gc, "collect"
+        ) as collect, mock.patch.object(runner.gc, "disable") as disable, mock.patch.object(
+            runner.gc, "enable"
+        ) as enable:
+            guard = runner.RealtimeGcGuard()
+            guard.start()
+            guard.close()
+
+        collect.assert_not_called()
+        disable.assert_not_called()
+        enable.assert_not_called()
 
 
 if __name__ == "__main__":

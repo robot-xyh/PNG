@@ -260,6 +260,37 @@ class EdgeEventLogger:
         self._stream.close()
 
 
+def _track_id_event_update(
+    detection: FrameDetection | None,
+    *,
+    perception_new_result: Any,
+) -> dict[str, Any]:
+    """Update the edge event only when perception produced a new result."""
+    try:
+        has_new_result = bool(int(perception_new_result))
+    except (TypeError, ValueError):
+        has_new_result = bool(perception_new_result)
+    if not has_new_result:
+        return {}
+    return {"track_id": None if detection is None else detection.track_id}
+
+
+def _durable_transition_state(
+    *,
+    armed: bool,
+    override_active: bool,
+    safety_state: str,
+    publish_mode: str,
+) -> tuple[int, int, str, bool]:
+    """Select state edges that must force an immediate CSV fsync."""
+    return (
+        int(armed),
+        int(override_active),
+        str(safety_state),
+        str(publish_mode) == "algorithm",
+    )
+
+
 class DurableCsvLogger:
     """Bound CSV data loss and sync safety-critical state transitions."""
 
@@ -438,6 +469,36 @@ class PythonGcPauseMonitor:
             self._last_pause_ms = pause_ms
             self._max_pause_ms = pause_ms if self._max_pause_ms is None else max(self._max_pause_ms, pause_ms)
             self._total_pause_ms += pause_ms
+
+
+class RealtimeGcGuard:
+    """Keep cyclic GC from pausing the MSP thread during the real-time run."""
+
+    def __init__(self):
+        self.enabled_before_start = bool(gc.isenabled())
+        self._active = False
+
+    def start(self) -> None:
+        if self._active:
+            return
+        if self.enabled_before_start:
+            gc.collect()
+            gc.disable()
+        self._active = True
+
+    def close(self) -> None:
+        if not self._active:
+            return
+        if self.enabled_before_start:
+            gc.enable()
+        self._active = False
+
+    def metadata(self) -> dict[str, Any]:
+        return {
+            "automatic_gc_disabled_during_run": self.enabled_before_start,
+            "automatic_gc_enabled_before_run": self.enabled_before_start,
+            "ordinary_reference_counting_remains_enabled": True,
+        }
 
 
 class DetectionCsvSource:
@@ -1367,7 +1428,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     if control_output_requested and flight_scope == "flight_active_supervised":
         guidance_cfg = dict(config.get("guidance", {}))
         velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
-        thrust_cfg = command_shaper_config.accel_tilt_rate.thrust_feedforward
+        thrust_cfg = _acceleration_tilt_rate_config(config).thrust_feedforward
         if guidance_cfg.get("velocity_source") != "msp_kinematics":
             raise RuntimeError("flight_active_supervised requires velocity_source=msp_kinematics")
         if msp_runtime_config.override_channels_mask != 15:
@@ -1458,7 +1519,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     msp_worker = None
     if msp_runtime_config.io_worker_enabled:
         msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config, box_ids=box_ids)
-        msp_worker.start()
 
     detection_source = _create_detection_source(args, config, preview_sink=web_service)
     attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
@@ -1502,6 +1562,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         else PlatformHealthSampler(sample_hz=platform_health_hz, log_directory=log_path.parent)
     )
     gc_pause_monitor = PythonGcPauseMonitor()
+    realtime_gc_guard = RealtimeGcGuard()
     start = time.monotonic()
     _write_run_meta(
         meta_path,
@@ -1536,7 +1597,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         guidance=guidance_metadata,
         camera_calibration=camera_calibration,
         platform_health={} if platform_health is None else platform_health.metadata(),
-        runtime_diagnostics=gc_pause_monitor.metadata(),
+        runtime_diagnostics={
+            **gc_pause_monitor.metadata(),
+            **realtime_gc_guard.metadata(),
+        },
         web_telemetry=web_service.metadata(),
     )
     frame_id = 0
@@ -1598,10 +1662,13 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "guidance": guidance_metadata,
         },
     )
-    if platform_health is not None:
-        platform_health.start()
-    gc_pause_monitor.start()
+    realtime_gc_guard.start()
     try:
+        gc_pause_monitor.start()
+        if platform_health is not None:
+            platform_health.start()
+        if msp_worker is not None:
+            msp_worker.start()
         with DurableCsvLogger(
             log_path,
             fields,
@@ -2006,7 +2073,10 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "target_valid": int(target_valid),
                         "entry_handoff_active": int(shaping.entry_active),
                         "tilt_hardcap_active": int(shaping.hardcap_active),
-                        "track_id": None if detection is None else detection.track_id,
+                        **_track_id_event_update(
+                            detection,
+                            perception_new_result=detector_stats.get("perception_new_result", 0),
+                        ),
                         "intercept_phase": detector_stats.get("intercept_phase", ""),
                         "intercept_reason": detector_stats.get("intercept_reason", ""),
                         "telemetry_fresh": int(telemetry_fresh),
@@ -2088,11 +2158,11 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 csv_log.write_row(
                     row,
                     timestamp_s=loop_start,
-                    transition_state=(
-                        int(armed),
-                        int(override_active),
-                        str(decision.state.value),
-                        "" if worker_snapshot is None else worker_snapshot.publish_mode,
+                    transition_state=_durable_transition_state(
+                        armed=armed,
+                        override_active=override_active,
+                        safety_state=str(decision.state.value),
+                        publish_mode="" if worker_snapshot is None else worker_snapshot.publish_mode,
                     ),
                 )
                 rows_written += 1
@@ -2136,6 +2206,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                             platform_health.close()
                     finally:
                         gc_pause_monitor.close()
+                        realtime_gc_guard.close()
                         stopped_s = time.monotonic()
                         completion = {
                             "complete": stop_reason
@@ -2493,6 +2564,21 @@ def _guidance_command_frame_metadata(config: dict[str, Any]) -> dict[str, Any]:
         except ValueError as exc:
             raise RuntimeError(f"invalid guidance_command.accel_tilt_rate: {exc}") from exc
     return metadata
+
+
+def _acceleration_tilt_rate_config(config: dict[str, Any]) -> AccelerationTiltRateConfig:
+    values = dict(config.get("guidance_command", {}))
+    if str(values.get("mapping_type", "")).strip().lower() != "accel_tilt_rate":
+        raise RuntimeError(
+            "flight_active_supervised requires guidance_command.mapping_type='accel_tilt_rate'"
+        )
+    accel_values = values.get("accel_tilt_rate", {})
+    if not isinstance(accel_values, dict):
+        raise RuntimeError("guidance_command.accel_tilt_rate must be a mapping")
+    try:
+        return AccelerationTiltRateConfig.from_mapping(accel_values)
+    except ValueError as exc:
+        raise RuntimeError(f"invalid guidance_command.accel_tilt_rate: {exc}") from exc
 
 
 def _rc_mapping_config(config: dict[str, Any]) -> RcMappingConfig:

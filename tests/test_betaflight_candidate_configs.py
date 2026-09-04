@@ -61,6 +61,16 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             ["log_only"],
         )
 
+    def test_supervised_thrust_feedforward_config_is_runtime_loadable(self):
+        mapping = runner._acceleration_tilt_rate_config(self.flight_supervised)
+
+        self.assertTrue(mapping.thrust_feedforward.enabled)
+        self.assertEqual(mapping.thrust_feedforward.model, "measured_load_factor")
+        self.assertEqual(
+            mapping.thrust_feedforward.calibration_id,
+            "LOG00062_1275_1500",
+        )
+
     def test_noprop_fault_contract(self):
         config = self.noprop
         self.assertEqual(config["bench_profile"]["scope"], "noprop_bench")
