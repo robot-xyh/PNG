@@ -1,0 +1,105 @@
+{
+  "schema_version": 1,
+  "evidence_id": "BETAFLIGHT_INTERCEPT_SUPERVISED_MC100_PRE_FIDELITY_20260903",
+  "scope": "offline_supervised_profile_pre_fidelity_monte_carlo",
+  "model_trial_count": 4500,
+  "cases_per_scenario": 15,
+  "trials_per_case": 100,
+  "decision": {
+    "initial_performance_target": 0.8,
+    "initial_performance_target_passed": true,
+    "full_release_passed": false,
+    "actual_flight_hit_rate_measured": false,
+    "active_control_authorized_by_this_evidence": false
+  },
+  "runtime_binding": {
+    "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
+    "config_sha256": "53aac58d15badcdbe1b58a1d845bb28bb5363b7890356e9e7fe95567fc2f8ef2",
+    "source_commit": "ff5201fd7ec24011b643f9bf53852cffad1cb585"
+  },
+  "candidate": {
+    "controller": "velocity_establishing_png",
+    "navigation_constant": 3.0,
+    "fixed_vm_m_s": 10.0,
+    "png_acceleration_limit_m_s2": 7.0,
+    "speed_acceleration_limit_m_s2": 7.0,
+    "total_acceleration_limit_m_s2": 7.0,
+    "tilt_limit_deg": 35.0,
+    "body_rate_limit_deg_s": 60.0,
+    "maximum_load_factor_g": 2.37
+  },
+  "scenarios": [
+    {
+      "name": "final_chain_software_p95",
+      "perception_latency_s": 0.084556,
+      "initially_visible_trials": 1300,
+      "hit_count": 1274,
+      "hit_rate": 0.98,
+      "hit_rate_wilson95": [0.9708561940465468, 0.9863153942298362],
+      "fov_feasible_hit_count": 1195,
+      "fov_feasible_hit_rate": 0.9192307692307692,
+      "fov_feasible_hit_rate_wilson95": [0.9031540245553293, 0.9328371863591396],
+      "target_stale_failure_rate": 0.02,
+      "worst_minimum_range_m": 4.738860124335756,
+      "full_release_scenario_passed": false
+    },
+    {
+      "name": "observed_active_flight_p95",
+      "perception_latency_s": 0.1277,
+      "initially_visible_trials": 1300,
+      "hit_count": 1267,
+      "hit_rate": 0.9746153846153847,
+      "hit_rate_wilson95": [0.964565651269848, 0.9818684352149731],
+      "fov_feasible_hit_count": 1158,
+      "fov_feasible_hit_rate": 0.8907692307692308,
+      "fov_feasible_hit_rate_wilson95": [0.8726475043181138, 0.9065883399838134],
+      "target_stale_failure_rate": 0.025384615384615384,
+      "worst_minimum_range_m": 3.7159809511443163,
+      "full_release_scenario_passed": false
+    },
+    {
+      "name": "conservative_physical_p95_budget",
+      "perception_latency_s": 0.154139,
+      "initially_visible_trials": 1300,
+      "hit_count": 1271,
+      "hit_rate": 0.9776923076923076,
+      "hit_rate_wilson95": [0.9681461696036272, 0.9844236321906575],
+      "fov_feasible_hit_count": 1148,
+      "fov_feasible_hit_rate": 0.8830769230769231,
+      "fov_feasible_hit_rate_wilson95": [0.8644702485255537, 0.8994263075027135],
+      "target_stale_failure_rate": 0.022307692307692306,
+      "worst_minimum_range_m": 5.200632123571905,
+      "full_release_scenario_passed": false
+    }
+  ],
+  "dominant_failure_case": {
+    "case_id": "U06",
+    "horizontal_range_m": 10.0,
+    "lateral_offset_m": 8.0,
+    "altitude_offset_m": 30.0,
+    "target_speed_m_s": 5.0,
+    "hit_rate_range": [0.68, 0.74],
+    "fov_feasible_hit_rate_range": [0.38, 0.44]
+  },
+  "envelope": {
+    "maximum_control_acceleration_m_s2": 7.000000000000002,
+    "maximum_commanded_rate_deg_s": 60.0,
+    "maximum_roll_deg": 26.76620544209219,
+    "maximum_pitch_deg": 32.6296825316202,
+    "maximum_thrust_saturation_fraction": 0.0
+  },
+  "artifacts": {
+    "config": "config/betaflight.intercept_eval.flight_supervised_pre_fidelity_20260903.json",
+    "config_sha256": "92d1df606094becd08197054ac33dbab6f692f0564392f777ff10ac8b5b180a6",
+    "report": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_mc100_20260903.json",
+    "report_sha256": "f169d904d0471aad684a82427128d2567154ff4c5d94f6610f7625e74802010b",
+    "trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_mc100_20260903.csv",
+    "trials_csv_sha256": "a4f1f73b74457a948460a6982c15bf9ea5db11f16e9a8f56528250dde81f6086"
+  },
+  "limitations": [
+    "The results are point-mass Monte Carlo outputs, not measured flight interception rates.",
+    "The 0.8 s entry-rate handoff, 0.8 s throttle handover, and 600 us/s throttle slew are not modeled.",
+    "Betaflight PID, motor mixing, propeller dynamics, voltage sag, and maneuvering targets are not modeled.",
+    "The 2.37 g calibration is a short measured plateau and does not establish sustainable thrust."
+  ]
+}

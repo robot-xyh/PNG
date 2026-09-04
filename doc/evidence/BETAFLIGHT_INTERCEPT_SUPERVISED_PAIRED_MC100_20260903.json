@@ -1,0 +1,123 @@
+{
+  "schema_version": 1,
+  "evidence_id": "BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_20260903",
+  "scope": "offline_runtime_bound_paired_monte_carlo",
+  "model_trial_count": 18000,
+  "cases_per_scenario": 30,
+  "trials_per_case": 100,
+  "runtime_binding": {
+    "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
+    "config_sha256": "880492b5207503523a262d77f4e73a7699fca04a081736a27a778a950901251b"
+  },
+  "decision": {
+    "selected_candidate": "fov_s75_f95",
+    "initial_performance_target": 0.8,
+    "initial_performance_target_passed": true,
+    "paired_screening_passed": true,
+    "full_release_passed": false,
+    "full_release_failure": "worst visible minimum range exceeds 1.0 m",
+    "actual_flight_hit_rate_measured": false,
+    "active_control_authorized_by_this_evidence": false
+  },
+  "candidate": {
+    "controller": "velocity_establishing_png",
+    "fov_priority_start_ratio": 0.75,
+    "fov_priority_full_ratio": 0.95,
+    "horizontal_half_fov_deg": 31.000688982474795,
+    "vertical_half_fov_deg": 24.91540513181656,
+    "navigation_constant": 3.0,
+    "fixed_vm_m_s": 10.0,
+    "total_acceleration_limit_m_s2": 7.0,
+    "tilt_limit_deg": 35.0,
+    "body_rate_limit_deg_s": 60.0,
+    "throttle_limit_us": 1500,
+    "maximum_load_factor_limit_g": 2.37
+  },
+  "paired_screening": {
+    "candidate_count": 9,
+    "trials_per_case": 20,
+    "selected_candidate": "fov_s75_f95",
+    "outward_fov_hit_rate_improvement": 0.5541666666666667,
+    "worst_central_inward_hit_rate_drop": 0.0,
+    "command_limits_unchanged": true
+  },
+  "final_pair": {
+    "outward_baseline_fov_hit_rate": 0.35833333333333334,
+    "outward_candidate_fov_hit_rate": 0.9475,
+    "outward_fov_hit_rate_improvement": 0.5891666666666666,
+    "worst_central_inward_hit_rate_drop": 0.0,
+    "aggregate_candidate_visible_hit_rate": 0.9985897435897436,
+    "aggregate_candidate_visible_fov_hit_rate": 0.9911538461538462
+  },
+  "scenarios": [
+    {
+      "name": "final_chain_software_p95",
+      "perception_latency_s": 0.084556,
+      "initially_visible_trials_per_evaluation": 2600,
+      "baseline_hit_rate": 0.9546153846153846,
+      "candidate_hit_rate": 0.9992307692307693,
+      "baseline_fov_hit_rate": 0.8776923076923077,
+      "candidate_fov_hit_rate": 0.9961538461538462,
+      "baseline_target_stale_failure_rate": 0.045384615384615384,
+      "candidate_target_stale_failure_rate": 0.0007692307692307692,
+      "candidate_worst_minimum_range_m": 1.2231843873459838,
+      "full_release_scenario_passed": false
+    },
+    {
+      "name": "observed_active_flight_p95",
+      "perception_latency_s": 0.1277,
+      "initially_visible_trials_per_evaluation": 2600,
+      "baseline_hit_rate": 0.9473076923076923,
+      "candidate_hit_rate": 0.9988461538461538,
+      "baseline_fov_hit_rate": 0.8546153846153847,
+      "candidate_fov_hit_rate": 0.9911538461538462,
+      "baseline_target_stale_failure_rate": 0.05269230769230769,
+      "candidate_target_stale_failure_rate": 0.001153846153846154,
+      "candidate_worst_minimum_range_m": 1.2572908603846051,
+      "full_release_scenario_passed": false
+    },
+    {
+      "name": "conservative_physical_p95_budget",
+      "perception_latency_s": 0.154139,
+      "initially_visible_trials_per_evaluation": 2600,
+      "baseline_hit_rate": 0.9461538461538461,
+      "candidate_hit_rate": 0.9976923076923077,
+      "baseline_fov_hit_rate": 0.8476923076923077,
+      "candidate_fov_hit_rate": 0.9861538461538462,
+      "baseline_target_stale_failure_rate": 0.05384615384615385,
+      "candidate_target_stale_failure_rate": 0.002307692307692308,
+      "candidate_worst_minimum_range_m": 1.371422427612541,
+      "full_release_scenario_passed": false
+    }
+  ],
+  "envelope": {
+    "maximum_control_acceleration_m_s2": 7.000000000000003,
+    "maximum_commanded_rate_deg_s": 60.0,
+    "maximum_roll_deg": 26.852249375589263,
+    "maximum_pitch_deg": 34.88985394919548,
+    "maximum_throttle_us": 1394.8014076636987,
+    "maximum_load_factor_g": 1.7294574599967432,
+    "mean_throttle_slew_saturation_fraction": 0.051689377710975655,
+    "mean_fov_priority_active_fraction": 0.11827518245647221
+  },
+  "artifacts": {
+    "screening_config": "config/betaflight.intercept_eval.flight_supervised_fov_screen_20260903.json",
+    "screening_config_sha256": "29c69d85871e8cb9881bf07843d33d3a2ec963be0e76cde228be85bcd35cde35",
+    "screening_report": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.json",
+    "screening_report_sha256": "1447bb85f0ae91c6932d4d666256deab4fe265f3f7d05dc2e479698f3f7b9f6d",
+    "screening_trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.csv",
+    "screening_trials_csv_sha256": "3c1adae780b0cc14ca138c234f59bb6e2eba088d9ad79e6da89b5b988b063664",
+    "final_config": "config/betaflight.intercept_eval.flight_supervised_final_mc100_20260903.json",
+    "final_config_sha256": "36841696cb62d66796a381acf4a55934d3db9411e34e046e481a7febf1e215d5",
+    "final_report": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.json",
+    "final_report_sha256": "9f1af350d4da340d0ca71dd5df409001a3c23295127e95f87143fb34ce7bedbf",
+    "final_trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.csv",
+    "final_trials_csv_sha256": "1830817016be0433a7499ce9df6548ae900be4399e8a9d3f1f66c6ce0c2b8b08"
+  },
+  "limitations": [
+    "The results are point-mass Monte Carlo outputs, not measured flight interception rates.",
+    "Betaflight PID, motor mixing, propeller transients, voltage sag, airframe aerodynamics, maneuvering targets, real YOLO false positives, and ByteTrack ID switches are not modeled.",
+    "The 2.37 g calibration is a short measured plateau and does not establish sustainable thrust.",
+    "This evidence does not create or refresh an active-control approval manifest."
+  ]
+}
