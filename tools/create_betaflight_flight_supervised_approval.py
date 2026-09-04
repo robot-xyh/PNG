@@ -51,6 +51,8 @@ MIN_GPS_SATELLITES = 6
 REQUIRED_THRUST_VOLTAGE_MIN_V = 20.0
 REQUIRED_THRUST_VOLTAGE_MAX_V = 25.2
 MIN_THRUST_VALIDATION_SAMPLES = 100
+MIN_FINALIZED_RUN_ROWS = 100
+MIN_FINALIZED_EVIDENCE_FRAMES = 25
 RELEASE_HIT_RATE_MIN = 0.80
 RELEASE_FOV_HIT_RATE_MIN = 0.80
 RELEASE_TRIALS_PER_CASE_MIN = 100
@@ -81,6 +83,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--config", required=True)
     parser.add_argument("--release-evidence", required=True)
     parser.add_argument("--rc-interlock-evidence", required=True)
+    parser.add_argument("--finalized-run-evidence", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--operator", required=True)
     parser.add_argument("--acknowledge-supervised-flight", action="store_true")
@@ -96,6 +99,7 @@ def main() -> None:
     config_path = Path(args.config).expanduser().resolve()
     release_evidence_path = Path(args.release_evidence).expanduser().resolve()
     rc_interlock_path = Path(args.rc_interlock_evidence).expanduser().resolve()
+    finalized_run_path = Path(args.finalized_run_evidence).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
@@ -108,6 +112,11 @@ def main() -> None:
     rc_interlock_evidence = validate_rc_interlock_evidence(
         _read_json(rc_interlock_path),
         rc_interlock_path,
+        runtime_config_sha256=config_sha256,
+    )
+    finalized_run_evidence = validate_finalized_run_evidence(
+        _read_json(finalized_run_path),
+        finalized_run_path,
         runtime_config_sha256=config_sha256,
     )
     parsed_cli = _validate_snapshot(
@@ -125,7 +134,7 @@ def main() -> None:
         config_path=config_path,
     )
     approval = {
-        "schema_version": 3,
+        "schema_version": 4,
         "approved": True,
         "scope": SCOPE,
         "created_unix_s": time.time(),
@@ -143,6 +152,7 @@ def main() -> None:
         "parameters_sha256": config_sha256,
         "release_evidence": release_evidence,
         "rc_interlock_evidence": rc_interlock_evidence,
+        "finalized_run_evidence": finalized_run_evidence,
         "limits": {
             "override_channels_mask": OVERRIDE_CHANNELS_MASK,
             "actual_algorithm_publication_limit_s": 2.0,
@@ -302,6 +312,164 @@ def validate_rc_interlock_evidence(
     }
 
 
+def validate_finalized_run_evidence(
+    manifest: dict[str, Any],
+    manifest_path: Path,
+    *,
+    runtime_config_sha256: str,
+) -> dict[str, Any]:
+    if manifest.get("schema_version") != 2 or manifest.get("finalized") is not True:
+        raise RuntimeError("run evidence must be a finalized schema v2 manifest")
+    completion = _release_mapping(manifest.get("completion"), "run completion")
+    if completion.get("complete") is not True:
+        raise RuntimeError("finalized run evidence is incomplete")
+    if manifest.get("missing_runtime_artifacts"):
+        raise RuntimeError("finalized run evidence has missing runtime artifacts")
+    pairing = _release_mapping(manifest.get("pairing"), "run pairing")
+    if pairing.get("confidence") != "unique":
+        raise RuntimeError("finalized run evidence must have unique pairing")
+    visual = _release_mapping(manifest.get("visual_evidence"), "visual evidence")
+    if (
+        visual.get("enabled") is not True
+        or int(visual.get("frame_count", 0)) < MIN_FINALIZED_EVIDENCE_FRAMES
+    ):
+        raise RuntimeError(
+            f"finalized run evidence requires at least {MIN_FINALIZED_EVIDENCE_FRAMES} frames"
+        )
+    external = _release_mapping(
+        manifest.get("external_artifacts"), "external artifacts"
+    )
+    if "blackbox" not in external:
+        raise RuntimeError("finalized run evidence requires a paired Blackbox artifact")
+    blackbox = _release_mapping(
+        manifest.get("blackbox_interpretation"), "Blackbox interpretation"
+    )
+    if (
+        blackbox.get("authoritative_mode_source") != "host_msp_status_box_ids"
+        or blackbox.get("decoder_labels_used_for_mode_decisions") is not False
+    ):
+        raise RuntimeError("finalized run evidence has an unsafe Blackbox mode interpretation")
+
+    artifacts = manifest.get("artifacts")
+    if not isinstance(artifacts, list):
+        raise RuntimeError("finalized run evidence artifacts are invalid")
+    meta_path = _single_artifact_path(artifacts, "_meta.json")
+    csv_path = _single_artifact_path(artifacts, ".csv")
+    meta = _read_json(meta_path)
+    if meta.get("config_sha256") != runtime_config_sha256:
+        raise RuntimeError("finalized run evidence runtime config SHA256 mismatch")
+    if meta.get("allow_control") is not False or meta.get("control_mode") != "log_only":
+        raise RuntimeError("finalized run evidence must come from LOG_ONLY")
+    commit = str(meta.get("repository_commit", ""))
+    if len(commit) != 40 or meta.get("repository_dirty") is not False:
+        raise RuntimeError("finalized run evidence requires a clean recorded Git commit")
+    source_files = meta.get("source_files")
+    if not isinstance(source_files, list) or not source_files:
+        raise RuntimeError("finalized run evidence source hashes are missing")
+    if any(
+        not isinstance(entry, dict)
+        or len(str(entry.get("sha256", ""))) != 64
+        or not entry.get("path")
+        for entry in source_files
+    ):
+        raise RuntimeError("finalized run evidence source hashes are invalid")
+
+    row_count = 0
+    valid_flight_state_rows = 0
+    maximum_set_raw_rc_attempts = 0
+    maximum_evidence_errors = 0
+    maximum_evidence_writes = 0
+    with csv_path.open(newline="", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        required_fields = {
+            "msp_set_raw_rc_attempt_count",
+            "evidence_frame_write_count",
+            "evidence_frame_error_count",
+            "kinematics_valid",
+            "gps_fix",
+            "gps_satellites",
+            "vbat_v",
+        }
+        missing = sorted(required_fields - set(reader.fieldnames or ()))
+        if missing:
+            raise RuntimeError(
+                "finalized run CSV is missing fields: " + ", ".join(missing)
+            )
+        for row in reader:
+            row_count += 1
+            maximum_set_raw_rc_attempts = max(
+                maximum_set_raw_rc_attempts,
+                _csv_int(row, "msp_set_raw_rc_attempt_count"),
+            )
+            maximum_evidence_writes = max(
+                maximum_evidence_writes,
+                _csv_int(row, "evidence_frame_write_count"),
+            )
+            maximum_evidence_errors = max(
+                maximum_evidence_errors,
+                _csv_int(row, "evidence_frame_error_count"),
+            )
+            if (
+                _csv_int(row, "kinematics_valid") == 1
+                and _csv_int(row, "gps_fix") >= 1
+                and _csv_int(row, "gps_satellites") >= MIN_GPS_SATELLITES
+                and _csv_float(row, "vbat_v") >= MIN_VBAT_V
+            ):
+                valid_flight_state_rows += 1
+    if row_count < MIN_FINALIZED_RUN_ROWS:
+        raise RuntimeError("finalized run evidence is too short")
+    if maximum_set_raw_rc_attempts != 0:
+        raise RuntimeError("finalized LOG_ONLY evidence attempted MSP_SET_RAW_RC")
+    if maximum_evidence_errors != 0:
+        raise RuntimeError("finalized run evidence contains frame recording errors")
+    if maximum_evidence_writes < MIN_FINALIZED_EVIDENCE_FRAMES:
+        raise RuntimeError("finalized run CSV does not confirm enough evidence frames")
+    if valid_flight_state_rows < 3:
+        raise RuntimeError("finalized run evidence lacks valid GPS/voltage/kinematics samples")
+    return {
+        "path": str(manifest_path),
+        "sha256": _sha256(manifest_path),
+        "schema_version": 2,
+        "runtime_config_sha256": runtime_config_sha256,
+        "row_count": row_count,
+        "evidence_frame_count": int(visual["frame_count"]),
+        "valid_flight_state_rows": valid_flight_state_rows,
+        "set_raw_rc_attempt_count": maximum_set_raw_rc_attempts,
+        "pairing_confidence": "unique",
+    }
+
+
+def _single_artifact_path(artifacts: list[Any], suffix: str) -> Path:
+    matches = [
+        entry
+        for entry in artifacts
+        if isinstance(entry, dict) and str(entry.get("path", "")).endswith(suffix)
+    ]
+    if len(matches) != 1:
+        raise RuntimeError(f"finalized run evidence requires exactly one {suffix} artifact")
+    path = Path(str(matches[0]["path"])).expanduser().resolve()
+    if not path.is_file() or _sha256(path) != matches[0].get("sha256"):
+        raise RuntimeError(f"finalized run artifact changed or is missing: {path}")
+    return path
+
+
+def _csv_int(row: dict[str, str], field: str) -> int:
+    try:
+        return int(float(row[field]))
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"finalized run CSV field {field} is invalid") from exc
+
+
+def _csv_float(row: dict[str, str], field: str) -> float:
+    try:
+        value = float(row[field])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"finalized run CSV field {field} is invalid") from exc
+    if not math.isfinite(value):
+        raise RuntimeError(f"finalized run CSV field {field} is non-finite")
+    return value
+
+
 def _release_mapping(value: Any, name: str) -> dict[str, Any]:
     if not isinstance(value, dict):
         raise RuntimeError(f"release evidence {name} must be an object")
@@ -391,6 +559,8 @@ def validate_flight_supervised_config(
         raise RuntimeError("control_authorization must require release evidence")
     if authorization.get("thrust_model_evidence_required") is not True:
         raise RuntimeError("control_authorization must require thrust-model evidence")
+    if authorization.get("finalized_run_evidence_required") is not True:
+        raise RuntimeError("control_authorization must require finalized run evidence")
     configured_output = Path(str(authorization.get("approval_manifest", ""))).expanduser().resolve()
     if configured_output != output_path:
         raise RuntimeError("approval output must match control_authorization.approval_manifest")
@@ -497,6 +667,13 @@ def validate_flight_supervised_config(
         raise RuntimeError("at least three stable origin samples are required")
     if not math.isclose(float(logging.get("csv_flush_interval_s", math.nan)), 1.0):
         raise RuntimeError("logging.csv_flush_interval_s must be exactly 1 s")
+    evidence_frames = dict(logging.get("evidence_frames", {}))
+    if (
+        evidence_frames.get("enabled") is not True
+        or not math.isclose(float(evidence_frames.get("max_fps", 0.0)), 5.0)
+        or int(evidence_frames.get("jpeg_quality", 0)) != 80
+    ):
+        raise RuntimeError("supervised flight requires 5 Hz JPEG-80 evidence frames")
 
     rknn = dict(config.get("rknn_detector", {}))
     torch_runtime = dict(config.get("torch_runtime", {}))

@@ -33,6 +33,7 @@ from .betaflight_msp import (
     parse_status,
 )
 from .flight_control import RcCommand
+from .runtime_evidence import verify_evidence_frame_index
 
 
 MSP_OVERRIDE_PERMANENT_ID = 50
@@ -610,6 +611,67 @@ def resolve_control_authorization(
                 parameters_path=str(resolved_parameters_path),
                 parameters_sha256=actual_parameters_sha,
             )
+    if bool(values.get("finalized_run_evidence_required", False)):
+        run_evidence = approval.get("finalized_run_evidence")
+        reason = ""
+        if not isinstance(run_evidence, dict):
+            reason = "finalized_run_evidence_missing"
+        else:
+            evidence_path = Path(str(run_evidence.get("path", ""))).expanduser()
+            if not evidence_path.is_file():
+                reason = "finalized_run_evidence_file_missing"
+            elif _sha256(evidence_path) != str(run_evidence.get("sha256", "")):
+                reason = "finalized_run_evidence_sha256_mismatch"
+            else:
+                try:
+                    evidence_report = json.loads(
+                        evidence_path.read_text(encoding="utf-8")
+                    )
+                except (OSError, json.JSONDecodeError):
+                    reason = "finalized_run_evidence_invalid"
+                else:
+                    pairing = (
+                        evidence_report.get("pairing", {})
+                        if isinstance(evidence_report, dict)
+                        else {}
+                    )
+                    visual = (
+                        evidence_report.get("visual_evidence", {})
+                        if isinstance(evidence_report, dict)
+                        else {}
+                    )
+                    completion = (
+                        evidence_report.get("completion", {})
+                        if isinstance(evidence_report, dict)
+                        else {}
+                    )
+                    if (
+                        not isinstance(pairing, dict)
+                        or not isinstance(visual, dict)
+                        or not isinstance(completion, dict)
+                        or
+                        evidence_report.get("schema_version") != 2
+                        or evidence_report.get("finalized") is not True
+                        or completion.get("complete") is not True
+                        or pairing.get("confidence") != "unique"
+                        or visual.get("enabled") is not True
+                    ):
+                        reason = "finalized_run_evidence_invalid"
+                    elif run_evidence.get("runtime_config_sha256") != actual_parameters_sha:
+                        reason = "finalized_run_evidence_parameters_mismatch"
+                    elif not _finalized_run_artifacts_intact(evidence_report):
+                        reason = "finalized_run_evidence_artifact_changed"
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                reason,
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
     return ControlAuthorizationStatus(
         True,
         "approved",
@@ -621,6 +683,52 @@ def resolve_control_authorization(
         str(resolved_parameters_path.resolve()),
         actual_parameters_sha,
     )
+
+
+def _finalized_run_artifacts_intact(report: dict[str, Any]) -> bool:
+    """Recheck evidence files at authorization time, after approval creation."""
+
+    artifacts = report.get("artifacts")
+    external = report.get("external_artifacts")
+    if not isinstance(artifacts, list) or not isinstance(external, dict):
+        return False
+    entries: list[Any] = list(artifacts) + list(external.values())
+    runtime_manifest = report.get("runtime_manifest")
+    if runtime_manifest is not None:
+        entries.append(runtime_manifest)
+    blackbox = report.get("blackbox_interpretation")
+    if isinstance(blackbox, dict) and blackbox.get("binding_file") is not None:
+        entries.append(blackbox["binding_file"])
+    if not entries or any(not _artifact_entry_intact(entry) for entry in entries):
+        return False
+
+    visual = report.get("visual_evidence")
+    if not isinstance(visual, dict) or visual.get("enabled") is not True:
+        return False
+    index_entry = visual.get("index")
+    if not _artifact_entry_intact(index_entry):
+        return False
+    try:
+        verified = verify_evidence_frame_index(
+            Path(str(index_entry["path"])).expanduser()
+        )
+        expected_count = int(visual.get("frame_count", -1))
+    except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+        return False
+    return verified["frame_count"] == expected_count
+
+
+def _artifact_entry_intact(entry: Any) -> bool:
+    if not isinstance(entry, dict):
+        return False
+    path = Path(str(entry.get("path", ""))).expanduser()
+    expected_sha256 = str(entry.get("sha256", ""))
+    if len(expected_sha256) != 64 or not path.is_file():
+        return False
+    try:
+        return _sha256(path) == expected_sha256
+    except OSError:
+        return False
 
 
 def merge_physical_rc(

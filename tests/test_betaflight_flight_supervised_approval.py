@@ -15,6 +15,7 @@ if str(TOOLS) not in sys.path:
 
 from create_betaflight_flight_supervised_approval import (  # noqa: E402
     validate_rc_interlock_evidence,
+    validate_finalized_run_evidence,
     validate_release_evidence,
     validate_flight_supervised_config,
     validate_snapshot_flight_state,
@@ -303,6 +304,87 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             snapshot["capture"]["include_kinematics"] = False
             with self.assertRaisesRegex(RuntimeError, "include-kinematics"):
                 validate_snapshot_flight_state(snapshot, manifest_path)
+
+    def test_finalized_log_only_run_is_required_and_config_bound(self):
+        root = Path(self.temporary_directory.name)
+        csv_path = root / "field.csv"
+        fields = (
+            "msp_set_raw_rc_attempt_count",
+            "evidence_frame_write_count",
+            "evidence_frame_error_count",
+            "kinematics_valid",
+            "gps_fix",
+            "gps_satellites",
+            "vbat_v",
+        )
+        with csv_path.open("w", newline="", encoding="utf-8") as stream:
+            writer = csv.DictWriter(stream, fieldnames=fields)
+            writer.writeheader()
+            for index in range(100):
+                writer.writerow(
+                    {
+                        "msp_set_raw_rc_attempt_count": 0,
+                        "evidence_frame_write_count": min(25, index + 1),
+                        "evidence_frame_error_count": 0,
+                        "kinematics_valid": 1,
+                        "gps_fix": 1,
+                        "gps_satellites": 8,
+                        "vbat_v": 24.0,
+                    }
+                )
+        config_sha256 = "c" * 64
+        meta_path = root / "field_meta.json"
+        meta_path.write_text(
+            json.dumps(
+                {
+                    "config_sha256": config_sha256,
+                    "allow_control": False,
+                    "control_mode": "log_only",
+                    "repository_commit": "d" * 40,
+                    "repository_dirty": False,
+                    "source_files": [
+                        {"path": "/runtime.py", "sha256": "e" * 64}
+                    ],
+                }
+            ),
+            encoding="utf-8",
+        )
+        artifact = lambda path: {
+            "path": str(path),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+        manifest_path = root / "field_manifest.json"
+        manifest = {
+            "schema_version": 2,
+            "finalized": True,
+            "completion": {"complete": True},
+            "missing_runtime_artifacts": [],
+            "pairing": {"confidence": "unique"},
+            "visual_evidence": {"enabled": True, "frame_count": 25},
+            "external_artifacts": {"blackbox": {"sha256": "f" * 64}},
+            "blackbox_interpretation": {
+                "authoritative_mode_source": "host_msp_status_box_ids",
+                "decoder_labels_used_for_mode_decisions": False,
+            },
+            "artifacts": [artifact(csv_path), artifact(meta_path)],
+        }
+        manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+        evidence = validate_finalized_run_evidence(
+            manifest,
+            manifest_path,
+            runtime_config_sha256=config_sha256,
+        )
+        self.assertEqual(evidence["row_count"], 100)
+        self.assertEqual(evidence["set_raw_rc_attempt_count"], 0)
+
+        manifest["pairing"]["confidence"] = "time_only"
+        with self.assertRaisesRegex(RuntimeError, "unique pairing"):
+            validate_finalized_run_evidence(
+                manifest,
+                manifest_path,
+                runtime_config_sha256=config_sha256,
+            )
 
 
 if __name__ == "__main__":

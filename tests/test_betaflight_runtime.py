@@ -553,6 +553,113 @@ class BetaflightRuntimeTest(unittest.TestCase):
             self.assertFalse(status.approved)
             self.assertEqual(status.reason, "thrust_model_evidence_sha256_mismatch")
 
+    def test_authorization_rechecks_finalized_run_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"supervised"}\n', encoding="utf-8")
+            parameters_sha256 = hashlib.sha256(parameters.read_bytes()).hexdigest()
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            csv_path = root / "run.csv"
+            csv_path.write_text("elapsed_s\n1.0\n", encoding="utf-8")
+            frame_path = root / "frame.jpg"
+            frame_path.write_bytes(b"jpeg")
+            frame_index = root / "run_evidence_frames.jsonl"
+            frame_index.write_text(
+                json.dumps(
+                    {
+                        "sequence": 1,
+                        "monotonic_s": 10.0,
+                        "path": str(frame_path),
+                        "sha256": hashlib.sha256(frame_path.read_bytes()).hexdigest(),
+                        "bytes": frame_path.stat().st_size,
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            blackbox = root / "LOG.BFL"
+            blackbox.write_bytes(b"blackbox")
+
+            artifact = lambda path: {
+                "path": str(path),
+                "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            }
+            finalized = root / "finalized.json"
+            finalized.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 2,
+                        "finalized": True,
+                        "completion": {"complete": True},
+                        "pairing": {"confidence": "unique"},
+                        "artifacts": [artifact(csv_path), artifact(frame_index)],
+                        "external_artifacts": {"blackbox": artifact(blackbox)},
+                        "visual_evidence": {
+                            "enabled": True,
+                            "frame_count": 1,
+                            "index": artifact(frame_index),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "approved": True,
+                        "scope": "flight_noncollision_supervised_v2",
+                        "source_conflicts_resolved": True,
+                        "snapshot_manifest": str(snapshot),
+                        "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                        "expected_fc_identity": {"fc_variant": "BTFL"},
+                        "parameters_sha256": parameters_sha256,
+                        "finalized_run_evidence": {
+                            "path": str(finalized),
+                            "sha256": hashlib.sha256(finalized.read_bytes()).hexdigest(),
+                            "runtime_config_sha256": parameters_sha256,
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": "flight_noncollision_supervised_v2",
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 4,
+                "finalized_run_evidence_required": True,
+            }
+
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(status.approved)
+
+            csv_path.write_text("elapsed_s\nchanged\n", encoding="utf-8")
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(status.approved)
+            self.assertEqual(
+                status.reason,
+                "finalized_run_evidence_artifact_changed",
+            )
+
     def test_reorders_msp_logical_rpyt_to_aetr_wire_order(self):
         logical = (1600, 1400, 1550, 1050, 900, 1200, 1800, 2000)
 

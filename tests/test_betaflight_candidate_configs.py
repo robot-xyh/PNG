@@ -325,7 +325,14 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertTrue(thrust["enabled"])
         self.assertEqual(thrust["model"], "voltage_throttle_lut")
         self.assertEqual(thrust["calibration_id"], "PENDING_FULL_6S_THRUST_LUT")
-        self.assertEqual(config["control_authorization"]["minimum_approval_schema_version"], 3)
+        self.assertEqual(config["control_authorization"]["minimum_approval_schema_version"], 4)
+        self.assertTrue(
+            config["control_authorization"]["finalized_run_evidence_required"]
+        )
+        self.assertEqual(
+            config["logging"]["evidence_frames"],
+            {"enabled": True, "max_fps": 5, "jpeg_quality": 80},
+        )
         self.assertTrue(
             config["control_authorization"]["thrust_model_evidence_required"]
         )

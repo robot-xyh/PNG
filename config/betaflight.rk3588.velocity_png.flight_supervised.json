@@ -104,7 +104,12 @@
   },
   "logging": {
     "platform_health_hz": 1,
-    "csv_flush_interval_s": 1
+    "csv_flush_interval_s": 1,
+    "evidence_frames": {
+      "enabled": true,
+      "max_fps": 5,
+      "jpeg_quality": 80
+    }
   },
   "telemetry_web": {
     "enabled": true,
@@ -130,10 +135,11 @@
     "enabled": true,
     "required_scope": "flight_noncollision_supervised_v2",
     "approval_manifest": "logs/betaflight_velocity_png_flight_noncollision_v2_approval.json",
-    "minimum_approval_schema_version": 3,
+    "minimum_approval_schema_version": 4,
     "rc_interlock_evidence_required": true,
     "release_evidence_required": true,
-    "thrust_model_evidence_required": true
+    "thrust_model_evidence_required": true,
+    "finalized_run_evidence_required": true
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -412,6 +418,6 @@
       "maximum_interval_ms": 60,
       "maximum_ack_age_ms": 250
     },
-    "note": "No software duration cutoff is applied while all live safety gates remain healthy. Tomorrow's first non-collision takeover remains pilot-limited to approximately one second."
+    "note": "The supervised non-collision profile permits one software-limited takeover of at most 2 seconds per ARM cycle."
   }
 }
