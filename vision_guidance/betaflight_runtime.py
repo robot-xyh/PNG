@@ -472,6 +472,53 @@ def resolve_control_authorization(
             parameters_path=str(resolved_parameters_path),
             parameters_sha256=actual_parameters_sha,
         )
+    if bool(values.get("release_evidence_required", False)):
+        release_evidence = approval.get("release_evidence")
+        if not isinstance(release_evidence, dict):
+            return ControlAuthorizationStatus(
+                False,
+                "release_evidence_missing",
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
+        evidence_path = Path(str(release_evidence.get("path", ""))).expanduser()
+        if not evidence_path.is_file():
+            reason = "release_evidence_file_missing"
+        elif _sha256(evidence_path) != str(release_evidence.get("sha256", "")):
+            reason = "release_evidence_sha256_mismatch"
+        else:
+            try:
+                evidence_report = json.loads(evidence_path.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError):
+                reason = "release_evidence_invalid"
+            else:
+                if not isinstance(evidence_report, dict):
+                    reason = "release_evidence_invalid"
+                elif evidence_report.get("release_passed") is not True:
+                    reason = "release_evidence_not_passed"
+                else:
+                    evidence_binding = evidence_report.get("runtime_binding", {})
+                    if not isinstance(evidence_binding, dict) or (
+                        evidence_binding.get("sha256") != actual_parameters_sha
+                    ):
+                        reason = "release_evidence_parameters_mismatch"
+                    else:
+                        reason = ""
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                reason,
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
     return ControlAuthorizationStatus(
         True,
         "approved",

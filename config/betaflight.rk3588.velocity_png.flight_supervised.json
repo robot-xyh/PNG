@@ -127,7 +127,8 @@
   "control_authorization": {
     "enabled": true,
     "required_scope": "flight_active_supervised",
-    "approval_manifest": "logs/betaflight_velocity_png_flight_supervised_approval.json"
+    "approval_manifest": "logs/betaflight_velocity_png_flight_supervised_approval.json",
+    "release_evidence_required": true
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",

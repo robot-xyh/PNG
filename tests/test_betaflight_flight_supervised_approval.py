@@ -14,6 +14,7 @@ if str(TOOLS) not in sys.path:
     sys.path.insert(0, str(TOOLS))
 
 from create_betaflight_flight_supervised_approval import (  # noqa: E402
+    validate_release_evidence,
     validate_flight_supervised_config,
     validate_snapshot_flight_state,
 )
@@ -110,6 +111,84 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         config["msp_runtime"]["attitude_poll_hz"] = 10
         with self.assertRaisesRegex(RuntimeError, "attitude_poll_hz"):
             self.validate(config)
+
+    def test_release_evidence_requires_bound_passing_mc100(self):
+        with tempfile.TemporaryDirectory() as directory:
+            report_path = Path(directory) / "mc100.json"
+            config_sha256 = "a" * 64
+            def summary(scenario_name):
+                return {
+                    "scenario_name": scenario_name,
+                    "evaluation_name": "candidate",
+                    "required_for_release": True,
+                    "passed": True,
+                    "initially_visible_hit_rate": 0.8,
+                    "initially_visible_fov_hit_rate": 0.8,
+                    "checks": {
+                        "worst_minimum_range_m": {
+                            "operator": "report_only",
+                            "threshold": None,
+                            "required": False,
+                        }
+                    },
+                }
+            report = {
+                "schema_version": 2,
+                "purpose": "stochastic interception release evaluation",
+                "release_passed": True,
+                "runtime_binding": {"sha256": config_sha256},
+                "acceptance": {
+                    "initially_visible_hit_rate_min": 0.8,
+                    "initially_visible_fov_hit_rate_min": 0.8,
+                    "worst_minimum_range_m_max": None,
+                },
+                "paired_screening": {
+                    "passed": True,
+                    "selected_evaluation": "candidate",
+                },
+                "trials_per_case": 100,
+                "case_count": 30,
+                "row_count": 18000,
+                "required_summary_count": 3,
+                "summaries": [
+                    summary("final_chain_software_p95"),
+                    summary("observed_active_flight_p95"),
+                    summary("conservative_physical_p95_budget"),
+                ],
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            evidence = validate_release_evidence(
+                report,
+                report_path,
+                runtime_config_sha256=config_sha256,
+            )
+            self.assertEqual(evidence["required_scenario_count"], 3)
+
+            report["release_passed"] = False
+            with self.assertRaisesRegex(RuntimeError, "did not pass"):
+                validate_release_evidence(
+                    report,
+                    report_path,
+                    runtime_config_sha256=config_sha256,
+                )
+
+            report["release_passed"] = True
+            report["summaries"] = [report["summaries"][0]] * 3
+            with self.assertRaisesRegex(RuntimeError, "coverage is incomplete"):
+                validate_release_evidence(
+                    report,
+                    report_path,
+                    runtime_config_sha256=config_sha256,
+                )
+
+            report["summaries"] = ["not-an-object"]
+            with self.assertRaisesRegex(RuntimeError, "list of objects"):
+                validate_release_evidence(
+                    report,
+                    report_path,
+                    runtime_config_sha256=config_sha256,
+                )
 
     def test_snapshot_flight_state_requires_hashed_gps_and_voltage_samples(self):
         with tempfile.TemporaryDirectory() as directory:

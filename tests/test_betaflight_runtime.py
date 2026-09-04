@@ -386,6 +386,90 @@ class BetaflightRuntimeTest(unittest.TestCase):
             self.assertFalse(wrong_scope.approved)
             self.assertEqual(wrong_scope.reason, "authorization_scope_mismatch")
 
+    def test_authorization_binds_required_release_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"supervised"}\n', encoding="utf-8")
+            parameters_sha256 = hashlib.sha256(parameters.read_bytes()).hexdigest()
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            evidence = root / "mc100.json"
+            evidence.write_text(
+                json.dumps(
+                    {
+                        "release_passed": True,
+                        "runtime_binding": {"sha256": parameters_sha256},
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "approved": True,
+                        "scope": "flight_active_supervised",
+                        "source_conflicts_resolved": True,
+                        "snapshot_manifest": str(snapshot),
+                        "snapshot_sha256": hashlib.sha256(
+                            snapshot.read_bytes()
+                        ).hexdigest(),
+                        "expected_fc_identity": {"fc_variant": "BTFL"},
+                        "parameters_sha256": parameters_sha256,
+                        "release_evidence": {
+                            "path": str(evidence),
+                            "sha256": hashlib.sha256(evidence.read_bytes()).hexdigest(),
+                        },
+                    }
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": "flight_active_supervised",
+                "approval_manifest": str(approval),
+                "release_evidence_required": True,
+            }
+
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(status.approved)
+
+            evidence.write_text('{"release_passed":false}\n', encoding="utf-8")
+            mismatch = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(mismatch.approved)
+            self.assertEqual(mismatch.reason, "release_evidence_sha256_mismatch")
+
+            evidence.write_text('["not-an-object"]\n', encoding="utf-8")
+            approval_data = json.loads(approval.read_text(encoding="utf-8"))
+            approval_data["release_evidence"]["sha256"] = hashlib.sha256(
+                evidence.read_bytes()
+            ).hexdigest()
+            approval.write_text(json.dumps(approval_data) + "\n", encoding="utf-8")
+            invalid = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(invalid.approved)
+            self.assertEqual(invalid.reason, "release_evidence_invalid")
+
     def test_reorders_msp_logical_rpyt_to_aetr_wire_order(self):
         logical = (1600, 1400, 1550, 1050, 900, 1200, 1800, 2000)
 

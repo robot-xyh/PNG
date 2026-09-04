@@ -48,6 +48,16 @@ THROTTLE_SLEW_US_PER_S = 600.0
 MIN_VBAT_V = 20.0
 MIN_GPS_SATELLITES = 6
 THRUST_CALIBRATION_ID = "LOG00062_1275_1500"
+RELEASE_HIT_RATE_MIN = 0.80
+RELEASE_FOV_HIT_RATE_MIN = 0.80
+RELEASE_TRIALS_PER_CASE_MIN = 100
+RELEASE_CASE_COUNT_MIN = 30
+RELEASE_ROW_COUNT_MIN = 18000
+RELEASE_REQUIRED_SCENARIOS = {
+    "final_chain_software_p95",
+    "observed_active_flight_p95",
+    "conservative_physical_p95_budget",
+}
 EXPECTED_POLL_HZ = {
     "status_poll_hz": 5.0,
     "attitude_poll_hz": 20.0,
@@ -66,6 +76,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--snapshot", required=True)
     parser.add_argument("--config", required=True)
+    parser.add_argument("--release-evidence", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--operator", required=True)
     parser.add_argument("--acknowledge-supervised-flight", action="store_true")
@@ -79,9 +90,16 @@ def main() -> None:
 
     snapshot_path = Path(args.snapshot).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve()
+    release_evidence_path = Path(args.release_evidence).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
+    config_sha256 = _sha256(config_path)
+    release_evidence = validate_release_evidence(
+        _read_json(release_evidence_path),
+        release_evidence_path,
+        runtime_config_sha256=config_sha256,
+    )
     parsed_cli = _validate_snapshot(
         snapshot,
         snapshot_path,
@@ -111,7 +129,8 @@ def main() -> None:
         "snapshot_sha256": _sha256(snapshot_path),
         "expected_fc_identity": dict(snapshot["fc_identity"]),
         "parameters_path": str(config_path),
-        "parameters_sha256": _sha256(config_path),
+        "parameters_sha256": config_sha256,
+        "release_evidence": release_evidence,
         "limits": {
             "override_channels_mask": OVERRIDE_CHANNELS_MASK,
             "actual_algorithm_publication_limit_s": None,
@@ -132,6 +151,115 @@ def main() -> None:
     output_path.write_text(json.dumps(approval, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(output_path)
     print(f"approval_sha256={_sha256(output_path)}")
+
+
+def validate_release_evidence(
+    report: dict[str, Any],
+    report_path: Path,
+    *,
+    runtime_config_sha256: str,
+) -> dict[str, Any]:
+    if report.get("schema_version") != 2:
+        raise RuntimeError("release evidence schema_version must be 2")
+    if report.get("purpose") != "stochastic interception release evaluation":
+        raise RuntimeError("release evidence purpose mismatch")
+    if report.get("release_passed") is not True:
+        raise RuntimeError("release evidence did not pass")
+
+    runtime_binding = _release_mapping(report.get("runtime_binding"), "runtime_binding")
+    if runtime_binding.get("sha256") != runtime_config_sha256:
+        raise RuntimeError("release evidence runtime config SHA256 mismatch")
+    acceptance = _release_mapping(report.get("acceptance"), "acceptance")
+    try:
+        hit_rate_min = float(acceptance["initially_visible_hit_rate_min"])
+        fov_hit_rate_min = float(acceptance["initially_visible_fov_hit_rate_min"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("release evidence acceptance is invalid") from exc
+    if (
+        hit_rate_min != RELEASE_HIT_RATE_MIN
+        or fov_hit_rate_min != RELEASE_FOV_HIT_RATE_MIN
+        or acceptance.get("worst_minimum_range_m_max", "missing") is not None
+    ):
+        raise RuntimeError("release evidence must use the formal 80% probabilistic policy")
+    paired = _release_mapping(report.get("paired_screening"), "paired_screening")
+    if paired.get("passed") is not True:
+        raise RuntimeError("release evidence paired screening did not pass")
+    try:
+        trials_per_case = int(report["trials_per_case"])
+        case_count = int(report["case_count"])
+        row_count = int(report["row_count"])
+        required_summary_count = int(report["required_summary_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("release evidence Monte Carlo coverage is invalid") from exc
+    if (
+        trials_per_case < RELEASE_TRIALS_PER_CASE_MIN
+        or case_count < RELEASE_CASE_COUNT_MIN
+        or row_count < RELEASE_ROW_COUNT_MIN
+    ):
+        raise RuntimeError("release evidence Monte Carlo coverage is insufficient")
+
+    raw_summaries = report.get("summaries")
+    if not isinstance(raw_summaries, list) or any(
+        not isinstance(summary, dict) for summary in raw_summaries
+    ):
+        raise RuntimeError("release evidence summaries must be a list of objects")
+    summaries = [
+        summary
+        for summary in raw_summaries
+        if summary.get("required_for_release") is True
+    ]
+    scenario_names = {summary.get("scenario_name") for summary in summaries}
+    selected_evaluation = paired.get("selected_evaluation")
+    if (
+        len(summaries) != len(RELEASE_REQUIRED_SCENARIOS)
+        or len(summaries) != required_summary_count
+        or scenario_names != RELEASE_REQUIRED_SCENARIOS
+        or not isinstance(selected_evaluation, str)
+        or not selected_evaluation
+        or any(
+            summary.get("evaluation_name") != selected_evaluation
+            for summary in summaries
+        )
+    ):
+        raise RuntimeError("release evidence required scenario coverage is incomplete")
+    for summary in summaries:
+        if summary.get("passed") is not True:
+            raise RuntimeError("release evidence contains a failed required scenario")
+        try:
+            hit_rate = float(summary["initially_visible_hit_rate"])
+            fov_hit_rate = float(summary["initially_visible_fov_hit_rate"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError("release evidence scenario rates are invalid") from exc
+        if hit_rate < RELEASE_HIT_RATE_MIN or fov_hit_rate < RELEASE_FOV_HIT_RATE_MIN:
+            raise RuntimeError("release evidence scenario is below the formal 80% policy")
+        checks = _release_mapping(summary.get("checks"), "summary checks")
+        range_check = _release_mapping(
+            checks.get("worst_minimum_range_m"), "worst range check"
+        )
+        if (
+            range_check.get("operator") != "report_only"
+            or range_check.get("threshold") is not None
+            or range_check.get("required") is not False
+        ):
+            raise RuntimeError("release evidence worst range must remain report-only")
+    return {
+        "path": str(report_path),
+        "sha256": _sha256(report_path),
+        "schema_version": 2,
+        "runtime_config_sha256": runtime_config_sha256,
+        "formal_hit_rate_min": RELEASE_HIT_RATE_MIN,
+        "formal_fov_hit_rate_min": RELEASE_FOV_HIT_RATE_MIN,
+        "trials_per_case": trials_per_case,
+        "case_count": case_count,
+        "row_count": row_count,
+        "required_scenario_count": len(summaries),
+    }
+
+
+def _release_mapping(value: Any, name: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise RuntimeError(f"release evidence {name} must be an object")
+    return value
 
 
 def validate_snapshot_flight_state(
@@ -211,6 +339,8 @@ def validate_flight_supervised_config(
         raise RuntimeError("runtime policy must permit MSP_SET_RAW_RC")
     if authorization.get("enabled") is not True or authorization.get("required_scope") != SCOPE:
         raise RuntimeError("control_authorization scope mismatch")
+    if authorization.get("release_evidence_required") is not True:
+        raise RuntimeError("control_authorization must require release evidence")
     configured_output = Path(str(authorization.get("approval_manifest", ""))).expanduser().resolve()
     if configured_output != output_path:
         raise RuntimeError("approval output must match control_authorization.approval_manifest")
