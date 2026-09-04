@@ -1,0 +1,25 @@
+{
+  "schema_version": 1,
+  "binding_id": "BTFL-25.12.2-MICOAIR743V2-custom-mode-flags-v1",
+  "fc_identity": {
+    "fc_variant": "BTFL",
+    "fc_version_major": 25,
+    "fc_version_minor": 12,
+    "fc_version_patch": 2,
+    "api_major": 1,
+    "api_minor": 47
+  },
+  "decoder": {
+    "rotation_units": "raw",
+    "gyro_scale_deg_s_per_lsb": 1.0,
+    "flight_mode_labels_trusted": false,
+    "reason": "The custom firmware mode-bit enumeration does not match the upstream blackbox-tools text labels."
+  },
+  "authoritative_mode_source": "host_msp_status_box_ids",
+  "required_host_fields": [
+    "mode_flags",
+    "aux_enabled",
+    "msp_override_active",
+    "safety_reason"
+  ]
+}

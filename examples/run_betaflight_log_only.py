@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+from contextlib import ExitStack
 import gc
 import hashlib
 import importlib
@@ -104,6 +105,14 @@ from vision_guidance.platform_health import PlatformHealthSampler  # noqa: E402
 from vision_guidance.png_eval import FixedVmGuidanceEvaluator, GuidanceEvaluator  # noqa: E402
 from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeDetector  # noqa: E402
 from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
+from vision_guidance.runtime_evidence import (  # noqa: E402
+    AsyncJpegEvidenceRecorder,
+    EvidenceFrameConfig,
+    ExclusiveResourceLock,
+    OperatorMarkerInbox,
+    PreviewEvidenceMux,
+    write_run_manifest,
+)
 from vision_guidance.bytetrack_adapter import ByteTrackConfig  # noqa: E402
 from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetection  # noqa: E402
 from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E402
@@ -244,6 +253,7 @@ class EdgeEventLogger:
         }
         self._stream.write(json.dumps(record, separators=(",", ":"), sort_keys=True) + "\n")
         self._stream.flush()
+        os.fsync(self._stream.fileno())
 
     def update(self, values: dict[str, Any], *, timestamp_s: float, context=None) -> None:
         for event, value in values.items():
@@ -560,7 +570,11 @@ class OpenCvCameraSource:
         factory = capture_factory if capture_factory is not None else self.cv2.VideoCapture
         self.capture = factory(self.device)
         if not self.capture.isOpened():
-            raise RuntimeError(f"failed to open camera device {self.device}")
+            self.capture.release()
+            raise RuntimeError(
+                f"failed to open camera device {self.device}; "
+                f"resource_lock={ExclusiveResourceLock(f'camera:{self.device}').path}"
+            )
 
         self.capture_width = int(self.camera_config.get("capture_width", self.camera_config.get("width", 640)))
         self.capture_height = int(self.camera_config.get("capture_height", self.camera_config.get("height", 480)))
@@ -573,7 +587,11 @@ class OpenCvCameraSource:
         self.last_image = None
         self.preview_sink = preview_sink
         self.last_stats = self._empty_stats()
-        self._configure_capture()
+        try:
+            self._configure_capture()
+        except BaseException:
+            self.capture.release()
+            raise
 
     def _configure_capture(self) -> None:
         self.capture.set(self.cv2.CAP_PROP_FRAME_WIDTH, float(self.capture_width))
@@ -1067,9 +1085,13 @@ class IsolatedRknnByteTrackSource:
             self._preview_request_event.set()
         else:
             self._preview_request_event.clear()
-        jpeg = _queue_latest(self._preview_queue)
-        if requested and jpeg is not None:
-            self._preview_sink.offer_encoded_preview(jpeg)
+        preview = _queue_latest(self._preview_queue)
+        if requested and preview is not None:
+            if isinstance(preview, tuple) and len(preview) == 2:
+                jpeg, metadata = preview
+            else:
+                jpeg, metadata = preview, {}
+            self._preview_sink.offer_encoded_preview(jpeg, metadata)
 
 
 class _IsolatedPreviewEncoder:
@@ -1114,7 +1136,9 @@ class _IsolatedPreviewEncoder:
             )
             if not ok:
                 raise RuntimeError("cv2.imencode returned false")
-            if _queue_replace(self.output_queue, encoded.tobytes()):
+            metadata = dict(overlay or {})
+            metadata["preview_encoded_monotonic_s"] = now
+            if _queue_replace(self.output_queue, (encoded.tobytes(), metadata)):
                 self._drop_count += 1
             self._encode_count += 1
             self._next_encode_s = now + 1.0 / max(1.0, self.max_fps)
@@ -1282,6 +1306,7 @@ def _publish_preview(
             "score": None if detection is None else detection.score,
             "detector_source": stats.get("detector_source", ""),
             "tracker_state": stats.get("tracker_state", ""),
+            "camera_capture_monotonic_s": stats.get("camera_capture_ts", ""),
         },
     )
 
@@ -1500,42 +1525,21 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
     safety = BetaflightSafetyStateMachine()
-    adapter = BetaflightMSPAdapter(port, baudrate, timeout_s=timeout_s)
-    adapter.open()
-    fc_identity = _read_fc_identity(adapter)
-    gyro_converter = bind_msp_raw_imu_gyro(msp_runtime_config.raw_imu_gyro, fc_identity)
-    if (
-        control_output_requested
-        and command_shaper_config.entry_handoff.enabled
-        and command_shaper_config.entry_handoff.rate_source == "gyro"
-        and not gyro_converter.available
-    ):
-        adapter.close()
-        raise RuntimeError(
-            "gyro entry handoff requires a matching msp_runtime.raw_imu_gyro firmware binding: "
-            f"{gyro_converter.reason}"
-        )
-    box_ids, box_ids_error = _read_box_ids(adapter)
-    authorization = resolve_control_authorization(
-        dict(config.get("control_authorization", {})),
-        fc_identity=fc_identity,
-        box_ids=box_ids,
-        parameters_path=args.config,
+    log_path = _log_path(args.log_dir, args.log_prefix)
+    events_path = _events_path(log_path)
+    fields = _log_fields(rc_mapper.config.channel_count)
+    meta_path = _meta_path(log_path)
+    manifest_path = _runtime_manifest_path(log_path)
+    marker_path = _operator_markers_path(log_path)
+    evidence_index_path = _evidence_index_path(log_path)
+    evidence_directory = _evidence_directory(log_path)
+    logging_cfg = dict(config.get("logging", {}))
+    frame_config = EvidenceFrameConfig.from_mapping(
+        dict(logging_cfg.get("evidence_frames", {}))
     )
-    if args.control_mode == "msp_raw_rc" and args.allow_control and not msp_runtime_config.io_worker_enabled:
-        raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
-    if (
-        args.control_mode == "msp_raw_rc"
-        and args.allow_control
-        and msp_runtime_config.transport_mode != "async_pipeline"
-    ):
-        raise RuntimeError("msp_runtime.transport_mode=async_pipeline is required for any RC output")
-    msp_worker = None
-    if msp_runtime_config.io_worker_enabled:
-        msp_worker = BetaflightMspIoWorker(adapter, msp_runtime_config, box_ids=box_ids)
-
-    detection_source = _create_detection_source(args, config, preview_sink=web_service)
-    attitude_buffer = AttitudeHistoryBuffer(duration_s=float(config.get("attitude_buffer_s", 2.0)))
+    attitude_buffer = AttitudeHistoryBuffer(
+        duration_s=float(config.get("attitude_buffer_s", 2.0))
+    )
     guidance_evaluator, guidance_metadata = _guidance_evaluator(config)
     guidance_metadata.update(_guidance_command_frame_metadata(config))
     intercept_runtime = _velocity_establishing_runtime(
@@ -1548,7 +1552,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         and guidance_metadata["command_mapping_type"] != "accel_tilt_rate"
     ):
         raise RuntimeError(
-            "velocity_establishing_png requires guidance_command.mapping_type='accel_tilt_rate'"
+            "velocity_establishing_png requires "
+            "guidance_command.mapping_type='accel_tilt_rate'"
         )
     pipeline = PureVisionGuidancePipeline(
         intrinsics=intrinsics,
@@ -1562,22 +1567,20 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         max_wait_s=float(fusion_cfg.get("max_wait_s", 0.20)),
         max_pending=int(fusion_cfg.get("max_pending", 8)),
     )
-
-    log_path = _log_path(args.log_dir, args.log_prefix)
-    events_path = _events_path(log_path)
-    fields = _log_fields(rc_mapper.config.channel_count)
-    meta_path = _meta_path(log_path)
-    logging_cfg = dict(config.get("logging", {}))
     platform_health_hz = float(logging_cfg.get("platform_health_hz", 1.0))
     csv_flush_interval_s = float(logging_cfg.get("csv_flush_interval_s", 1.0))
     platform_health = (
         None
         if platform_health_hz <= 0.0
-        else PlatformHealthSampler(sample_hz=platform_health_hz, log_directory=log_path.parent)
+        else PlatformHealthSampler(
+            sample_hz=platform_health_hz,
+            log_directory=log_path.parent,
+        )
     )
     gc_pause_monitor = PythonGcPauseMonitor()
     realtime_gc_guard = RealtimeGcGuard()
     start = time.monotonic()
+    operator_markers = OperatorMarkerInbox(marker_path)
     _write_run_meta(
         meta_path,
         args=args,
@@ -1585,50 +1588,160 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         log_path=log_path,
         events_path=events_path,
         fields=fields,
-        fc_identity=fc_identity,
-        detector_metadata=_detector_metadata(detection_source),
-        fc_configuration={
-            "box_ids": list(box_ids),
-            "box_ids_error": box_ids_error,
-            "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
-            "msp_override_available": MSP_OVERRIDE_PERMANENT_ID in box_ids,
-            "msp_override_mode_index": box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID),
-        },
-        control_authorization=asdict(authorization),
-        msp_runtime={
-            "config": asdict(msp_runtime_config),
-            "raw_imu_gyro_conversion": gyro_converter.metadata(),
-        },
-        kinematics={
-            "config": asdict(kinematics_config),
-            "control_connected": intercept_runtime is not None,
-            "guidance_velocity_source": guidance_metadata.get("velocity_source"),
-        },
-        attitude_fusion={
-            "max_wait_s": deferred_fusion.max_wait_s,
-            "max_pending": deferred_fusion.max_pending,
-        },
-        guidance=guidance_metadata,
+        fc_identity={},
         thrust_model=thrust_model_status,
-        camera_calibration=camera_calibration,
-        platform_health={} if platform_health is None else platform_health.metadata(),
-        runtime_diagnostics={
-            **gc_pause_monitor.metadata(),
-            **realtime_gc_guard.metadata(),
+        runtime_diagnostics={"lifecycle": "initializing"},
+        evidence={
+            "operator_marker_path": str(marker_path),
+            "frame_config": asdict(frame_config),
+            "frame_directory": str(evidence_directory),
+            "frame_index_path": str(evidence_index_path),
+            "runtime_manifest_path": str(manifest_path),
         },
-        web_telemetry=web_service.metadata(),
     )
+    try:
+        (
+            resource_stack,
+            adapter,
+            fc_identity,
+            gyro_converter,
+            box_ids,
+            box_ids_error,
+            authorization,
+            msp_worker,
+            detection_source,
+            evidence_recorder,
+        ) = _initialize_runtime_resources(
+            args=args,
+            config=config,
+            web_service=web_service,
+            serial_port=port,
+            baudrate=baudrate,
+            timeout_s=timeout_s,
+            msp_runtime_config=msp_runtime_config,
+            command_shaper_config=command_shaper_config,
+            control_output_requested=control_output_requested,
+            evidence_directory=evidence_directory,
+            evidence_index_path=evidence_index_path,
+            evidence_frame_config=frame_config,
+        )
+    except BaseException as exc:
+        completion = {
+            "complete": False,
+            "stop_reason": "initialization_exception",
+            "exception": f"{type(exc).__name__}: {exc}",
+            "rows_written": 0,
+            "elapsed_s": max(0.0, time.monotonic() - start),
+        }
+        _update_run_completion(meta_path, completion)
+        write_run_manifest(
+            manifest_path,
+            artifacts=_runtime_artifacts(
+                meta_path=meta_path,
+                events_path=events_path,
+                marker_path=marker_path,
+                evidence_index_path=evidence_index_path,
+                evidence_enabled=frame_config.enabled,
+            ),
+            completion=completion,
+        )
+        raise
+
+    if platform_health is not None:
+        resource_stack.callback(platform_health.close)
+    resource_stack.callback(gc_pause_monitor.close)
+    resource_stack.callback(realtime_gc_guard.close)
+    try:
+        _write_run_meta(
+            meta_path,
+            args=args,
+            config=config,
+            log_path=log_path,
+            events_path=events_path,
+            fields=fields,
+            fc_identity=fc_identity,
+            detector_metadata=_detector_metadata(detection_source),
+            fc_configuration={
+                "box_ids": list(box_ids),
+                "box_ids_error": box_ids_error,
+                "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
+                "msp_override_available": MSP_OVERRIDE_PERMANENT_ID in box_ids,
+                "msp_override_mode_index": box_mode_index(
+                    box_ids, MSP_OVERRIDE_PERMANENT_ID
+                ),
+            },
+            control_authorization=asdict(authorization),
+            msp_runtime={
+                "config": asdict(msp_runtime_config),
+                "raw_imu_gyro_conversion": gyro_converter.metadata(),
+            },
+            kinematics={
+                "config": asdict(kinematics_config),
+                "control_connected": intercept_runtime is not None,
+                "guidance_velocity_source": guidance_metadata.get("velocity_source"),
+            },
+            attitude_fusion={
+                "max_wait_s": deferred_fusion.max_wait_s,
+                "max_pending": deferred_fusion.max_pending,
+            },
+            guidance=guidance_metadata,
+            thrust_model=thrust_model_status,
+            camera_calibration=camera_calibration,
+            platform_health=(
+                {} if platform_health is None else platform_health.metadata()
+            ),
+            runtime_diagnostics={
+                "lifecycle": "running",
+                **gc_pause_monitor.metadata(),
+                **realtime_gc_guard.metadata(),
+            },
+            web_telemetry=web_service.metadata(),
+            evidence={
+                "operator_marker_path": str(marker_path),
+                "frame_config": asdict(frame_config),
+                "frame_directory": str(evidence_directory),
+                "frame_index_path": str(evidence_index_path),
+                "runtime_manifest_path": str(manifest_path),
+            },
+        )
+    except BaseException as exc:
+        resource_stack.close()
+        completion = {
+            "complete": False,
+            "stop_reason": "setup_exception",
+            "exception": f"{type(exc).__name__}: {exc}",
+            "rows_written": 0,
+            "elapsed_s": max(0.0, time.monotonic() - start),
+        }
+        _update_run_completion(meta_path, completion)
+        write_run_manifest(
+            manifest_path,
+            artifacts=_runtime_artifacts(
+                meta_path=meta_path,
+                events_path=events_path,
+                marker_path=marker_path,
+                evidence_index_path=evidence_index_path,
+                evidence_enabled=frame_config.enabled,
+            ),
+            completion=completion,
+        )
+        raise
     frame_id = 0
     last_telemetry_s: float | None = None
     last_attitude_s: float | None = None
     last_attitude_buffer_sample_s: float | None = None
     last_loop_start_s: float | None = None
     last_runtime_status: tuple[Any, ...] | None = None
+    operator_marker_count = 0
+    last_operator_marker: dict[str, Any] = {}
     rows_written = 0
     stop_reason = "unknown"
     stop_exception = ""
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
+    print(f"Operator marker file: {marker_path}")
+    if frame_config.enabled:
+        print(f"Evidence frame index: {evidence_index_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
     print(
         "Guidance law: "
@@ -1667,16 +1780,42 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         f"axes={','.join(gyro_converter.config.axis_order)} "
         f"signs={','.join(f'{value:+.0f}' for value in gyro_converter.config.axis_sign)}"
     )
-    event_logger = EdgeEventLogger(events_path, start_s=start)
-    event_logger.write(
-        "run_start",
-        timestamp_s=start,
-        new={
-            "control_mode": args.control_mode,
-            "allow_control": bool(args.allow_control),
-            "guidance": guidance_metadata,
-        },
-    )
+    event_logger = None
+    try:
+        event_logger = EdgeEventLogger(events_path, start_s=start)
+        event_logger.write(
+            "run_start",
+            timestamp_s=start,
+            new={
+                "control_mode": args.control_mode,
+                "allow_control": bool(args.allow_control),
+                "guidance": guidance_metadata,
+            },
+        )
+    except BaseException as exc:
+        if event_logger is not None:
+            event_logger.close()
+        resource_stack.close()
+        completion = {
+            "complete": False,
+            "stop_reason": "event_log_initialization_exception",
+            "exception": f"{type(exc).__name__}: {exc}",
+            "rows_written": 0,
+            "elapsed_s": max(0.0, time.monotonic() - start),
+        }
+        _update_run_completion(meta_path, completion)
+        write_run_manifest(
+            manifest_path,
+            artifacts=_runtime_artifacts(
+                meta_path=meta_path,
+                events_path=events_path,
+                marker_path=marker_path,
+                evidence_index_path=evidence_index_path,
+                evidence_enabled=frame_config.enabled,
+            ),
+            completion=completion,
+        )
+        raise
     realtime_gc_guard.start()
     try:
         gc_pause_monitor.start()
@@ -1767,6 +1906,24 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     else 1000.0 * (detection.exposure_ts - last_attitude_buffer_sample_s)
                 )
                 detector_stats["loop_period_s"] = "" if loop_period_s is None else loop_period_s
+                for marker in operator_markers.poll():
+                    operator_marker_count += 1
+                    last_operator_marker = marker
+                    event_logger.write(
+                        "operator_marker",
+                        timestamp_s=loop_start,
+                        new=marker.get("event", ""),
+                        context=marker,
+                    )
+                detector_stats.update(evidence_recorder.stats())
+                detector_stats.update(
+                    operator_marker_count=operator_marker_count,
+                    operator_marker_event=last_operator_marker.get("event", ""),
+                    operator_marker_note=last_operator_marker.get("note", ""),
+                    operator_marker_monotonic_s=last_operator_marker.get(
+                        "monotonic_s", ""
+                    ),
+                )
                 detector_stats.update(_guidance_log_stats(guidance_metadata))
                 detector_stats.update(_kinematics_log_stats(kinematic_state, telemetry))
                 telemetry_age_s = (
@@ -2235,46 +2392,46 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         stop_exception = f"{type(exc).__name__}: {exc}"
         raise
     finally:
+        stopped_s = time.monotonic()
+        completion = {
+            "complete": stop_reason
+            in {"duration_complete", "post_disarm_tail_complete"},
+            "stop_reason": stop_reason,
+            "exception": stop_exception,
+            "rows_written": rows_written,
+            "elapsed_s": max(0.0, stopped_s - start),
+            "armed_seen": post_disarm_tail.armed_seen,
+            "post_disarm_tail_s": post_disarm_tail.duration_s,
+            "post_disarm_tail_started_monotonic_s": post_disarm_tail.started_s,
+            "post_disarm_tail_completed": stop_reason
+            == "post_disarm_tail_complete",
+            "operator_marker_count": operator_marker_count,
+        }
+        event_logger.write(
+            "run_stop",
+            timestamp_s=stopped_s,
+            new=stop_reason,
+            context=completion,
+        )
+        event_logger.close()
         try:
-            if msp_worker is not None:
-                msp_worker.close()
-        finally:
-            try:
-                close = getattr(detection_source, "close", None)
-                if callable(close):
-                    close()
-            finally:
-                try:
-                    adapter.close()
-                finally:
-                    try:
-                        if platform_health is not None:
-                            platform_health.close()
-                    finally:
-                        gc_pause_monitor.close()
-                        realtime_gc_guard.close()
-                        stopped_s = time.monotonic()
-                        completion = {
-                            "complete": stop_reason
-                            in {"duration_complete", "post_disarm_tail_complete"},
-                            "stop_reason": stop_reason,
-                            "exception": stop_exception,
-                            "rows_written": rows_written,
-                            "elapsed_s": max(0.0, stopped_s - start),
-                            "armed_seen": post_disarm_tail.armed_seen,
-                            "post_disarm_tail_s": post_disarm_tail.duration_s,
-                            "post_disarm_tail_started_monotonic_s": post_disarm_tail.started_s,
-                            "post_disarm_tail_completed": stop_reason
-                            == "post_disarm_tail_complete",
-                        }
-                        event_logger.write(
-                            "run_stop",
-                            timestamp_s=stopped_s,
-                            new=stop_reason,
-                            context=completion,
-                        )
-                        event_logger.close()
-                        _update_run_completion(meta_path, completion)
+            resource_stack.close()
+        except BaseException as exc:
+            completion["cleanup_error"] = f"{type(exc).__name__}: {exc}"
+            completion["complete"] = False
+        _update_run_completion(meta_path, completion)
+        write_run_manifest(
+            manifest_path,
+            artifacts=_runtime_artifacts(
+                meta_path=meta_path,
+                log_path=log_path,
+                events_path=events_path,
+                marker_path=marker_path,
+                evidence_index_path=evidence_index_path,
+                evidence_enabled=frame_config.enabled,
+            ),
+            completion=completion,
+        )
 
 
 def _load_config(path: str) -> dict[str, Any]:
@@ -2920,6 +3077,118 @@ def _create_detection_source(
     raise ValueError(f"unsupported detector source: {args.detector_source}")
 
 
+def _initialize_runtime_resources(
+    *,
+    args: argparse.Namespace,
+    config: dict[str, Any],
+    web_service: TelemetryWebService,
+    serial_port: str,
+    baudrate: int,
+    timeout_s: float,
+    msp_runtime_config: MspRuntimeConfig,
+    command_shaper_config: GuidanceCommandShaperConfig,
+    control_output_requested: bool,
+    evidence_directory: Path,
+    evidence_index_path: Path,
+    evidence_frame_config: EvidenceFrameConfig,
+) -> tuple[Any, ...]:
+    resources = ExitStack()
+    try:
+        lock_directory = str(dict(config.get("logging", {})).get("lock_directory", "/tmp"))
+        resources.enter_context(
+            ExclusiveResourceLock(f"serial:{serial_port}", lock_directory=lock_directory)
+        )
+        if args.detector_source not in {"none", "csv"}:
+            camera = dict(config.get("camera", {}))
+            requested_device = getattr(args, "camera_device", "")
+            camera_device = requested_device or camera.get("device", 0)
+            resources.enter_context(
+                ExclusiveResourceLock(
+                    f"camera:{camera_device}",
+                    lock_directory=lock_directory,
+                )
+            )
+
+        adapter = BetaflightMSPAdapter(serial_port, baudrate, timeout_s=timeout_s)
+        adapter.open()
+        resources.callback(adapter.close)
+        fc_identity = _read_fc_identity(adapter)
+        gyro_converter = bind_msp_raw_imu_gyro(
+            msp_runtime_config.raw_imu_gyro,
+            fc_identity,
+        )
+        if (
+            control_output_requested
+            and command_shaper_config.entry_handoff.enabled
+            and command_shaper_config.entry_handoff.rate_source == "gyro"
+            and not gyro_converter.available
+        ):
+            raise RuntimeError(
+                "gyro entry handoff requires a matching msp_runtime.raw_imu_gyro firmware binding: "
+                f"{gyro_converter.reason}"
+            )
+        box_ids, box_ids_error = _read_box_ids(adapter)
+        authorization = resolve_control_authorization(
+            dict(config.get("control_authorization", {})),
+            fc_identity=fc_identity,
+            box_ids=box_ids,
+            parameters_path=args.config,
+        )
+        if (
+            args.control_mode == "msp_raw_rc"
+            and args.allow_control
+            and not msp_runtime_config.io_worker_enabled
+        ):
+            raise RuntimeError("msp_runtime.io_worker_enabled=true is required for any RC output")
+        if (
+            args.control_mode == "msp_raw_rc"
+            and args.allow_control
+            and msp_runtime_config.transport_mode != "async_pipeline"
+        ):
+            raise RuntimeError(
+                "msp_runtime.transport_mode=async_pipeline is required for any RC output"
+            )
+        msp_worker = (
+            BetaflightMspIoWorker(adapter, msp_runtime_config, box_ids=box_ids)
+            if msp_runtime_config.io_worker_enabled
+            else None
+        )
+
+        evidence_recorder = AsyncJpegEvidenceRecorder(
+            evidence_directory,
+            evidence_index_path,
+            evidence_frame_config,
+        )
+        evidence_recorder.start()
+        resources.callback(evidence_recorder.close)
+        preview_sink = PreviewEvidenceMux(web_service, evidence_recorder)
+        detection_source = _create_detection_source(
+            args,
+            config,
+            preview_sink=preview_sink,
+        )
+        close_detection = getattr(detection_source, "close", None)
+        if callable(close_detection):
+            resources.callback(close_detection)
+        if msp_worker is not None:
+            resources.callback(msp_worker.close)
+        return (
+            resources,
+            adapter,
+            fc_identity,
+            gyro_converter,
+            box_ids,
+            box_ids_error,
+            authorization,
+            msp_worker,
+            detection_source,
+            evidence_recorder,
+        )
+    except BaseException:
+        resources.close()
+        raise
+
+
 def _detector_metadata(detection_source: Any) -> dict[str, Any]:
     metadata = getattr(detection_source, "metadata", None)
     return metadata() if callable(metadata) else {}
@@ -3347,6 +3616,40 @@ def _events_path(log_path: Path) -> Path:
     return log_path.with_name(f"{log_path.stem}_events.jsonl")
 
 
+def _operator_markers_path(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_operator_markers.jsonl")
+
+
+def _evidence_index_path(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_evidence_frames.jsonl")
+
+
+def _evidence_directory(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_evidence_frames")
+
+
+def _runtime_manifest_path(log_path: Path) -> Path:
+    return log_path.with_name(f"{log_path.stem}_runtime_manifest.json")
+
+
+def _runtime_artifacts(
+    *,
+    meta_path: Path,
+    events_path: Path,
+    marker_path: Path,
+    evidence_index_path: Path,
+    evidence_enabled: bool,
+    log_path: Path | None = None,
+) -> tuple[Path, ...]:
+    artifacts = [meta_path]
+    if log_path is not None:
+        artifacts.append(log_path)
+    artifacts.extend((events_path, marker_path))
+    if evidence_enabled:
+        artifacts.append(evidence_index_path)
+    return tuple(artifacts)
+
+
 def _write_run_meta(
     path: Path,
     *,
@@ -3368,6 +3671,7 @@ def _write_run_meta(
     platform_health: dict[str, Any] | None = None,
     runtime_diagnostics: dict[str, Any] | None = None,
     web_telemetry: dict[str, Any] | None = None,
+    evidence: dict[str, Any] | None = None,
 ) -> None:
     config_path = Path(str(getattr(args, "config", ""))).expanduser()
     source_reference_path = Path(str(config.get("source_reference", {}).get("manifest", ""))).expanduser()
@@ -3383,6 +3687,8 @@ def _write_run_meta(
         "control_mode": args.control_mode,
         "allow_control": bool(args.allow_control),
         "repository_commit": _git_commit(),
+        "repository_dirty": _git_dirty(),
+        "source_files": _runtime_source_metadata(config_path),
         "config_path": str(config_path),
         "config_sha256": _sha256_path(config_path),
         "source_reference": {
@@ -3406,22 +3712,36 @@ def _write_run_meta(
         "platform_health": platform_health or {},
         "runtime_diagnostics": runtime_diagnostics or {},
         "web_telemetry": web_telemetry or {},
+        "evidence": evidence or {},
         "detector": detector_metadata or {},
     }
-    with path.open("w") as stream:
-        json.dump(meta, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    _atomic_write_json(path, meta)
 
 
 def _update_run_completion(path: Path, completion: dict[str, Any]) -> None:
     meta = json.loads(path.read_text(encoding="utf-8"))
     meta["completion"] = dict(completion)
+    meta.setdefault("runtime_diagnostics", {})["lifecycle"] = "stopped"
+    _atomic_write_json(path, meta)
+
+
+def _atomic_write_json(path: Path, values: dict[str, Any]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     temporary_path = path.with_name(f".{path.name}.tmp")
-    temporary_path.write_text(
-        json.dumps(meta, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    with temporary_path.open("w", encoding="utf-8") as stream:
+        json.dump(values, stream, indent=2, sort_keys=True)
+        stream.write("\n")
+        stream.flush()
+        os.fsync(stream.fileno())
     os.replace(temporary_path, path)
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 
 
 def _sha256_path(path: Path) -> str:
@@ -3441,6 +3761,40 @@ def _git_commit() -> str:
         ).strip()
     except (OSError, subprocess.CalledProcessError):
         return ""
+
+
+def _git_dirty() -> bool | None:
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain", "--untracked-files=no"],
+            cwd=ROOT,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return bool(result.stdout.strip())
+
+
+def _runtime_source_metadata(config_path: Path) -> list[dict[str, Any]]:
+    paths = (
+        Path(__file__).resolve(),
+        ROOT / "vision_guidance" / "flight_control.py",
+        ROOT / "vision_guidance" / "betaflight_runtime.py",
+        ROOT / "vision_guidance" / "betaflight_intercept_controller.py",
+        ROOT / "vision_guidance" / "thrust_model.py",
+        config_path.expanduser().resolve(),
+    )
+    return [
+        {
+            "path": str(path),
+            "sha256": _sha256_path(path),
+            "bytes": path.stat().st_size if path.is_file() else None,
+        }
+        for path in paths
+    ]
 
 
 def _log_fields(channel_count: int) -> list[str]:
@@ -3839,6 +4193,17 @@ def _log_fields(channel_count: int) -> list[str]:
         "map_requested_thrust",
         "map_limited_thrust",
         "map_requested_throttle_us",
+        "operator_marker_count",
+        "operator_marker_event",
+        "operator_marker_note",
+        "operator_marker_monotonic_s",
+        "evidence_frame_enabled",
+        "evidence_frame_offer_count",
+        "evidence_frame_write_count",
+        "evidence_frame_drop_count",
+        "evidence_frame_error_count",
+        "evidence_frame_last_error",
+        "evidence_frame_index",
         "python_gc_collection_count",
         "python_gc_last_generation",
         "python_gc_last_pause_ms",
@@ -4505,6 +4870,29 @@ def _log_row(
         "map_requested_throttle_us": _format_optional_float(
             rc_command.requested_throttle_us, precision=3
         ),
+        "operator_marker_count": detector_stats.get("operator_marker_count", ""),
+        "operator_marker_event": detector_stats.get("operator_marker_event", ""),
+        "operator_marker_note": detector_stats.get("operator_marker_note", ""),
+        "operator_marker_monotonic_s": detector_stats.get(
+            "operator_marker_monotonic_s", ""
+        ),
+        "evidence_frame_enabled": detector_stats.get("evidence_frame_enabled", ""),
+        "evidence_frame_offer_count": detector_stats.get(
+            "evidence_frame_offer_count", ""
+        ),
+        "evidence_frame_write_count": detector_stats.get(
+            "evidence_frame_write_count", ""
+        ),
+        "evidence_frame_drop_count": detector_stats.get(
+            "evidence_frame_drop_count", ""
+        ),
+        "evidence_frame_error_count": detector_stats.get(
+            "evidence_frame_error_count", ""
+        ),
+        "evidence_frame_last_error": detector_stats.get(
+            "evidence_frame_last_error", ""
+        ),
+        "evidence_frame_index": detector_stats.get("evidence_frame_index", ""),
         "python_gc_collection_count": detector_stats.get("python_gc_collection_count", ""),
         "python_gc_last_generation": detector_stats.get("python_gc_last_generation", ""),
         "python_gc_last_pause_ms": _stats_float(

@@ -24,6 +24,11 @@ from vision_guidance.flight_control import (
     RcCommand,
 )
 from vision_guidance.fusion import VisionGuidanceResult
+from vision_guidance.runtime_evidence import (
+    AsyncJpegEvidenceRecorder,
+    EvidenceFrameConfig,
+    PreviewEvidenceMux,
+)
 from vision_guidance.types import CameraIntrinsics, FrameDetection, GuidanceEval, LOSEstimate, TTCState
 
 
@@ -179,6 +184,57 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertEqual(runner._queue_latest(channel), "second")
         self.assertIsNone(runner._queue_latest(channel))
 
+    def test_isolated_preview_records_evidence_when_web_preview_is_disabled(self):
+        class DisabledWebSink:
+            config = SimpleNamespace(
+                preview=SimpleNamespace(enabled=False, max_fps=1.0, jpeg_quality=70)
+            )
+
+            def wants_preview(self):
+                return False
+
+            def offer_encoded_preview(self, _jpeg):
+                raise AssertionError("disabled web preview must not receive JPEG data")
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            root = Path(tmpdir)
+            recorder = AsyncJpegEvidenceRecorder(
+                root / "frames",
+                root / "frames.jsonl",
+                EvidenceFrameConfig(enabled=True, max_fps=5.0, jpeg_quality=80),
+            )
+            recorder.start()
+            self.addCleanup(recorder.close)
+            mux = PreviewEvidenceMux(DisabledWebSink(), recorder)
+            source = runner.IsolatedRknnByteTrackSource.__new__(
+                runner.IsolatedRknnByteTrackSource
+            )
+            source._preview_sink = mux
+            source._preview_request_event = threading.Event()
+            source._preview_queue = queue.Queue(maxsize=1)
+            source._preview_queue.put(
+                (
+                    b"isolated-jpeg",
+                    {
+                        "camera_capture_monotonic_s": 12.5,
+                        "preview_encoded_monotonic_s": 12.55,
+                    },
+                )
+            )
+
+            source._relay_preview()
+
+            deadline = time.monotonic() + 2.0
+            while recorder.stats()["evidence_frame_write_count"] < 1:
+                if time.monotonic() >= deadline:
+                    self.fail("isolated preview evidence was not written")
+                time.sleep(0.01)
+            recorder.close()
+            record = json.loads((root / "frames.jsonl").read_text(encoding="utf-8"))
+            self.assertTrue(source._preview_request_event.is_set())
+            self.assertEqual(record["metadata"]["camera_capture_monotonic_s"], 12.5)
+            self.assertEqual(record["metadata"]["preview_encoded_monotonic_s"], 12.55)
+
     def test_isolated_preview_encoder_is_demand_driven_and_latest_only(self):
         channel = queue.Queue(maxsize=1)
         requested = threading.Event()
@@ -199,7 +255,10 @@ class BetaflightLoggingTest(unittest.TestCase):
             image,
             {"bbox_xyxy": [1, 2, 10, 12], "track_id": 4, "score": 0.75},
         )
-        self.assertEqual(runner._queue_latest(channel), b"\xff\xd8\xff\xd9")
+        jpeg, metadata = runner._queue_latest(channel)
+        self.assertEqual(jpeg, b"\xff\xd8\xff\xd9")
+        self.assertEqual(metadata["track_id"], 4)
+        self.assertIn("preview_encoded_monotonic_s", metadata)
         encoder.offer_preview(image)
         self.assertIsNone(runner._queue_latest(channel))
         self.assertEqual(encoder.stats()["perception_preview_encode_count"], 1)
@@ -904,6 +963,8 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["log_schema_version"], 21)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
+            self.assertIn("repository_dirty", data)
+            self.assertTrue(data["source_files"])
 
             completion = {
                 "complete": True,
@@ -959,6 +1020,29 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(events[1]["old"], 0)
             self.assertEqual(events[1]["new"], 1)
             self.assertEqual(events[1]["context"]["rc_sent"][2], 1000)
+
+    def test_edge_event_logger_fsyncs_each_event(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            path = Path(tmpdir) / "events.jsonl"
+            with mock.patch.object(runner.os, "fsync") as fsync:
+                logger = runner.EdgeEventLogger(path, start_s=10.0)
+                logger.write("run_start", timestamp_s=10.0, new="running")
+                logger.close()
+
+            fsync.assert_called_once()
+
+    def test_disabled_evidence_index_is_not_a_required_runtime_artifact(self):
+        root = Path("/tmp/runtime-artifacts")
+        artifacts = runner._runtime_artifacts(
+            meta_path=root / "run_meta.json",
+            log_path=root / "run.csv",
+            events_path=root / "run_events.jsonl",
+            marker_path=root / "run_markers.jsonl",
+            evidence_index_path=root / "run_evidence_frames.jsonl",
+            evidence_enabled=False,
+        )
+
+        self.assertNotIn(root / "run_evidence_frames.jsonl", artifacts)
 
     def test_track_id_event_update_ignores_perception_wait_cycles(self):
         detection = FrameDetection(1, 10.0, (1.0, 2.0, 10.0, 12.0), 7, 0.8)

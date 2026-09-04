@@ -6,9 +6,24 @@ import csv
 import hashlib
 import json
 from pathlib import Path
+import sys
 from typing import Any, Iterable
 
 import numpy as np
+
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from vision_guidance.runtime_evidence import validate_blackbox_mode_binding  # noqa: E402
+
+
+DEFAULT_MODE_BINDING = (
+    ROOT
+    / "config"
+    / "betaflight.blackbox_mode_binding.btfl-25.12.2-micoair743v2.json"
+)
 
 
 BLACKBOX_NUMERIC_FIELDS = (
@@ -68,6 +83,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--blackbox-csv", required=True)
     parser.add_argument("--blackbox-bfl", default="")
     parser.add_argument("--decoder-commit", default="")
+    parser.add_argument(
+        "--blackbox-mode-binding",
+        default=str(DEFAULT_MODE_BINDING),
+        help="Firmware-specific contract for Blackbox mode and gyro interpretation.",
+    )
     parser.add_argument("--host-throttle-field", default="rc_in_ch4")
     parser.add_argument("--min-check-us", type=float, default=1050.0)
     parser.add_argument("--max-pwm-us", type=float, default=2000.0)
@@ -99,6 +119,7 @@ def main() -> None:
         Path(args.blackbox_csv),
         blackbox_bfl=Path(args.blackbox_bfl) if args.blackbox_bfl else None,
         decoder_commit=str(args.decoder_commit),
+        blackbox_mode_binding=Path(args.blackbox_mode_binding),
         host_throttle_field=str(args.host_throttle_field),
         min_check_us=float(args.min_check_us),
         max_pwm_us=float(args.max_pwm_us),
@@ -136,6 +157,7 @@ def analyze(
     *,
     blackbox_bfl: Path | None = None,
     decoder_commit: str = "",
+    blackbox_mode_binding: Path | None = DEFAULT_MODE_BINDING,
     host_throttle_field: str = "rc_in_ch4",
     min_check_us: float = 1050.0,
     max_pwm_us: float = 2000.0,
@@ -177,6 +199,12 @@ def analyze(
     host_rows = _read_host_rows(host_csv, host_throttle_field)
     blackbox = _read_blackbox_numeric(blackbox_csv)
     categories = _read_blackbox_categories(blackbox_csv)
+    mode_interpretation = _blackbox_mode_interpretation(
+        host_csv,
+        host_rows,
+        categories,
+        blackbox_mode_binding,
+    )
 
     blackbox_time_s = (blackbox["time (us)"] - blackbox["time (us)"][0]) / 1.0e6
     if np.any(np.diff(blackbox_time_s) <= 0.0):
@@ -267,6 +295,7 @@ def analyze(
                     ]
                 )
             ),
+            "mode_interpretation": mode_interpretation,
         },
         "segments": segments,
         "endpoint_transients": _endpoint_metrics(
@@ -341,6 +370,38 @@ def analyze(
             motor_offset_us=motor_offset_us,
         )
     return result
+
+
+def _blackbox_mode_interpretation(
+    host_csv: Path,
+    host_rows: list[dict[str, str]],
+    categories: dict[str, list[str]],
+    binding_path: Path | None,
+) -> dict[str, Any]:
+    if binding_path is None:
+        raise RuntimeError("a firmware-specific Blackbox mode binding is required")
+    meta_path = host_csv.with_name(f"{host_csv.stem}_meta.json")
+    fc_identity = None
+    if meta_path.is_file():
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+        candidate = meta.get("fc_identity") if isinstance(meta, dict) else None
+        if isinstance(candidate, dict) and candidate:
+            fc_identity = candidate
+    binding = validate_blackbox_mode_binding(
+        binding_path,
+        fc_identity=fc_identity,
+    )
+    required_fields = binding["required_host_fields"]
+    available_fields = set(host_rows[0]) if host_rows else set()
+    missing_fields = sorted(set(required_fields) - available_fields)
+    return {
+        **binding,
+        "observed_decoder_labels": categories.get("flightModeFlags (flags)", []),
+        "host_meta_path": str(meta_path) if meta_path.is_file() else "",
+        "host_identity_verified": fc_identity is not None,
+        "required_host_fields_missing": missing_fields,
+        "authoritative_mode_decision_available": not missing_fields,
+    }
 
 
 def _thrust_envelope_metrics(
