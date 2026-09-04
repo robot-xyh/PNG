@@ -950,7 +950,7 @@ class BetaflightMspIoWorker:
     def _queue_one_async_poll(self, now: float) -> None:
         due = sorted(
             (name for name, timestamp in self._next_poll_s.items() if now >= timestamp),
-            key=lambda name: self._next_poll_s[name],
+            key=lambda name: (name != "rc", self._next_poll_s[name]),
         )
         command_by_name = {
             "status": MSP_STATUS,

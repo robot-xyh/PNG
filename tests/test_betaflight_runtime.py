@@ -1012,6 +1012,26 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertEqual(decode_msp_frame(transport.writes[-1]).command, MSP_RC)
         adapter.end_async_pipeline()
 
+    def test_async_prioritizes_due_rc_poll_before_ordinary_telemetry(self):
+        transport = _AsyncTransport()
+        adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(transport_mode="async_pipeline"),
+        )
+        adapter.begin_async_pipeline()
+        now = time.monotonic()
+        worker._next_poll_s = {
+            "status": now - 1.0,
+            "attitude": now - 0.5,
+            "rc": now - 0.1,
+        }
+
+        worker._queue_one_async_poll(now)
+
+        self.assertEqual(decode_msp_frame(transport.writes[-1]).command, MSP_RC)
+        adapter.end_async_pipeline()
+
     def test_async_cycle_writes_set_before_due_telemetry_poll(self):
         transport = _AsyncTransport()
         adapter = BetaflightMSPAdapter("/dev/null", transport=transport)
