@@ -26,6 +26,57 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "body_rate_command_delay_s"):
             ClosedLoopSimulationConfig(body_rate_command_delay_s=-0.001)
 
+    def test_runtime_fidelity_models_held_control_entry_and_throttle(self):
+        config = ClosedLoopSimulationConfig(
+            duration_s=1.0,
+            dt_s=0.01,
+            control_rate_hz=50.0,
+            entry_handoff_enabled=True,
+            entry_handoff_duration_s=0.8,
+            throttle_dynamics_enabled=True,
+            throttle_handover_duration_s=0.8,
+            throttle_slew_limit_us_per_s=600.0,
+            perception_rate_hz=30.0,
+            kinematic_rate_hz=5.0,
+            kinematic_latency_s=0.0,
+            kinematic_dropout_probability=0.0,
+            kinematic_velocity_noise_std_m_s=0.0,
+            candidate_acquire_consecutive_frames=1,
+        )
+
+        result = simulate_case(
+            MATRIX15_CASES[0],
+            controller_mode="candidate_velocity_hold_variable_thrust",
+            start_profile="hover",
+            config=config,
+        )
+
+        self.assertEqual(result.control_update_count, 50)
+        self.assertGreater(result.entry_handoff_active_fraction, 0.7)
+        self.assertGreater(result.throttle_handover_active_fraction, 0.7)
+        self.assertGreater(result.throttle_slew_saturation_fraction, 0.0)
+        self.assertGreater(result.maximum_throttle_us, config.throttle_hover_us)
+        self.assertLessEqual(result.maximum_throttle_us, config.throttle_max_us)
+        self.assertLessEqual(result.maximum_load_factor_g, config.max_load_factor_g)
+
+    def test_legacy_simulation_leaves_throttle_diagnostics_unset(self):
+        result = simulate_case(
+            MATRIX15_CASES[0],
+            controller_mode="fixed_thrust",
+            start_profile="hover",
+            config=ClosedLoopSimulationConfig(duration_s=0.05),
+        )
+
+        self.assertIsNone(result.minimum_throttle_us)
+        self.assertIsNone(result.maximum_throttle_us)
+        self.assertIsNone(result.maximum_load_factor_g)
+
+    def test_enabled_runtime_dynamics_require_explicit_positive_parameters(self):
+        with self.assertRaisesRegex(ValueError, "entry handoff"):
+            ClosedLoopSimulationConfig(entry_handoff_enabled=True)
+        with self.assertRaisesRegex(ValueError, "throttle slew"):
+            ClosedLoopSimulationConfig(throttle_dynamics_enabled=True)
+
     def test_matrix_contains_reported_fifteen_cases(self):
         self.assertEqual(len(MATRIX15_CASES), 15)
         self.assertEqual(MATRIX15_CASES[0].case_id, "M01")

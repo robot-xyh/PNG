@@ -8,6 +8,7 @@ from typing import Iterable, Sequence
 import numpy as np
 
 from .betaflight_intercept_controller import (
+    FovPriorityConfig,
     InterceptPhase,
     VelocityEstablishingPngConfig,
     VelocityEstablishingPngController,
@@ -15,6 +16,7 @@ from .betaflight_intercept_controller import (
 )
 from .flight_control import (
     AccelerationTiltRateConfig,
+    ThrustFeedforwardConfig,
     guidance_eval_to_setpoint,
 )
 from .los_filter import LOSFilterConfig, LOSKalmanFilter6D
@@ -38,6 +40,7 @@ class MatrixCase:
     altitude_offset_m: float
     target_speed_m_s: float
     speed_ratio: float = 2.0
+    target_course_deg: float = 90.0
 
 
 MATRIX15_CASES = (
@@ -77,12 +80,23 @@ class ClosedLoopSimulationConfig:
     attitude_kp_s_inv: float = 4.0
     max_roll_rate_deg_s: float = 120.0
     max_pitch_rate_deg_s: float = 120.0
+    control_rate_hz: float = 0.0
     body_rate_command_delay_s: float = 0.0
     body_rate_response_tau_s: float = 0.04
+    entry_handoff_enabled: bool = False
+    entry_handoff_duration_s: float = 0.0
     altitude_hold_position_gain_s2: float = 1.0
     altitude_hold_velocity_gain_s_inv: float = 2.0
     min_thrust_specific_force_m_s2: float = 4.903325
     max_thrust_specific_force_m_s2: float = 16.671305
+    throttle_dynamics_enabled: bool = False
+    throttle_handover_duration_s: float = 0.0
+    throttle_slew_limit_us_per_s: float = 0.0
+    throttle_min_us: float = 1200.0
+    throttle_hover_us: float = 1275.0
+    throttle_max_us: float = 1500.0
+    hover_load_factor_g: float = 1.0
+    max_load_factor_g: float = 2.37
     collision_radius_m: float = 1.0
     near_hit_radius_m: float = 1.5
     camera_half_fov_deg: float = 60.0
@@ -114,6 +128,9 @@ class ClosedLoopSimulationConfig:
     candidate_los_prediction_max_s: float = 0.0
     candidate_fixed_vm_m_s: float = 0.0
     candidate_fov_constraint_half_angle_deg: float = 0.0
+    candidate_fov_priority_enabled: bool = False
+    candidate_fov_priority_start_ratio: float = 0.70
+    candidate_fov_priority_full_ratio: float = 0.90
 
     def __post_init__(self) -> None:
         positive = (
@@ -168,6 +185,10 @@ class ClosedLoopSimulationConfig:
             "camera_horizontal_half_fov_deg",
             "camera_vertical_half_fov_deg",
             "candidate_fov_constraint_half_angle_deg",
+            "control_rate_hz",
+            "entry_handoff_duration_s",
+            "throttle_handover_duration_s",
+            "throttle_slew_limit_us_per_s",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or value < 0.0:
@@ -219,12 +240,49 @@ class ClosedLoopSimulationConfig:
             raise ValueError("kinematic latency cannot exceed the stale timeout")
         if self.min_thrust_specific_force_m_s2 > self.max_thrust_specific_force_m_s2:
             raise ValueError("minimum thrust cannot exceed maximum thrust")
+        if self.entry_handoff_enabled and self.entry_handoff_duration_s <= 0.0:
+            raise ValueError("enabled entry handoff requires a positive duration")
+        if not (
+            self.throttle_min_us
+            < self.throttle_hover_us
+            < self.throttle_max_us
+        ):
+            raise ValueError("throttle PWM points must be strictly increasing")
+        if not math.isfinite(self.hover_load_factor_g) or self.hover_load_factor_g <= 0.0:
+            raise ValueError("hover_load_factor_g must be finite and positive")
+        if (
+            not math.isfinite(self.max_load_factor_g)
+            or self.max_load_factor_g <= self.hover_load_factor_g
+        ):
+            raise ValueError("max_load_factor_g must exceed hover_load_factor_g")
+        if self.throttle_dynamics_enabled and self.throttle_slew_limit_us_per_s <= 0.0:
+            raise ValueError(
+                "enabled throttle dynamics require a positive throttle slew limit"
+            )
         if self.collision_radius_m > self.near_hit_radius_m:
             raise ValueError("collision radius cannot exceed near-hit radius")
         if not 0.0 < float(self.candidate_png_track_speed_ratio) <= 1.0:
             raise ValueError("candidate_png_track_speed_ratio must be in (0, 1]")
         if self.candidate_fov_constraint_half_angle_deg >= 90.0:
             raise ValueError("candidate_fov_constraint_half_angle_deg must be below 90")
+        for name in (
+            "candidate_fov_priority_start_ratio",
+            "candidate_fov_priority_full_ratio",
+        ):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"{name} must be in [0, 1]")
+        if (
+            self.candidate_fov_priority_full_ratio
+            <= self.candidate_fov_priority_start_ratio
+        ):
+            raise ValueError("candidate FOV priority full ratio must exceed start ratio")
+        if self.candidate_fov_priority_enabled and not all(
+            value > 0.0 for value in rectangular_fov
+        ):
+            raise ValueError(
+                "enabled candidate FOV priority requires rectangular camera FOV"
+            )
         if (
             isinstance(self.candidate_acquire_consecutive_frames, bool)
             or int(self.candidate_acquire_consecutive_frames)
@@ -257,6 +315,9 @@ class ClosedLoopSimulationResult:
     maximum_commanded_rate_deg_s: float
     maximum_guidance_accel_m_s2: float
     maximum_control_accel_m_s2: float
+    control_update_count: int
+    entry_handoff_active_fraction: float
+    fov_priority_active_fraction: float
     guidance_accel_saturation_fraction: float
     centering_accel_saturation_fraction: float
     speed_hold_accel_saturation_fraction: float
@@ -264,6 +325,11 @@ class ClosedLoopSimulationResult:
     tilt_saturation_fraction: float
     rate_saturation_fraction: float
     thrust_saturation_fraction: float
+    throttle_handover_active_fraction: float
+    throttle_slew_saturation_fraction: float
+    minimum_throttle_us: float | None
+    maximum_throttle_us: float | None
+    maximum_load_factor_g: float | None
     target_in_fov_fraction: float
     maximum_target_off_up_axis_deg: float
     initial_target_in_fov: bool
@@ -370,7 +436,11 @@ def simulate_case(
     target_position = np.array(
         [forward, case.lateral_offset_m, -case.altitude_offset_m], dtype=float
     )
-    target_velocity = np.array([0.0, case.target_speed_m_s, 0.0], dtype=float)
+    target_course_rad = math.radians(case.target_course_deg)
+    target_velocity = case.target_speed_m_s * np.array(
+        [math.cos(target_course_rad), math.sin(target_course_rad), 0.0],
+        dtype=float,
+    )
     fixed_vm = float(
         cfg.candidate_fixed_vm_m_s
         if cfg.candidate_fixed_vm_m_s > 0.0
@@ -397,6 +467,17 @@ def simulate_case(
         max_pitch_tilt_deg=cfg.max_pitch_tilt_deg,
         max_roll_rate_deg_s=cfg.max_roll_rate_deg_s,
         max_pitch_rate_deg_s=cfg.max_pitch_rate_deg_s,
+        thrust_feedforward=ThrustFeedforwardConfig(
+            enabled=cfg.throttle_dynamics_enabled,
+            model=(
+                "measured_load_factor"
+                if cfg.throttle_dynamics_enabled
+                else "fixed_hover"
+            ),
+            hover_load_factor_g=cfg.hover_load_factor_g,
+            max_load_factor_g=cfg.max_load_factor_g,
+            calibration_id=("simulation_runtime_binding" if cfg.throttle_dynamics_enabled else ""),
+        ),
     )
     candidate_controller = (
         VelocityEstablishingPngController(
@@ -417,6 +498,13 @@ def simulate_case(
                 los_prediction_max_s=cfg.candidate_los_prediction_max_s,
                 gravity_m_s2=cfg.gravity_m_s2,
                 fov_constraint_half_angle_deg=cfg.candidate_fov_constraint_half_angle_deg,
+                fov_priority=FovPriorityConfig(
+                    enabled=cfg.candidate_fov_priority_enabled,
+                    start_ratio=cfg.candidate_fov_priority_start_ratio,
+                    full_ratio=cfg.candidate_fov_priority_full_ratio,
+                    horizontal_half_fov_deg=cfg.camera_horizontal_half_fov_deg,
+                    vertical_half_fov_deg=cfg.camera_vertical_half_fov_deg,
+                ),
             )
         )
         if controller_mode == "candidate_velocity_hold_variable_thrust"
@@ -457,6 +545,10 @@ def simulate_case(
         "fov": 0,
         "measurement_valid": 0,
         "kinematic_valid": 0,
+        "entry_handoff": 0,
+        "fov_priority": 0,
+        "throttle_handover": 0,
+        "throttle_slew": 0,
     }
     initial_body_down_axis = _rotation_matrix_frd(
         roll_rad, pitch_rad, yaw_rad
@@ -496,6 +588,22 @@ def simulate_case(
     maximum_kinematic_velocity_error_m_s = 0.0
     candidate_output = None
     controller_abort_time_s: float | None = None
+    control_update_count = 0
+    next_control_time_s = 0.0
+    held_p_command_rad_s = actual_p_rad_s
+    held_q_command_rad_s = actual_q_rad_s
+    entry_start_p_rad_s = actual_p_rad_s
+    entry_start_q_rad_s = actual_q_rad_s
+    current_throttle_us = float(cfg.throttle_hover_us)
+    held_target_throttle_us = float(cfg.throttle_hover_us)
+    minimum_throttle_us: float | None = (
+        current_throttle_us if cfg.throttle_dynamics_enabled else None
+    )
+    maximum_throttle_us: float | None = minimum_throttle_us
+    maximum_load_factor_g: float | None = (
+        cfg.hover_load_factor_g if cfg.throttle_dynamics_enabled else None
+    )
+    setpoint = None
     samples = 0
     hit = False
     elapsed = 0.0
@@ -796,21 +904,52 @@ def simulate_case(
         else:
             control_accel = guidance
 
-        setpoint = guidance_eval_to_setpoint(
-            GuidanceEval(elapsed, control_accel, True, 1.0),
-            R_IB=R_IB,
-            rate_gain_matrix=np.zeros((3, 3), dtype=float),
-            hover_thrust=0.5,
-            mapping_type="accel_tilt_rate",
-            accel_tilt_rate=mapping_config,
+        control_update_due = bool(
+            cfg.control_rate_hz <= 0.0
+            or next_control_time_s <= elapsed + 1.0e-12
         )
-        p_command = math.radians(setpoint.roll_rate_deg_s)
-        q_command = math.radians(setpoint.pitch_rate_deg_s)
-        body_rate_command_history.append((elapsed, p_command, q_command))
-        p_command, q_command = _delayed_body_rate_command(
-            body_rate_command_history,
-            elapsed - cfg.body_rate_command_delay_s,
-        )
+        if control_update_due:
+            setpoint = guidance_eval_to_setpoint(
+                GuidanceEval(elapsed, control_accel, True, 1.0),
+                R_IB=R_IB,
+                rate_gain_matrix=np.zeros((3, 3), dtype=float),
+                hover_thrust=0.5,
+                mapping_type="accel_tilt_rate",
+                accel_tilt_rate=mapping_config,
+            )
+            held_p_command_rad_s = math.radians(setpoint.roll_rate_deg_s)
+            held_q_command_rad_s = math.radians(setpoint.pitch_rate_deg_s)
+            if cfg.entry_handoff_enabled:
+                progress = _smoothstep01(
+                    elapsed / max(cfg.entry_handoff_duration_s, 1.0e-12)
+                )
+                held_p_command_rad_s = _lerp(
+                    entry_start_p_rad_s, held_p_command_rad_s, progress
+                )
+                held_q_command_rad_s = _lerp(
+                    entry_start_q_rad_s, held_q_command_rad_s, progress
+                )
+            held_target_throttle_us = _thrust_to_pwm(setpoint.thrust, cfg)
+            body_rate_command_history.append(
+                (elapsed, held_p_command_rad_s, held_q_command_rad_s)
+            )
+            control_update_count += 1
+            if cfg.control_rate_hz > 0.0:
+                control_period_s = 1.0 / cfg.control_rate_hz
+                while next_control_time_s <= elapsed + 1.0e-12:
+                    next_control_time_s += control_period_s
+        if setpoint is None:
+            raise RuntimeError("control setpoint was not initialized")
+        if cfg.control_rate_hz > 0.0:
+            p_command, q_command = _delayed_held_body_rate_command(
+                body_rate_command_history,
+                elapsed - cfg.body_rate_command_delay_s,
+            )
+        else:
+            p_command, q_command = _delayed_body_rate_command(
+                body_rate_command_history,
+                elapsed - cfg.body_rate_command_delay_s,
+            )
         response_alpha = 1.0 - math.exp(-cfg.dt_s / cfg.body_rate_response_tau_s)
         actual_p_rad_s += response_alpha * (p_command - actual_p_rad_s)
         actual_q_rad_s += response_alpha * (q_command - actual_q_rad_s)
@@ -838,6 +977,63 @@ def simulate_case(
             thrust_specific_force = (
                 cfg.gravity_m_s2 - desired_vertical_accel
             ) / max(0.20, float(body_down_axis[2]))
+        elif cfg.throttle_dynamics_enabled:
+            handover_active = bool(
+                cfg.throttle_handover_duration_s > 0.0
+                and elapsed < cfg.throttle_handover_duration_s
+            )
+            handover_alpha = (
+                1.0
+                if cfg.throttle_handover_duration_s <= 0.0
+                else float(
+                    np.clip(
+                        elapsed / cfg.throttle_handover_duration_s,
+                        0.0,
+                        1.0,
+                    )
+                )
+            )
+            handover_target_us = _lerp(
+                cfg.throttle_hover_us,
+                held_target_throttle_us,
+                handover_alpha,
+            )
+            maximum_delta_us = cfg.throttle_slew_limit_us_per_s * cfg.dt_s
+            throttle_delta_us = float(
+                np.clip(
+                    handover_target_us - current_throttle_us,
+                    -maximum_delta_us,
+                    maximum_delta_us,
+                )
+            )
+            next_throttle_us = current_throttle_us + throttle_delta_us
+            throttle_slew_saturated = not math.isclose(
+                next_throttle_us,
+                handover_target_us,
+                rel_tol=0.0,
+                abs_tol=1.0e-9,
+            )
+            current_throttle_us = float(
+                np.clip(
+                    next_throttle_us,
+                    cfg.throttle_min_us,
+                    cfg.throttle_max_us,
+                )
+            )
+            load_factor_g = _pwm_to_load_factor(current_throttle_us, cfg)
+            thrust_specific_force = load_factor_g * cfg.gravity_m_s2
+            thrust_saturated = bool(setpoint.thrust_command_limited)
+            counters["throttle_handover"] += int(handover_active)
+            counters["throttle_slew"] += int(throttle_slew_saturated)
+            minimum_throttle_us = min(
+                float(minimum_throttle_us), current_throttle_us
+            )
+            maximum_throttle_us = max(
+                float(maximum_throttle_us), current_throttle_us
+            )
+            maximum_load_factor_g = max(
+                float(maximum_load_factor_g), load_factor_g
+            )
         else:
             required_specific_force = (
                 np.array([0.0, 0.0, cfg.gravity_m_s2], dtype=float)
@@ -904,6 +1100,14 @@ def simulate_case(
         counters["tilt"] += int(tilt_saturated)
         counters["rate"] += int(rate_saturated)
         counters["thrust"] += int(thrust_saturated)
+        counters["entry_handoff"] += int(
+            cfg.entry_handoff_enabled
+            and elapsed < cfg.entry_handoff_duration_s
+        )
+        counters["fov_priority"] += int(
+            candidate_output is not None
+            and candidate_output.fov_priority_active
+        )
         updated_target_in_fov = _target_in_fov(updated_los, R_IB, cfg)
         counters["fov"] += int(updated_target_in_fov)
         target_continuously_in_fov = bool(
@@ -979,6 +1183,9 @@ def simulate_case(
         maximum_commanded_rate_deg_s=maximum_commanded_rate,
         maximum_guidance_accel_m_s2=maximum_guidance_accel,
         maximum_control_accel_m_s2=maximum_control_accel,
+        control_update_count=control_update_count,
+        entry_handoff_active_fraction=counters["entry_handoff"] / denominator,
+        fov_priority_active_fraction=counters["fov_priority"] / denominator,
         guidance_accel_saturation_fraction=counters["guidance"] / denominator,
         centering_accel_saturation_fraction=counters["centering"] / denominator,
         speed_hold_accel_saturation_fraction=counters["speed_hold"] / denominator,
@@ -986,6 +1193,13 @@ def simulate_case(
         tilt_saturation_fraction=counters["tilt"] / denominator,
         rate_saturation_fraction=counters["rate"] / denominator,
         thrust_saturation_fraction=counters["thrust"] / denominator,
+        throttle_handover_active_fraction=(
+            counters["throttle_handover"] / denominator
+        ),
+        throttle_slew_saturation_fraction=counters["throttle_slew"] / denominator,
+        minimum_throttle_us=minimum_throttle_us,
+        maximum_throttle_us=maximum_throttle_us,
+        maximum_load_factor_g=maximum_load_factor_g,
         target_in_fov_fraction=counters["fov"] / denominator,
         maximum_target_off_up_axis_deg=maximum_off_axis_deg,
         initial_target_in_fov=initial_target_in_fov,
@@ -1030,6 +1244,8 @@ def _validate_case(case: MatrixCase) -> None:
         raise ValueError("lateral offset cannot exceed horizontal range")
     if not math.isfinite(case.lateral_offset_m):
         raise ValueError("lateral offset must be finite")
+    if not math.isfinite(case.target_course_deg):
+        raise ValueError("target_course_deg must be finite")
 
 
 def _target_in_fov(
@@ -1270,6 +1486,67 @@ def _delayed_body_rate_command(
     return (
         left[1] + alpha * (right[1] - left[1]),
         left[2] + alpha * (right[2] - left[2]),
+    )
+
+
+def _delayed_held_body_rate_command(
+    history: deque[tuple[float, float, float]],
+    query_time_s: float,
+) -> tuple[float, float]:
+    if not history or query_time_s < history[0][0]:
+        return 0.0, 0.0
+    while len(history) >= 2 and history[1][0] <= query_time_s:
+        history.popleft()
+    return history[0][1], history[0][2]
+
+
+def _smoothstep01(value: float) -> float:
+    bounded = float(np.clip(value, 0.0, 1.0))
+    return bounded * bounded * (3.0 - 2.0 * bounded)
+
+
+def _lerp(start: float, end: float, progress: float) -> float:
+    return float(start + (end - start) * progress)
+
+
+def _thrust_to_pwm(thrust: float, config: ClosedLoopSimulationConfig) -> float:
+    value = float(np.clip(thrust, 0.0, 1.0))
+    if value <= 0.5:
+        return _lerp(
+            config.throttle_min_us,
+            config.throttle_hover_us,
+            value / 0.5,
+        )
+    return _lerp(
+        config.throttle_hover_us,
+        config.throttle_max_us,
+        (value - 0.5) / 0.5,
+    )
+
+
+def _pwm_to_load_factor(
+    throttle_us: float,
+    config: ClosedLoopSimulationConfig,
+) -> float:
+    pwm = float(
+        np.clip(
+            throttle_us,
+            config.throttle_min_us,
+            config.throttle_max_us,
+        )
+    )
+    if pwm <= config.throttle_hover_us:
+        progress = (pwm - config.throttle_min_us) / (
+            config.throttle_hover_us - config.throttle_min_us
+        )
+        return _lerp(0.0, config.hover_load_factor_g, progress)
+    progress = (pwm - config.throttle_hover_us) / (
+        config.throttle_max_us - config.throttle_hover_us
+    )
+    return _lerp(
+        config.hover_load_factor_g,
+        config.max_load_factor_g,
+        progress,
     )
 
 

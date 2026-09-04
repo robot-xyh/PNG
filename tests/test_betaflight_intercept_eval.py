@@ -1,9 +1,13 @@
 import unittest
+import hashlib
+from pathlib import Path
 
 from tools.run_betaflight_intercept_monte_carlo import (
+    _bind_runtime_config,
     _build_tasks,
     _cases,
     _initial_performance_verdict,
+    _paired_screening_verdict,
 )
 from vision_guidance.betaflight_intercept_eval import (
     InterceptionAcceptanceCriteria,
@@ -86,6 +90,56 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "duplicate case_id"):
             _cases([dict(vars(cases[0])), dict(vars(cases[0]))])
 
+    def test_case_matrix_can_be_mirrored_with_course_and_offset(self):
+        cases = _cases(
+            [
+                {
+                    "case_id": "U01",
+                    "horizontal_range_m": 10.0,
+                    "lateral_offset_m": 3.0,
+                    "altitude_offset_m": 30.0,
+                    "target_speed_m_s": 5.0,
+                    "target_course_deg": 75.0,
+                }
+            ],
+            mirror=True,
+        )
+
+        self.assertEqual(len(cases), 2)
+        self.assertEqual(cases[1].case_id, "U01M")
+        self.assertEqual(cases[1].lateral_offset_m, -3.0)
+        self.assertEqual(cases[1].target_course_deg, 285.0)
+
+    def test_runtime_binding_derives_fidelity_parameters_and_rejects_drift(self):
+        runtime_path = Path(
+            "config/betaflight.rk3588.velocity_png.flight_supervised.json"
+        ).resolve()
+        digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
+        bound, metadata = _bind_runtime_config(
+            {},
+            {"config": str(runtime_path), "sha256": digest},
+        )
+
+        self.assertEqual(bound["control_rate_hz"], 50.0)
+        self.assertEqual(bound["entry_handoff_duration_s"], 0.8)
+        self.assertEqual(bound["throttle_handover_duration_s"], 0.8)
+        self.assertEqual(bound["throttle_slew_limit_us_per_s"], 600.0)
+        self.assertTrue(bound["throttle_dynamics_enabled"])
+        self.assertAlmostEqual(bound["max_load_factor_g"], 2.37)
+        self.assertGreater(bound["camera_horizontal_half_fov_deg"], 30.0)
+        self.assertEqual(metadata["sha256"], digest)
+
+        with self.assertRaisesRegex(ValueError, "disagree"):
+            _bind_runtime_config(
+                {"control_rate_hz": 100.0},
+                {"config": str(runtime_path), "sha256": digest},
+            )
+        with self.assertRaisesRegex(ValueError, "SHA256 mismatch"):
+            _bind_runtime_config(
+                {},
+                {"config": str(runtime_path), "sha256": "0" * 64},
+            )
+
     def test_scenario_seed_is_stable_between_full_and_subset_runs(self):
         target = {"name": "target", "perception_latency_s": 0.1}
         evaluations = [
@@ -119,6 +173,97 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
                 for task in subset
             ],
         )
+
+    def test_evaluations_use_paired_random_seeds(self):
+        tasks = _build_tasks(
+            base_simulation={
+                "camera_horizontal_half_fov_deg": 30.0,
+                "camera_vertical_half_fov_deg": 25.0,
+            },
+            scenarios=[{"name": "paired"}],
+            evaluations=[
+                {
+                    "name": "baseline",
+                    "controller_mode": "candidate_velocity_hold_variable_thrust",
+                    "start_profile": "hover",
+                },
+                {
+                    "name": "candidate",
+                    "controller_mode": "candidate_velocity_hold_variable_thrust",
+                    "start_profile": "hover",
+                    "simulation_overrides": {
+                        "candidate_fov_priority_enabled": True,
+                    },
+                },
+            ],
+            trials_per_case=2,
+            base_seed=42,
+            cases=(MATRIX15_CASES[0],),
+        )
+
+        self.assertEqual(
+            [task["random_seed"] for task in tasks[:2]],
+            [task["random_seed"] for task in tasks[2:]],
+        )
+
+    def test_paired_screening_selects_only_non_regressing_fov_candidate(self):
+        cases = (
+            MATRIX15_CASES[5],
+            MATRIX15_CASES[4],
+        )
+        scenarios = [{"name": "latency"}]
+        evaluations = [
+            {
+                "name": "baseline",
+                "controller_mode": "candidate_velocity_hold_variable_thrust",
+                "start_profile": "hover",
+            },
+            {
+                "name": "candidate",
+                "controller_mode": "candidate_velocity_hold_variable_thrust",
+                "start_profile": "hover",
+                "simulation_overrides": {
+                    "candidate_fov_priority_enabled": True,
+                },
+            },
+        ]
+        rows = []
+        for evaluation in ("baseline", "candidate"):
+            for case in cases:
+                for trial in range(10):
+                    outward = case.case_id == MATRIX15_CASES[5].case_id
+                    baseline_fov_hit = not outward or trial < 5
+                    candidate_fov_hit = not outward or trial < 7
+                    rows.append(
+                        {
+                            "scenario_name": "latency",
+                            "evaluation_name": evaluation,
+                            "case_id": case.case_id,
+                            "trial_index": trial,
+                            "random_seed": trial,
+                            "initial_target_in_fov": True,
+                            "hit": True,
+                            "fov_feasible_hit": (
+                                baseline_fov_hit
+                                if evaluation == "baseline"
+                                else candidate_fov_hit
+                            ),
+                        }
+                    )
+
+        result = _paired_screening_verdict(
+            {
+                "baseline_evaluation": "baseline",
+                "outward_fov_improvement_min": 0.1,
+            },
+            rows=rows,
+            cases=cases,
+            scenarios=scenarios,
+            evaluations=evaluations,
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["selected_evaluation"], "candidate")
 
     def test_seeded_disturbance_simulation_is_repeatable(self):
         config = ClosedLoopSimulationConfig(
