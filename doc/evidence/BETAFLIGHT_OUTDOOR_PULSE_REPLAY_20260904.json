@@ -1,0 +1,312 @@
+{
+  "acceptance": {
+    "expected_pulse_count": 10,
+    "log00106_abort_lead_passed": true,
+    "maximum_speed_saturation_fraction": 0.4,
+    "maximum_total_saturation_fraction": 0.4,
+    "minimum_log00106_abort_lead_s": 0.75,
+    "pulse_count_passed": true,
+    "pulse_coverage_passed": true,
+    "speed_saturation_passed": true,
+    "total_saturation_passed": true
+  },
+  "aggregate": {
+    "pulse_count": 10,
+    "recorded_algorithm_rows": 406,
+    "recorded_speed_saturated_fraction": 0.7684729064039408,
+    "recorded_total_saturated_fraction": 0.8645320197044335,
+    "replay_speed_saturated_fraction": 0.0,
+    "replay_total_saturated_fraction": 0.0,
+    "replay_valid_rows": 324
+  },
+  "controller_config": {
+    "acquire_consecutive_frames": 1,
+    "area_ttc_min_samples": 5,
+    "area_ttc_min_span_s": 0.1,
+    "area_ttc_window_s": 0.6,
+    "blind_hold_s": 0.2,
+    "contact_bbox_complete_ratio": 0.25,
+    "contact_bbox_terminal_ratio": 0.05,
+    "contact_ttc_terminal_s": 1,
+    "detection_timeout_s": 0.15,
+    "engagement_policy": "noncollision",
+    "fixed_vm_m_s": 10,
+    "fov_centering_accel_limit_m_s2": 7,
+    "fov_centering_gain_s2": 16,
+    "fov_constraint_half_angle_deg": 0,
+    "fov_priority": {
+      "enabled": true,
+      "full_ratio": 0.95,
+      "horizontal_half_fov_deg": 31.000688982474795,
+      "start_ratio": 0.75,
+      "vertical_half_fov_deg": 24.91540513181656
+    },
+    "gravity_m_s2": 9.80665,
+    "los_prediction_max_s": 0.15,
+    "navigation_constant": 3,
+    "noncollision_bbox_abort_ratio": 0.012,
+    "noncollision_ttc_abort_s": 2,
+    "png_accel_limit_m_s2": 7,
+    "png_track_speed_ratio": 0.8,
+    "speed_accel_limit_m_s2": 7,
+    "speed_gain_s_inv": 1.2,
+    "terminal_reacquire_frames": 2,
+    "total_accel_limit_m_s2": 7,
+    "velocity_reference_slew_m_s2": 3,
+    "velocity_timeout_s": 0.5,
+    "vertical_speed_reference_limit_m_s": 6
+  },
+  "inputs": {
+    "logs/analysis/LOG00106_target_joint/metrics.json": {
+      "bytes": 8067,
+      "path": "logs/analysis/LOG00106_target_joint/metrics.json",
+      "sha256": "9b9a4c9c9d39bdd54d45c9279d3e75ef6363a4700675d24a0c09d10ef1334d59"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180918_20260904_180919.csv": {
+      "bytes": 15704705,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180918_20260904_180919.csv",
+      "sha256": "68525deb391b40abb5441de4a66aec80f7f3c509344a67b61a160f38464a33a2"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv": {
+      "bytes": 19861175,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv",
+      "sha256": "05d47b96773f6ebfe152f15414d839cb95f9a019f79d34b242db770b88f0d3d2"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181433_20260904_181434.csv": {
+      "bytes": 10292199,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181433_20260904_181434.csv",
+      "sha256": "90a53575776d3d634fae8c3ce4cf26a3e8a042e66a865b81b7690c1cf693f48c"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181616_20260904_181617.csv": {
+      "bytes": 10008489,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181616_20260904_181617.csv",
+      "sha256": "7acfdd29b4eb009df0b1995be4deda9c128efacff07860d0fea734324d5c793e"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181801_20260904_181802.csv": {
+      "bytes": 8112682,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181801_20260904_181802.csv",
+      "sha256": "93a0abf51d3a6c072587dfd76c97a74ff2554e3374ac9e90669a49dfcc9589c5"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181911_20260904_181913.csv": {
+      "bytes": 11006142,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181911_20260904_181913.csv",
+      "sha256": "b3b518a282cc1192bb021e1bf125c5a0f8328431e698a707ada92bd32014d3c1"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_182055_20260904_182057.csv": {
+      "bytes": 11835382,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_182055_20260904_182057.csv",
+      "sha256": "a64d04fb11d60821ff6a575833b50a39fa76cbbca0aca7582ee758150e3fcc4f"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183459_20260904_183502.csv": {
+      "bytes": 13059239,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183459_20260904_183502.csv",
+      "sha256": "b4a8b83a5a19a097f02f494e1d4c48f12c597847054c7fbd52c382229a2125a7"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv": {
+      "bytes": 8060890,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv",
+      "sha256": "2f4cba58655be4d142237fc5e05c7ad16b0c3c9131a838d1413e9676cdc557a6"
+    },
+    "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722_meta.json": {
+      "bytes": 40623,
+      "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722_meta.json",
+      "sha256": "109766c2c003e6c67060dc06e538c2c33944cf66b661b22e204a2708d7292238"
+    }
+  },
+  "limitations": [
+    "This is deterministic log replay, not a closed-loop flight or hit-rate measurement.",
+    "Recorded LOS, attitude, and own-velocity inputs are reused; the replay does not regenerate detector outputs.",
+    "Rows after a replayed ABORT are retained as invalid latched outputs and are excluded from saturation denominators."
+  ],
+  "log00106_noncollision_abort": {
+    "abort_elapsed_s": 39.751102,
+    "abort_reason": "noncollision_ttc_abort",
+    "abort_unix_s": 1788518282.264894,
+    "impact_utc": "2026-09-04T10:38:03.350341Z",
+    "lead_s": 1.085447072982788,
+    "minimum_lead_s": 0.75,
+    "passed": true,
+    "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv",
+    "source_meta": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722_meta.json"
+  },
+  "pulses": [
+    {
+      "end_elapsed_s": 69.960769,
+      "final_phase": "ABORT",
+      "final_reason": "noncollision_ttc_abort",
+      "first_abort_elapsed_s": 69.23684,
+      "first_abort_reason": "noncollision_ttc_abort",
+      "recorded_algorithm_rows": 94,
+      "recorded_speed_saturated_rows": 45,
+      "recorded_total_saturated_rows": 64,
+      "replay_max_acceleration_m_s2": 4.0683996554979664,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 57,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180918_20260904_180919.csv",
+      "start_elapsed_s": 68.087123
+    },
+    {
+      "end_elapsed_s": 79.968894,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 17,
+      "recorded_speed_saturated_rows": 17,
+      "recorded_total_saturated_rows": 17,
+      "replay_max_acceleration_m_s2": 2.6135514967834905,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 16,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv",
+      "start_elapsed_s": 79.643825
+    },
+    {
+      "end_elapsed_s": 99.981943,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 16,
+      "recorded_speed_saturated_rows": 16,
+      "recorded_total_saturated_rows": 16,
+      "replay_max_acceleration_m_s2": 3.3616300537998156,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 16,
+      "segment_index": 2,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv",
+      "start_elapsed_s": 99.680123
+    },
+    {
+      "end_elapsed_s": 35.968993,
+      "final_phase": "ABORT",
+      "final_reason": "noncollision_ttc_abort",
+      "first_abort_elapsed_s": 35.565879,
+      "first_abort_reason": "noncollision_ttc_abort",
+      "recorded_algorithm_rows": 62,
+      "recorded_speed_saturated_rows": 48,
+      "recorded_total_saturated_rows": 62,
+      "replay_max_acceleration_m_s2": 3.8307324644583947,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 41,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181433_20260904_181434.csv",
+      "start_elapsed_s": 34.73988
+    },
+    {
+      "end_elapsed_s": 36.729139,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 40,
+      "recorded_speed_saturated_rows": 40,
+      "recorded_total_saturated_rows": 40,
+      "replay_max_acceleration_m_s2": 6.013914222352343,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 40,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181616_20260904_181617.csv",
+      "start_elapsed_s": 35.944939
+    },
+    {
+      "end_elapsed_s": 25.823265,
+      "final_phase": "ABORT",
+      "final_reason": "detection_stale",
+      "first_abort_elapsed_s": 25.601236,
+      "first_abort_reason": "detection_stale",
+      "recorded_algorithm_rows": 64,
+      "recorded_speed_saturated_rows": 62,
+      "recorded_total_saturated_rows": 62,
+      "replay_max_acceleration_m_s2": 4.552154101788706,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 52,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181801_20260904_181802.csv",
+      "start_elapsed_s": 24.554729
+    },
+    {
+      "end_elapsed_s": 48.340472,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 6,
+      "recorded_speed_saturated_rows": 6,
+      "recorded_total_saturated_rows": 6,
+      "replay_max_acceleration_m_s2": 3.665495782083037,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 5,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181911_20260904_181913.csv",
+      "start_elapsed_s": 48.239826
+    },
+    {
+      "end_elapsed_s": 51.188047,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 5,
+      "recorded_speed_saturated_rows": 5,
+      "recorded_total_saturated_rows": 5,
+      "replay_max_acceleration_m_s2": 2.5859368860456415,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 4,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_182055_20260904_182057.csv",
+      "start_elapsed_s": 51.107431
+    },
+    {
+      "end_elapsed_s": 58.288151,
+      "final_phase": "TRACKING",
+      "final_reason": "active",
+      "first_abort_elapsed_s": null,
+      "first_abort_reason": null,
+      "recorded_algorithm_rows": 18,
+      "recorded_speed_saturated_rows": 18,
+      "recorded_total_saturated_rows": 18,
+      "replay_max_acceleration_m_s2": 5.988759460151168,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 18,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183459_20260904_183502.csv",
+      "start_elapsed_s": 57.945597
+    },
+    {
+      "end_elapsed_s": 39.91318,
+      "final_phase": "ABORT",
+      "final_reason": "noncollision_ttc_abort",
+      "first_abort_elapsed_s": 39.751102,
+      "first_abort_reason": "noncollision_ttc_abort",
+      "recorded_algorithm_rows": 84,
+      "recorded_speed_saturated_rows": 55,
+      "recorded_total_saturated_rows": 61,
+      "replay_max_acceleration_m_s2": 4.008930074716673,
+      "replay_speed_saturated_rows": 0,
+      "replay_total_saturated_rows": 0,
+      "replay_valid_rows": 75,
+      "segment_index": 1,
+      "source_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv",
+      "start_elapsed_s": 38.242376
+    }
+  ],
+  "purpose": "Replay the ten 2026-09-04 active windows through the current non-collision controller",
+  "release_passed": true,
+  "runtime_binding": {
+    "bytes": 11611,
+    "path": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
+    "sha256": "fa5e3ee90a0fb7b5657b073da8bd91506712758d3c14fd1bbc7a2440fe4c8550"
+  },
+  "schema_version": 1
+}
