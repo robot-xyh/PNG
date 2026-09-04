@@ -38,9 +38,6 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             "betaflight.rk3588.velocity_png.prop_rig_active.json"
         )
         self.limited = _read("betaflight.rk3588.velocity_png.flight_limited.json")
-        self.flight_active = _read(
-            "betaflight.rk3588.velocity_png.flight_active_1s.json"
-        )
         self.flight_supervised = _read(
             "betaflight.rk3588.velocity_png.flight_supervised.json"
         )
@@ -203,7 +200,6 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             self.prop_rig,
             self.prop_rig_active,
             self.limited,
-            self.flight_active,
             self.flight_supervised,
             self.contact_candidate,
         ):
@@ -254,30 +250,6 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(config["rc_mapping"]["throttle_hover_us"], 1275)
         self.assertEqual(config["rc_mapping"]["yaw_command_limit_deg_s"], 0.0)
         self.assertEqual(config["runtime_policy"]["allowed_control_modes"], ["log_only"])
-
-    def test_one_second_flight_profile_uses_relative_throttle_envelope(self):
-        config = self.flight_active
-        self.assertEqual(config["candidate_profile"]["scope"], "flight_active_1s")
-        self.assertEqual(config["guidance"]["velocity_source"], "msp_kinematics")
-        self.assertEqual(config["msp_runtime"]["override_channels_mask"], 15)
-        self.assertEqual(
-            config["flight_profile"]["controlled_axes"],
-            ["roll", "pitch", "throttle", "yaw"],
-        )
-        self.assertEqual(config["flight_profile"]["yaw_policy"], "neutral_1500_us")
-        self.assertEqual(config["msp_runtime"]["throttle_relative_limit_us"], 40)
-        self.assertEqual(config["msp_runtime"]["throttle_reference_min_us"], 1200)
-        self.assertEqual(config["msp_runtime"]["throttle_reference_max_us"], 1400)
-        self.assertEqual(config["msp_runtime"]["throttle_command_max_us"], 1500)
-        self.assertEqual(config["rc_mapping"]["throttle_max_us"], 1500)
-        takeover = config["safety"]["takeover_duration_interlock"]
-        self.assertEqual(takeover["max_duration_s"], 0.9)
-        self.assertTrue(takeover["latch_until_disarm"])
-        self.assertTrue(config["control_authorization"]["enabled"])
-        self.assertEqual(
-            config["control_authorization"]["required_scope"],
-            "flight_active_1s",
-        )
 
     def test_supervised_flight_profile_uses_measured_variable_thrust(self):
         config = self.flight_supervised
@@ -386,28 +358,24 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             )
 
     def test_flight_active_requires_isolated_real_detector(self):
-        runner._validate_runtime_policy(
-            self.flight_active,
-            argparse.Namespace(
-                control_mode="msp_raw_rc",
-                allow_control=True,
-                detector_source="rknn_bytetrack",
-                isolate_rknn_process=True,
-                main_cpu_affinity="6,7",
-                rknn_cpu_affinity="4,5",
-            ),
-        )
+        base = {
+            "control_mode": "msp_raw_rc",
+            "allow_control": True,
+            "detector_source": "rknn_bytetrack",
+            "isolate_rknn_process": True,
+            "main_cpu_affinity": "6,7",
+            "rknn_cpu_affinity": "4,5",
+        }
         runner._validate_runtime_policy(
             self.flight_supervised,
-            argparse.Namespace(
-                control_mode="msp_raw_rc",
-                allow_control=True,
-                detector_source="rknn_bytetrack",
-                isolate_rknn_process=True,
-                main_cpu_affinity="6,7",
-                rknn_cpu_affinity="4,5",
-            ),
+            argparse.Namespace(**base),
         )
+
+        with self.assertRaisesRegex(RuntimeError, "requires --isolate-rknn-process"):
+            runner._validate_runtime_policy(
+                self.flight_supervised,
+                argparse.Namespace(**dict(base, isolate_rknn_process=False)),
+            )
 
 
 if __name__ == "__main__":

@@ -1427,40 +1427,6 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             raise RuntimeError("prop_rig_active motor telemetry timeout cannot exceed 0.25 s")
         if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
             raise RuntimeError("prop_rig_active requires safety.min_vbat_v >= 20 V")
-    if control_output_requested and flight_scope == "flight_active_1s":
-        guidance_cfg = dict(config.get("guidance", {}))
-        if guidance_cfg.get("velocity_source") != "msp_kinematics":
-            raise RuntimeError("flight_active_1s requires velocity_source=msp_kinematics")
-        if msp_runtime_config.override_channels_mask != 15:
-            raise RuntimeError("flight_active_1s requires four-channel mask 15")
-        if not takeover_duration_config.enabled or takeover_duration_config.max_duration_s > 1.0:
-            raise RuntimeError("flight_active_1s requires a takeover limit no greater than 1 s")
-        if not takeover_duration_config.latch_until_disarm:
-            raise RuntimeError("flight_active_1s takeover limit must latch until DISARM")
-        if msp_runtime_config.throttle_relative_limit_us <= 0:
-            raise RuntimeError("flight_active_1s requires relative throttle limiting")
-        if msp_runtime_config.throttle_relative_limit_us > 40:
-            raise RuntimeError("flight_active_1s relative throttle limit cannot exceed 40 us")
-        if msp_runtime_config.throttle_command_max_us > 1500:
-            raise RuntimeError("flight_active_1s throttle command cannot exceed 1500 us")
-        if msp_runtime_config.throttle_handover_s < 0.8:
-            raise RuntimeError("flight_active_1s throttle handover must last at least 0.8 s")
-        if rc_mapping_config.throttle_max_us > 1500:
-            raise RuntimeError("flight_active_1s RC throttle mapping cannot exceed 1500 us")
-        if rc_mapping_config.yaw_command_limit_deg_s != 0.0:
-            raise RuntimeError("flight_active_1s must leave Yaw under pilot control")
-        if any(
-            limit is None or limit > 3.0
-            for limit in (
-                rc_mapping_config.roll_command_limit_deg_s,
-                rc_mapping_config.pitch_command_limit_deg_s,
-            )
-        ):
-            raise RuntimeError("flight_active_1s Roll/Pitch limits cannot exceed 3 deg/s")
-        if not bool(safety_cfg.get("require_acro_rate_mode", False)):
-            raise RuntimeError("flight_active_1s requires Acro/Rate mode")
-        if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
-            raise RuntimeError("flight_active_1s requires safety.min_vbat_v >= 20 V")
     if control_output_requested and flight_scope == "flight_noncollision_supervised_v2":
         guidance_cfg = dict(config.get("guidance", {}))
         velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
@@ -2542,8 +2508,7 @@ def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -
         and bool(args.allow_control)
         and active_scope in {
             "prop_rig_active",
-            "flight_active_1s",
-            "flight_active_supervised",
+            "flight_noncollision_supervised_v2",
         }
     ):
         if getattr(args, "detector_source", "") != "rknn_bytetrack":
