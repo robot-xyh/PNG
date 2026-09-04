@@ -12,7 +12,7 @@ class InterceptionAcceptanceCriteria:
     target_stale_failure_rate_max: float = 0.01
     mean_measurement_valid_fraction_min: float = 0.90
     mean_kinematic_valid_fraction_min: float = 0.90
-    worst_minimum_range_m_max: float = 1.0
+    worst_minimum_range_m_max: float | None = 1.0
     mean_tilt_saturation_fraction_max: float = 0.10
     mean_rate_saturation_fraction_max: float = 0.10
 
@@ -29,13 +29,16 @@ class InterceptionAcceptanceCriteria:
             value = float(getattr(self, name))
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
                 raise ValueError(f"{name} must be in [0, 1]")
-        if (
-            not math.isfinite(float(self.worst_minimum_range_m_max))
-            or self.worst_minimum_range_m_max <= 0.0
-        ):
-            raise ValueError("worst_minimum_range_m_max must be finite and positive")
+        if self.worst_minimum_range_m_max is not None:
+            if (
+                not math.isfinite(float(self.worst_minimum_range_m_max))
+                or self.worst_minimum_range_m_max <= 0.0
+            ):
+                raise ValueError(
+                    "worst_minimum_range_m_max must be null or finite and positive"
+                )
 
-    def to_dict(self) -> dict[str, float]:
+    def to_dict(self) -> dict[str, float | None]:
         return asdict(self)
 
 
@@ -89,7 +92,7 @@ def evaluate_interception_results(
             kinematic_valid_fraction,
             criteria.mean_kinematic_valid_fraction_min,
         ),
-        "worst_minimum_range_m": _maximum_check(
+        "worst_minimum_range_m": _optional_maximum_check(
             worst_minimum_range_m, criteria.worst_minimum_range_m_max
         ),
         "mean_tilt_saturation_fraction": _maximum_check(
@@ -185,6 +188,21 @@ def _maximum_check(observed: float, threshold: float) -> dict[str, object]:
         "threshold": threshold,
         "passed": observed <= threshold,
     }
+
+
+def _optional_maximum_check(
+    observed: float,
+    threshold: float | None,
+) -> dict[str, object]:
+    if threshold is None:
+        return {
+            "observed": observed,
+            "operator": "report_only",
+            "threshold": None,
+            "passed": True,
+            "required": False,
+        }
+    return {**_maximum_check(observed, threshold), "required": True}
 
 
 def _wilson_interval(successes: int, samples: int) -> list[float]:

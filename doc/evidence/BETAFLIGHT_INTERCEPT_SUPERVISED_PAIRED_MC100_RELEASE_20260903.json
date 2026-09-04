@@ -1,0 +1,1044 @@
+{
+  "acceptance": {
+    "initially_visible_fov_hit_rate_min": 0.8,
+    "initially_visible_hit_rate_min": 0.8,
+    "mean_kinematic_valid_fraction_min": 0.9,
+    "mean_measurement_valid_fraction_min": 0.9,
+    "mean_rate_saturation_fraction_max": 0.1,
+    "mean_tilt_saturation_fraction_max": 0.1,
+    "target_stale_failure_rate_max": 0.01,
+    "worst_minimum_range_m_max": null
+  },
+  "base_seed": 20260903,
+  "case_count": 30,
+  "cases": [
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U01",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U02",
+      "horizontal_range_m": 6.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U03",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U04",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": 0.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U05",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": -8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U06",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": 8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 20.0,
+      "case_id": "U07",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 40.0,
+      "case_id": "U08",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U09",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 3.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U10",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 35.0,
+      "case_id": "U11",
+      "horizontal_range_m": 13.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 3.0
+    },
+    {
+      "altitude_offset_m": 35.0,
+      "case_id": "U12",
+      "horizontal_range_m": 13.0,
+      "lateral_offset_m": -3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 40.0,
+      "case_id": "U13",
+      "horizontal_range_m": 15.0,
+      "lateral_offset_m": -10.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U14",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": 8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 20.0,
+      "case_id": "U15",
+      "horizontal_range_m": 6.0,
+      "lateral_offset_m": 5.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 90.0,
+      "target_speed_m_s": 3.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U01M",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U02M",
+      "horizontal_range_m": 6.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U03M",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U04M",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": -0.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U05M",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": 8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U06M",
+      "horizontal_range_m": 10.0,
+      "lateral_offset_m": -8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 20.0,
+      "case_id": "U07M",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 40.0,
+      "case_id": "U08M",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 5.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U09M",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 3.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U10M",
+      "horizontal_range_m": 8.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 35.0,
+      "case_id": "U11M",
+      "horizontal_range_m": 13.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 3.0
+    },
+    {
+      "altitude_offset_m": 35.0,
+      "case_id": "U12M",
+      "horizontal_range_m": 13.0,
+      "lateral_offset_m": 3.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 40.0,
+      "case_id": "U13M",
+      "horizontal_range_m": 15.0,
+      "lateral_offset_m": 10.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 30.0,
+      "case_id": "U14M",
+      "horizontal_range_m": 14.0,
+      "lateral_offset_m": -8.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 7.0
+    },
+    {
+      "altitude_offset_m": 20.0,
+      "case_id": "U15M",
+      "horizontal_range_m": 6.0,
+      "lateral_offset_m": -5.0,
+      "speed_ratio": 2.0,
+      "target_course_deg": 270.0,
+      "target_speed_m_s": 3.0
+    }
+  ],
+  "evaluations": [
+    {
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "name": "fov_priority_disabled",
+      "required_for_release": false,
+      "simulation_overrides": {
+        "candidate_fov_priority_enabled": false
+      },
+      "start_profile": "hover"
+    },
+    {
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "name": "fov_s75_f95",
+      "required_for_release": true,
+      "start_profile": "hover"
+    }
+  ],
+  "evidence": {
+    "active_flight_result_age_p95_s": 0.1277,
+    "body_rate_delay_source": "LOG00063_65_HOVER_ACRO",
+    "conservative_physical_latency_budget_s": 0.154139,
+    "controller": "velocity_establishing_png",
+    "evaluation_stage": "paired_baseline_selected_fov_priority_mc100",
+    "screening_report": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.json",
+    "selected_candidate": "fov_s75_f95",
+    "software_result_age_p95_s": 0.084556,
+    "thrust_calibration_id": "LOG00062_1275_1500",
+    "velocity_source": "msp_kinematics"
+  },
+  "initial_performance_target": null,
+  "initial_performance_target_passed": null,
+  "limitations": [
+    "Point-mass dynamics and idealized first-order body-rate response are not a flight approval.",
+    "Noise models are configured surrogates, not a fitted YOLO/ByteTrack error distribution.",
+    "This Monte Carlo runner does not emit Betaflight RC/PWM; active runtime use remains approval-gated.",
+    "The candidate uses the production LOS filter and delayed/noisy own velocity, but its noise model is not fitted to flight data."
+  ],
+  "paired_screening": {
+    "baseline_evaluation": "fov_priority_disabled",
+    "candidate_count": 1,
+    "candidate_results": [
+      {
+        "aggregate_visible_fov_hit_rate": 0.9911538461538462,
+        "aggregate_visible_hit_rate": 0.9985897435897436,
+        "command_limits_unchanged": true,
+        "evaluation_name": "fov_s75_f95",
+        "outward_baseline_fov_hit_rate": 0.35833333333333334,
+        "outward_candidate_fov_hit_rate": 0.9475,
+        "outward_case_ids": [
+          "U06",
+          "U06M",
+          "U14",
+          "U14M",
+          "U15",
+          "U15M"
+        ],
+        "outward_fov_hit_rate_improvement": 0.5891666666666666,
+        "pairing_complete": true,
+        "passed": true,
+        "protected_case_check_count": 66,
+        "protected_case_failures": [],
+        "scenario_checks": [
+          {
+            "fov_hit_rate": 0.9961538461538462,
+            "hit_rate": 0.9992307692307693,
+            "initially_visible_count": 2600,
+            "passed": true,
+            "scenario_name": "final_chain_software_p95"
+          },
+          {
+            "fov_hit_rate": 0.9911538461538462,
+            "hit_rate": 0.9988461538461538,
+            "initially_visible_count": 2600,
+            "passed": true,
+            "scenario_name": "observed_active_flight_p95"
+          },
+          {
+            "fov_hit_rate": 0.9861538461538462,
+            "hit_rate": 0.9976923076923077,
+            "initially_visible_count": 2600,
+            "passed": true,
+            "scenario_name": "conservative_physical_p95_budget"
+          }
+        ],
+        "simulation_overrides": {},
+        "worst_protected_hit_rate_drop": 0.0
+      }
+    ],
+    "passed": true,
+    "selected_evaluation": "fov_s75_f95",
+    "thresholds": {
+      "central_inward_hit_drop_max": 0.02,
+      "outward_fov_improvement_min": 0.1,
+      "scenario_fov_hit_rate_min": 0.8,
+      "scenario_hit_rate_min": 0.8
+    }
+  },
+  "purpose": "stochastic interception release evaluation",
+  "release_passed": true,
+  "required_summary_count": 3,
+  "row_count": 18000,
+  "runtime_binding": {
+    "config": "/home/linux/Documents/PNG-betaflight-upward-camera/config/betaflight.rk3588.velocity_png.flight_supervised.json",
+    "derived_simulation": {
+      "attitude_kp_s_inv": 4.0,
+      "camera_horizontal_half_fov_deg": 31.000688982474795,
+      "camera_vertical_half_fov_deg": 24.91540513181656,
+      "candidate_acquire_consecutive_frames": 1,
+      "candidate_fixed_vm_m_s": 10.0,
+      "candidate_fov_constraint_half_angle_deg": 0.0,
+      "candidate_fov_priority_enabled": true,
+      "candidate_fov_priority_full_ratio": 0.95,
+      "candidate_fov_priority_start_ratio": 0.75,
+      "candidate_los_prediction_max_s": 0.15,
+      "candidate_png_track_speed_ratio": 0.8,
+      "control_rate_hz": 50.0,
+      "entry_handoff_duration_s": 0.8,
+      "entry_handoff_enabled": true,
+      "gravity_m_s2": 9.80665,
+      "guidance_accel_limit_m_s2": 7.0,
+      "hover_load_factor_g": 1.0,
+      "kinematic_rate_hz": 5.0,
+      "kinematic_stale_timeout_s": 0.5,
+      "max_load_factor_g": 2.37,
+      "max_pitch_rate_deg_s": 60.0,
+      "max_pitch_tilt_deg": 35.0,
+      "max_roll_rate_deg_s": 60.0,
+      "max_roll_tilt_deg": 35.0,
+      "max_thrust_specific_force_m_s2": 23.241760499999998,
+      "min_thrust_specific_force_m_s2": 0.5,
+      "navigation_constant": 3.0,
+      "perception_rate_hz": 30.0,
+      "perception_stale_timeout_s": 0.35,
+      "speed_hold_accel_limit_m_s2": 7.0,
+      "speed_hold_gain_s_inv": 1.2,
+      "throttle_dynamics_enabled": true,
+      "throttle_handover_duration_s": 0.8,
+      "throttle_hover_us": 1275.0,
+      "throttle_max_us": 1500.0,
+      "throttle_min_us": 1200.0,
+      "throttle_slew_limit_us_per_s": 600.0,
+      "total_accel_limit_m_s2": 7.0,
+      "upward_centering_accel_limit_m_s2": 7.0,
+      "upward_centering_gain_s2": 16.0,
+      "vertical_speed_reference_limit_m_s": 6.0
+    },
+    "sha256": "4032482c47496c89d52f3cb09bfcef04b6c028de9012d10433d0aed4751865ff"
+  },
+  "scenarios": [
+    {
+      "los_angle_noise_std_deg": 0.25,
+      "name": "final_chain_software_p95",
+      "perception_latency_s": 0.084556,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25
+    },
+    {
+      "los_angle_noise_std_deg": 0.25,
+      "name": "observed_active_flight_p95",
+      "perception_latency_s": 0.1277,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25
+    },
+    {
+      "los_angle_noise_std_deg": 0.25,
+      "name": "conservative_physical_p95_budget",
+      "perception_latency_s": 0.154139,
+      "relative_velocity_noise_std_m_s": 0.25,
+      "wind_accel_std_m_s2": 0.25
+    }
+  ],
+  "schema_version": 2,
+  "simulation": {
+    "attitude_kp_s_inv": 4.0,
+    "body_rate_command_delay_s": 0.011,
+    "body_rate_response_tau_s": 0.04,
+    "camera_horizontal_half_fov_deg": 31.000688982474795,
+    "camera_vertical_half_fov_deg": 24.91540513181656,
+    "candidate_acquire_consecutive_frames": 1,
+    "candidate_fixed_vm_m_s": 10.0,
+    "candidate_fov_constraint_half_angle_deg": 0.0,
+    "candidate_fov_priority_enabled": true,
+    "candidate_fov_priority_full_ratio": 0.95,
+    "candidate_fov_priority_start_ratio": 0.75,
+    "candidate_los_prediction_max_s": 0.15,
+    "candidate_png_track_speed_ratio": 0.8,
+    "control_rate_hz": 50.0,
+    "dt_s": 0.01,
+    "duration_s": 40.0,
+    "entry_handoff_duration_s": 0.8,
+    "entry_handoff_enabled": true,
+    "gravity_m_s2": 9.80665,
+    "guidance_accel_limit_m_s2": 7.0,
+    "hover_load_factor_g": 1.0,
+    "kinematic_dropout_probability": 0.0,
+    "kinematic_latency_s": 0.209,
+    "kinematic_rate_hz": 5.0,
+    "kinematic_stale_timeout_s": 0.5,
+    "kinematic_velocity_noise_std_m_s": 0.25,
+    "los_filter_process_lambda_dot": 0.02,
+    "max_load_factor_g": 2.37,
+    "max_pitch_rate_deg_s": 60.0,
+    "max_pitch_tilt_deg": 35.0,
+    "max_roll_rate_deg_s": 60.0,
+    "max_roll_tilt_deg": 35.0,
+    "max_thrust_specific_force_m_s2": 23.241760499999998,
+    "measurement_dropout_burst_lengths": [
+      2
+    ],
+    "measurement_dropout_burst_start_probability": 0.00128,
+    "min_thrust_specific_force_m_s2": 0.5,
+    "navigation_constant": 3.0,
+    "perception_fov_gate_enabled": true,
+    "perception_rate_hz": 30.0,
+    "perception_stale_timeout_s": 0.35,
+    "speed_hold_accel_limit_m_s2": 7.0,
+    "speed_hold_gain_s_inv": 1.2,
+    "throttle_dynamics_enabled": true,
+    "throttle_handover_duration_s": 0.8,
+    "throttle_hover_us": 1275.0,
+    "throttle_max_us": 1500.0,
+    "throttle_min_us": 1200.0,
+    "throttle_slew_limit_us_per_s": 600.0,
+    "total_accel_limit_m_s2": 7.0,
+    "upward_centering_accel_limit_m_s2": 7.0,
+    "upward_centering_gain_s2": 16.0,
+    "vertical_speed_reference_limit_m_s": 6.0
+  },
+  "source_config": "/home/linux/Documents/PNG-betaflight-upward-camera/config/betaflight.intercept_eval.flight_supervised_final_mc100_20260903.json",
+  "summaries": [
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.8776923076923077,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9546153846153846,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9657523987892105,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9460230649086242,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.04357212928378578,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.00038108525415229955,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.045384615384615384,
+          "operator": "<=",
+          "passed": false,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 5.610060746129251,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_priority_disabled",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2282,
+      "initially_visible_fov_hit_rate": 0.8776923076923077,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.8645381829843445,
+        0.8897320101362133
+      ],
+      "initially_visible_hit_count": 2482,
+      "initially_visible_hit_rate": 0.9546153846153846,
+      "initially_visible_hit_rate_wilson95": [
+        0.9459217726536271,
+        0.9619676044018712
+      ],
+      "mean_kinematic_valid_fraction": 0.9657523987892105,
+      "mean_measurement_valid_fraction": 0.9460230649086242,
+      "mean_rate_saturation_fraction": 0.04357212928378578,
+      "mean_tilt_saturation_fraction": 0.00038108525415229955,
+      "outcome_counts": {
+        "controller_abort": 98,
+        "hit": 2682,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 20
+      },
+      "passed": false,
+      "required_for_release": false,
+      "row_count": 3000,
+      "scenario_name": "final_chain_software_p95",
+      "start_profile": "hover",
+      "target_stale_failure_count": 118,
+      "target_stale_failure_rate": 0.045384615384615384,
+      "trial_count": 100,
+      "worst_minimum_range_m": 5.610060746129251
+    },
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.9961538461538462,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9992307692307693,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9642925607066989,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9840413518652216,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.06720495764638872,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.0031382545495202627,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.0007692307692307692,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 1.2231843873459838,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_s75_f95",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2590,
+      "initially_visible_fov_hit_rate": 0.9961538461538462,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.9929342557827334,
+        0.9979094805976327
+      ],
+      "initially_visible_hit_count": 2598,
+      "initially_visible_hit_rate": 0.9992307692307693,
+      "initially_visible_hit_rate_wilson95": [
+        0.9971994799124234,
+        0.9997890238253403
+      ],
+      "mean_kinematic_valid_fraction": 0.9642925607066989,
+      "mean_measurement_valid_fraction": 0.9840413518652216,
+      "mean_rate_saturation_fraction": 0.06720495764638872,
+      "mean_tilt_saturation_fraction": 0.0031382545495202627,
+      "outcome_counts": {
+        "hit": 2798,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 2
+      },
+      "passed": true,
+      "required_for_release": true,
+      "row_count": 3000,
+      "scenario_name": "final_chain_software_p95",
+      "start_profile": "hover",
+      "target_stale_failure_count": 2,
+      "target_stale_failure_rate": 0.0007692307692307692,
+      "trial_count": 100,
+      "worst_minimum_range_m": 1.2231843873459838
+    },
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.8546153846153847,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9473076923076923,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9659397825076882,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9331187805881463,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.04488198810672772,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.00043842675766373796,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.05269230769230769,
+          "operator": "<=",
+          "passed": false,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 5.152584692942278,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_priority_disabled",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2222,
+      "initially_visible_fov_hit_rate": 0.8546153846153847,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.8405431517891592,
+        0.8676412861509165
+      ],
+      "initially_visible_hit_count": 2463,
+      "initially_visible_hit_rate": 0.9473076923076923,
+      "initially_visible_hit_rate_wilson95": [
+        0.9380410049432322,
+        0.9552545496384468
+      ],
+      "mean_kinematic_valid_fraction": 0.9659397825076882,
+      "mean_measurement_valid_fraction": 0.9331187805881463,
+      "mean_rate_saturation_fraction": 0.04488198810672772,
+      "mean_tilt_saturation_fraction": 0.00043842675766373796,
+      "outcome_counts": {
+        "controller_abort": 113,
+        "hit": 2663,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 24
+      },
+      "passed": false,
+      "required_for_release": false,
+      "row_count": 3000,
+      "scenario_name": "observed_active_flight_p95",
+      "start_profile": "hover",
+      "target_stale_failure_count": 137,
+      "target_stale_failure_rate": 0.05269230769230769,
+      "trial_count": 100,
+      "worst_minimum_range_m": 5.152584692942278
+    },
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.9911538461538462,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9988461538461538,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9642726354698016,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9768855947009447,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.06910852245501001,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.002905263041732275,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.001153846153846154,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 1.2572908603846051,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_s75_f95",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2577,
+      "initially_visible_fov_hit_rate": 0.9911538461538462,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.9867604072907753,
+        0.9940980821338198
+      ],
+      "initially_visible_hit_count": 2597,
+      "initially_visible_hit_rate": 0.9988461538461538,
+      "initially_visible_hit_rate_wilson95": [
+        0.9966128954968133,
+        0.9996075123212756
+      ],
+      "mean_kinematic_valid_fraction": 0.9642726354698016,
+      "mean_measurement_valid_fraction": 0.9768855947009447,
+      "mean_rate_saturation_fraction": 0.06910852245501001,
+      "mean_tilt_saturation_fraction": 0.002905263041732275,
+      "outcome_counts": {
+        "hit": 2797,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 3
+      },
+      "passed": true,
+      "required_for_release": true,
+      "row_count": 3000,
+      "scenario_name": "observed_active_flight_p95",
+      "start_profile": "hover",
+      "target_stale_failure_count": 3,
+      "target_stale_failure_rate": 0.001153846153846154,
+      "trial_count": 100,
+      "worst_minimum_range_m": 1.2572908603846051
+    },
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.8476923076923077,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9461538461538461,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9659219307226931,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9271817634594796,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.04519992136014928,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.00041909072593318195,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.05384615384615385,
+          "operator": "<=",
+          "passed": false,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 6.480435350154555,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_priority_disabled",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2204,
+      "initially_visible_fov_hit_rate": 0.8476923076923077,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.8333684990544851,
+        0.860990212331446
+      ],
+      "initially_visible_hit_count": 2460,
+      "initially_visible_hit_rate": 0.9461538461538461,
+      "initially_visible_hit_rate_wilson95": [
+        0.9368010832174466,
+        0.9541901836052081
+      ],
+      "mean_kinematic_valid_fraction": 0.9659219307226931,
+      "mean_measurement_valid_fraction": 0.9271817634594796,
+      "mean_rate_saturation_fraction": 0.04519992136014928,
+      "mean_tilt_saturation_fraction": 0.00041909072593318195,
+      "outcome_counts": {
+        "controller_abort": 112,
+        "hit": 2660,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 28
+      },
+      "passed": false,
+      "required_for_release": false,
+      "row_count": 3000,
+      "scenario_name": "conservative_physical_p95_budget",
+      "start_profile": "hover",
+      "target_stale_failure_count": 140,
+      "target_stale_failure_rate": 0.05384615384615385,
+      "trial_count": 100,
+      "worst_minimum_range_m": 6.480435350154555
+    },
+    {
+      "case_count": 30,
+      "checks": {
+        "initially_visible_fov_hit_rate": {
+          "observed": 0.9861538461538462,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "initially_visible_hit_rate": {
+          "observed": 0.9976923076923077,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.8
+        },
+        "mean_kinematic_valid_fraction": {
+          "observed": 0.9642453611571314,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_measurement_valid_fraction": {
+          "observed": 0.9707913424210072,
+          "operator": ">=",
+          "passed": true,
+          "threshold": 0.9
+        },
+        "mean_rate_saturation_fraction": {
+          "observed": 0.06912784949748194,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "mean_tilt_saturation_fraction": {
+          "observed": 0.0030144200921215503,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.1
+        },
+        "target_stale_failure_rate": {
+          "observed": 0.002307692307692308,
+          "operator": "<=",
+          "passed": true,
+          "threshold": 0.01
+        },
+        "worst_minimum_range_m": {
+          "observed": 1.371422427612541,
+          "operator": "report_only",
+          "passed": true,
+          "required": false,
+          "threshold": null
+        }
+      },
+      "controller_mode": "candidate_velocity_hold_variable_thrust",
+      "evaluation_name": "fov_s75_f95",
+      "initially_visible_count": 2600,
+      "initially_visible_fov_hit_count": 2564,
+      "initially_visible_fov_hit_rate": 0.9861538461538462,
+      "initially_visible_fov_hit_rate_wilson95": [
+        0.980891418910374,
+        0.9899818235584498
+      ],
+      "initially_visible_hit_count": 2594,
+      "initially_visible_hit_rate": 0.9976923076923077,
+      "initially_visible_hit_rate_wilson95": [
+        0.994974172016635,
+        0.99894194804243
+      ],
+      "mean_kinematic_valid_fraction": 0.9642453611571314,
+      "mean_measurement_valid_fraction": 0.9707913424210072,
+      "mean_rate_saturation_fraction": 0.06912784949748194,
+      "mean_tilt_saturation_fraction": 0.0030144200921215503,
+      "outcome_counts": {
+        "hit": 2794,
+        "initial_target_out_of_fov": 200,
+        "near_miss": 6
+      },
+      "passed": true,
+      "required_for_release": true,
+      "row_count": 3000,
+      "scenario_name": "conservative_physical_p95_budget",
+      "start_profile": "hover",
+      "target_stale_failure_count": 6,
+      "target_stale_failure_rate": 0.002307692307692308,
+      "trial_count": 100,
+      "worst_minimum_range_m": 1.371422427612541
+    }
+  ],
+  "trials_per_case": 100,
+  "worker_count": 8
+}

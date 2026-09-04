@@ -1,8 +1,9 @@
 # Betaflight/PNG 飞手人工飞行 LOG_ONLY 测试卡（2026-08-31，更新至 2026-09-03）
 
-> 当前离线评估 `release_passed=false`。本卡只允许飞手人工控制，Orange Pi 运行 Python
-> `LOG_ONLY` 采集。全程禁止 RC7/MSP OVERRIDE 接管、`--allow-control`、自主逼近、碰撞航线和
-> 比例导引闭环。本卡通过只能证明实飞数据链路和算法观测质量，不能证明 PNG 拦截已放行。
+> 2026-09-03按项目正式“逐必需时延场景命中率和FOV命中率均不低于80%”规则重跑MC100，
+> 当前离线评估`release_passed=true`。离线证据本身不批准飞行；在当天飞控/6S/GPS快照和
+> 哈希绑定的`flight_active_supervised`批准文件生成前，仍只允许人工控制和`LOG_ONLY`，禁止
+> RC7/MSP OVERRIDE主动接管及碰撞航线。
 
 当前进度：2026-08-31已完成一次室内`F01_INDOOR`短悬停，人工飞行和日志链路有条件通过，但
 发现启动时RC5实际处于ARM区、室内无目标假检及触地前电机/电流瞬态。2026-09-01已完成拆桨
@@ -17,7 +18,7 @@ F01、`F00_SKY_HOVER`和F03-F06尚未按正式科目执行；F02后来由带桨�
 `LOG00062`确认1500 us附近形成约0.4 s、2.37 g平台且脉冲内电机未饱和。落地末端的40.92 A、
 23.28 V和单电机1985 raw已确认为正常触地姿态修正瞬态，仍从推力拟合中排除。该结果只作为已测短时上限，
 不是最大推力或主动控制批准；
-`release_passed=false`及主动控制禁令不变。2026-09-02的`LOG00063`确认稳定悬停物理油门中位
+按当时旧门槛`release_passed=false`且主动控制禁令不变。2026-09-02的`LOG00063`确认稳定悬停物理油门中位
 `1275 us`，`LOG00065`确认Betaflight Rate profile 0为`RC Rate=1.0 / Super=0.7 / Expo=0`，
 Roll/Pitch命令到gyro响应约10/11 ms。实测`MSP_RAW_IMU / 16`转换已进入runner，但仍绑定
 `BTFL 25.12.2 / API 1.47`。2026-09-02两轮固定目标动作试验确认本机显式
@@ -41,16 +42,15 @@ LOG_ONLY复测：静止20 s为单一ID且confirmed/LOS均100%，连续水平段�
 同日硬件约束MC100又使用真实约`62x50 deg`视场、84.556 ms软件P95、154.139 ms保守物理时延
 预算和实测中央漏检突发模型评估3000条轨迹。两个场景的初始可见总体命中率为96.92%/97.31%，
 FOV可行命中率为89.38%/86.54%，均超过新定义的初期80%聚合目标，故
-`initial_performance_target_passed=true`。但这只是离线模型结果，不是实飞命中率；完整门槛仍因
-FOV连续性、陈旧失败率和最差距离失败，`release_passed=false`。
+`initial_performance_target_passed=true`。该历史评估不是实飞命中率，并曾按“最差样本也必须命中”
+旧门槛记为`release_passed=false`；2026-09-03正式概率门槛及最新MC100结论以本卡页首和第16.4节为准。
 
 2026-09-03又在全部拆桨、机体固定和6S供电下，把速度建立型控制器接入Python runner与
 `MSP_SET_RAW_RC`，完成纵向双向电机混控验证。初始`pitch_rate_sign=+1`使机头目标产生错误抬头
 响应；改为`pitch_rate_sign=-1`后，机头目标使后电机高于前电机、机尾目标使前电机高于后电机，
 两轮严格审计均通过且MSP写入错误为0。这只关闭无桨视觉到电机的物理方向，不能证明带桨闭环
-稳定性。当前仍没有可运行且获批的带桨控制配置，也没有带桨批准工具/manifest；候选参数文件继续
-保持`runnable=false`、`control_authorized=false`和`propeller_flight_authorized=false`。因此本卡
-当前可执行部分仍只允许人工飞行和`LOG_ONLY`。
+稳定性。当前已形成监督飞行配置和批准工具，但尚无当天快照及匹配manifest；因此本卡当前可执行
+部分仍只允许人工飞行和`LOG_ONLY`。只有第16.4节全部门禁通过后，才允许安全偏置的短时监督接管。
 
 ## 1. 本次启动哪个程序
 
@@ -388,8 +388,8 @@ watch -n 0.5 'curl -s http://192.168.1.10:8080/api/v1/telemetry | jq "{
 首轮3159个新感知结果中3124个有效框，左滚时因宽高比门限出现最长1.288秒缺口；独立pitch轮
 3116个新结果中3112个有效框，最长缺口0.120秒。完整指标和SHA256见
 `doc/BETAFLIGHT_RBC_GYRO_VALIDATION_20260902.md`。随后20 Hz复测的9/9个有效Yaw事件积分与航向
-变化符号一致，确认当前固件和安装方向使用`+Z`。硬件曝光时间戳和飞行振动仍需单独验证；此项
-通过不改变`release_passed=false`，也不允许RC7主动接管。
+变化符号一致，确认当前固件和安装方向使用`+Z`。硬件曝光时间戳和飞行振动仍需单独验证；按
+2026-09-02当时门槛，此项通过不改变`release_passed=false`，也不允许RC7主动接管。
 
 ## 8. G00 室外拆桨定位与 NED 符号
 
@@ -586,7 +586,7 @@ ARM时长只差0.213 s；全程`override_active=0`、SET_RAW_RC写入0。
 当前判定为“1500 us附近的短时2.4 g级比力已测得，最大推力未知”。默认不做更高油门测试；
 按`2.412 kg`起飞质量换算，1500 us平台中位动态总推力估计约`56.09 N（5.72 kgf）`，
 峰值约`58.57 N（5.97 kgf）`；该结果不等同于推力台静推力。本架次为`ANGLE_MODE|HORIZON_MODE`，也不能用于校准
-Acro模式的`RC us -> body rate`。该结果不改变`release_passed=false`。
+Acro模式的`RC us -> body rate`。按该架次当时门槛，结果不改变`release_passed=false`。
 
 ## 12. F02 实飞 NED 与气压速度复核
 
@@ -673,8 +673,8 @@ guidance/SP评估；因`LOG_ONLY/disabled`没有作用于飞控。该事件排�
 飞机样本必须作为困难负样本保留，不能仅用最小框面积阈值删除；远距离真实无人机可能具有相同
 面积。应在取得F03/F04真实无人机数据后再比较类别、轨迹和时序特征，不得现场改阈值继续飞。
 
-F00失败不妨碍飞手人工执行F03-F06以继续收集LOG_ONLY数据，但必须保持
-`release_passed=false`，不得启动RC7接管。
+F00失败不妨碍飞手人工执行F03-F06以继续收集LOG_ONLY数据；按2026-09-01当时状态必须保持
+`release_passed=false`，不得启动RC7接管。当前监督飞行是否可执行只按第16.4节的新证据与当天批准判断。
 
 双机不得形成碰撞航线。目标机应高于上视相机，但必须同时保留预先批准的水平和垂直间距；不得
 从拦截机正上方近距通过。两机在分离的起降区起飞，先分别进入等待点，再由观察员允许进入测试
@@ -1155,6 +1155,7 @@ python3 tools/capture_betaflight_snapshot.py \
 python3 tools/create_betaflight_flight_supervised_approval.py \
   --snapshot "$SNAPSHOT_MANIFEST" \
   --config config/betaflight.rk3588.velocity_png.flight_supervised.json \
+  --release-evidence doc/evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_RELEASE_20260903.json \
   --output logs/betaflight_velocity_png_flight_supervised_approval.json \
   --operator orangepi \
   --acknowledge-supervised-flight

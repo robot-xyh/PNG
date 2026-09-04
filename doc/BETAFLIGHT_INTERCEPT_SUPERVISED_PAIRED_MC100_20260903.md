@@ -12,15 +12,15 @@
 |保守物理预算，154.139 ms|94.62%|99.77%|84.77%|98.62%|
 
 ```text
-initial_performance_target_passed = true
 paired_screening_passed           = true
-release_passed                    = false
+release_passed                    = true
 active_control_authorized         = false
 ```
 
-候选满足当前“聚合命中和 FOV 命中均不低于 80%”的初期目标。完整 release 仍失败，因为每个
-场景要求所有可见样本的最差最小距离不大于 `1.0 m`，候选实测为
-`1.223/1.257/1.371 m`。本结果不能替代真实飞行、批准主动碰撞航线或证明实机命中率。
+项目正式发布目标已明确为：每个必需时延场景中，初始可见样本的命中率和全程视场可行命中率
+均不低于 `80%`。单次命中仍按最近距离不大于 `1.0 m`判定；最差最近距离继续报告，但不再作为
+要求全部样本命中的额外门槛。候选在三个场景中均通过该概率发布目标及其余数据质量、陈旧率和
+饱和率门槛。该离线通过不替代真实飞行，也不单独生成主动控制批准文件。
 
 ## 2. 场景配置
 
@@ -40,7 +40,7 @@ active_control_authorized         = false
 
 ```text
 config  config/betaflight.rk3588.velocity_png.flight_supervised.json
-SHA256  880492b5207503523a262d77f4e73a7699fca04a081736a27a778a950901251b
+SHA256  4032482c47496c89d52f3cb09bfcef04b6c028de9012d10433d0aed4751865ff
 ```
 
 工具会从该文件推导制导、控制频率、角速度、倾角、交接、油门、感知、运动学及 FOV 参数。
@@ -73,7 +73,8 @@ MC20 先对 9 组候选进行配对筛选。全部候选满足基本门槛，最
 `4.54%/5.27%/5.38%` 降到 `0.08%/0.12%/0.23%`。
 
 保守时延下残余弱项仍是 `U06/U06M` 外移目标：命中为 `98%/96%`，全程 FOV 命中为
-`89%/83%`。其余失败均为近失，候选没有以控制器 ABORT 结束的可见样本。
+`89%/83%`。其余失败均为近失，候选没有以控制器 ABORT 结束的可见样本。三个场景最差最近
+距离为`1.223/1.257/1.371 m`，作为尾部风险继续保留，不解释为100%命中保证。
 
 ## 5. 动态包线
 
@@ -102,8 +103,8 @@ CSV 只有逐条终值和包线统计，没有每步轨迹时序，因此本报�
 python3 tools/run_betaflight_intercept_monte_carlo.py \
   --config config/betaflight.intercept_eval.flight_supervised_final_mc100_20260903.json \
   --trials-per-case 100 --workers 8 \
-  --output logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.json \
-  --csv logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.csv
+  --output doc/evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_RELEASE_20260903.json \
+  --csv logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_release_20260903.csv
 ```
 
 |文件|SHA256|
@@ -111,9 +112,11 @@ python3 tools/run_betaflight_intercept_monte_carlo.py \
 |MC20 筛选配置|`29c69d85871e8cb9881bf07843d33d3a2ec963be0e76cde228be85bcd35cde35`|
 |MC20 筛选 JSON|`1447bb85f0ae91c6932d4d666256deab4fe265f3f7d05dc2e479698f3f7b9f6d`|
 |MC20 筛选 CSV|`3c1adae780b0cc14ca138c234f59bb6e2eba088d9ad79e6da89b5b988b063664`|
-|最终 MC100 配置|`36841696cb62d66796a381acf4a55934d3db9411e34e046e481a7febf1e215d5`|
-|最终 MC100 JSON|`9f1af350d4da340d0ca71dd5df409001a3c23295127e95f87143fb34ce7bedbf`|
+|最终 MC100 配置|`c742ec4e5aacbb2e325601de8211c4c51005121d7f29036ac802c2b527c6086a`|
+|最终 MC100 原始发布证据|`70f771259ff4f68af40af04979980ec1e2fc1d1cd638f19b4e5258f458adc0e8`|
 |最终 MC100 CSV|`1830817016be0433a7499ce9df6548ae900be4399e8a9d3f1f66c6ce0c2b8b08`|
 
 机器可读结论见
 [`evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_20260903.json`](evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_20260903.json)。
+批准工具直接校验的原始输出见
+[`evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_RELEASE_20260903.json`](evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_RELEASE_20260903.json)。

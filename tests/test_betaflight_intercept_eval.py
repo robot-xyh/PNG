@@ -356,6 +356,29 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
             candidate_stale["checks"]["target_stale_failure_rate"]["passed"]
         )
 
+    def test_probabilistic_release_can_report_worst_range_without_gating(self):
+        criteria = InterceptionAcceptanceCriteria(
+            initially_visible_hit_rate_min=0.8,
+            initially_visible_fov_hit_rate_min=0.8,
+            worst_minimum_range_m_max=None,
+        )
+        rows = [self._row(case_id=f"M{index:02d}") for index in range(1, 6)]
+        rows[-1]["hit"] = False
+        rows[-1]["fov_feasible_hit"] = False
+        rows[-1]["minimum_range_m"] = 1.4
+        rows[-1]["outcome_reason"] = "miss"
+
+        result = evaluate_interception_results(rows, criteria)
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["initially_visible_hit_rate"], 0.8)
+        self.assertEqual(result["initially_visible_fov_hit_rate"], 0.8)
+        self.assertEqual(
+            result["checks"]["worst_minimum_range_m"]["operator"],
+            "report_only",
+        )
+        self.assertFalse(result["checks"]["worst_minimum_range_m"]["required"])
+
     @staticmethod
     def _row(*, case_id):
         return {

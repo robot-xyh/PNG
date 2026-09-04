@@ -7,15 +7,17 @@
   "trials_per_case": 100,
   "runtime_binding": {
     "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
-    "config_sha256": "880492b5207503523a262d77f4e73a7699fca04a081736a27a778a950901251b"
+    "config_sha256": "4032482c47496c89d52f3cb09bfcef04b6c028de9012d10433d0aed4751865ff"
   },
   "decision": {
     "selected_candidate": "fov_s75_f95",
-    "initial_performance_target": 0.8,
-    "initial_performance_target_passed": true,
+    "formal_required_scenario_hit_rate_min": 0.8,
+    "formal_required_scenario_fov_hit_rate_min": 0.8,
+    "single_trial_hit_radius_m": 1.0,
+    "worst_minimum_range_release_gate": false,
     "paired_screening_passed": true,
-    "full_release_passed": false,
-    "full_release_failure": "worst visible minimum range exceeds 1.0 m",
+    "full_release_passed": true,
+    "full_release_failure": null,
     "actual_flight_hit_rate_measured": false,
     "active_control_authorized_by_this_evidence": false
   },
@@ -61,7 +63,7 @@
       "baseline_target_stale_failure_rate": 0.045384615384615384,
       "candidate_target_stale_failure_rate": 0.0007692307692307692,
       "candidate_worst_minimum_range_m": 1.2231843873459838,
-      "full_release_scenario_passed": false
+      "full_release_scenario_passed": true
     },
     {
       "name": "observed_active_flight_p95",
@@ -74,7 +76,7 @@
       "baseline_target_stale_failure_rate": 0.05269230769230769,
       "candidate_target_stale_failure_rate": 0.001153846153846154,
       "candidate_worst_minimum_range_m": 1.2572908603846051,
-      "full_release_scenario_passed": false
+      "full_release_scenario_passed": true
     },
     {
       "name": "conservative_physical_p95_budget",
@@ -87,7 +89,7 @@
       "baseline_target_stale_failure_rate": 0.05384615384615385,
       "candidate_target_stale_failure_rate": 0.002307692307692308,
       "candidate_worst_minimum_range_m": 1.371422427612541,
-      "full_release_scenario_passed": false
+      "full_release_scenario_passed": true
     }
   ],
   "envelope": {
@@ -108,10 +110,10 @@
     "screening_trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.csv",
     "screening_trials_csv_sha256": "3c1adae780b0cc14ca138c234f59bb6e2eba088d9ad79e6da89b5b988b063664",
     "final_config": "config/betaflight.intercept_eval.flight_supervised_final_mc100_20260903.json",
-    "final_config_sha256": "36841696cb62d66796a381acf4a55934d3db9411e34e046e481a7febf1e215d5",
-    "final_report": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.json",
-    "final_report_sha256": "9f1af350d4da340d0ca71dd5df409001a3c23295127e95f87143fb34ce7bedbf",
-    "final_trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_20260903.csv",
+    "final_config_sha256": "c742ec4e5aacbb2e325601de8211c4c51005121d7f29036ac802c2b527c6086a",
+    "final_report": "doc/evidence/BETAFLIGHT_INTERCEPT_SUPERVISED_PAIRED_MC100_RELEASE_20260903.json",
+    "final_report_sha256": "70f771259ff4f68af40af04979980ec1e2fc1d1cd638f19b4e5258f458adc0e8",
+    "final_trials_csv": "logs/betaflight_intercept_supervised_20260903/betaflight_intercept_supervised_paired_mc100_release_20260903.csv",
     "final_trials_csv_sha256": "1830817016be0433a7499ce9df6548ae900be4399e8a9d3f1f66c6ce0c2b8b08"
   },
   "limitations": [

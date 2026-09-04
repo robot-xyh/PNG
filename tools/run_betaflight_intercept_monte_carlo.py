@@ -121,7 +121,7 @@ def main() -> None:
         "limitations": [
             "Point-mass dynamics and idealized first-order body-rate response are not a flight approval.",
             "Noise models are configured surrogates, not a fitted YOLO/ByteTrack error distribution.",
-            "candidate_velocity_hold_variable_thrust is offline-only and never emits Betaflight RC/PWM.",
+            "This Monte Carlo runner does not emit Betaflight RC/PWM; active runtime use remains approval-gated.",
             "The candidate uses the production LOS filter and delayed/noisy own velocity, but its noise model is not fitted to flight data.",
         ],
         "source_config": str(Path(args.config).expanduser().resolve()),

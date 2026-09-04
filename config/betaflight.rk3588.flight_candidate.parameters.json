@@ -4,7 +4,9 @@
     "runnable": false,
     "control_authorized": false,
     "propeller_flight_authorized": false,
-    "reason": "The 80% initial offline hardware-model performance target passed, but the full intercept release criteria failed and the evaluated controller is not connected to the production runner or MSP output. This file is not a runner config or approval manifest."
+    "superseded": true,
+    "superseded_by": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
+    "reason": "Historical parameter worksheet retained for traceability. It is not a runner config or approval manifest; current release state is defined by the supervised runtime config and its hash-bound MC100 evidence."
   },
   "evidence": {
     "vision_archive": "logs/deployment_archives/fixed_vm_online_20260829_104631.tar.gz",
