@@ -675,6 +675,29 @@ def telemetry_payload_from_log_row(
                 ),
                 "raw_thrust": _number(row.get("command_thrust_raw")),
                 "limited": _boolean(row.get("command_thrust_limited")),
+                "target_throttle_us": _number(
+                    row.get("command_throttle_target_us")
+                ),
+                "voltage_v": _number(row.get("command_thrust_model_voltage_v")),
+                "model_status": {
+                    "configured": _boolean(row.get("thrust_model_configured")),
+                    "ready": _boolean(row.get("thrust_model_ready")),
+                    "reason": _text(row.get("thrust_model_reason")),
+                    "calibration_id": _text(
+                        row.get("thrust_model_calibration_id")
+                    ),
+                    "sha256": _text(row.get("thrust_model_sha256")),
+                    "voltage_coverage_v": [
+                        _number(row.get("thrust_model_voltage_min_v")),
+                        _number(row.get("thrust_model_voltage_max_v")),
+                    ],
+                    "current_voltage_v": _number(
+                        row.get("thrust_model_voltage_v")
+                    ),
+                    "voltage_covered": _boolean(
+                        row.get("thrust_model_voltage_covered")
+                    ),
+                },
             },
             "shaping": {
                 "valid": _boolean(row.get("shaping_valid")),

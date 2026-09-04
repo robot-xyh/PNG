@@ -106,10 +106,11 @@ from vision_guidance.rknn_native_detector import RknnDetectorConfig, RknnNativeD
 from vision_guidance.rknn_bytetrack_detector import RknnByteTrackDetector  # noqa: E402
 from vision_guidance.bytetrack_adapter import ByteTrackConfig  # noqa: E402
 from vision_guidance.types import AttitudeSample, CameraIntrinsics, FrameDetection  # noqa: E402
+from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E402
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 20
+LOG_SCHEMA_VERSION = 21
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
 MSP_COMMAND_LOG_SPECS = (
@@ -1333,6 +1334,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     timeout_s = float(serial_cfg.get("timeout_s", 0.2))
 
     control_output_requested = args.control_mode == "msp_raw_rc" and bool(args.allow_control)
+    thrust_mapping = _acceleration_tilt_rate_config(config).thrust_feedforward
+    thrust_model, thrust_model_status = _load_voltage_thrust_model(
+        config,
+        config_path=Path(args.config),
+        required=bool(
+            control_output_requested
+            and str(dict(config.get("flight_profile", {})).get("scope", ""))
+            == "flight_noncollision_supervised_v2"
+        ),
+    )
     intrinsics = _camera_intrinsics(config)
     camera_R_BC = _camera_mount(config, require_control_ready=control_output_requested)
     camera_calibration = _camera_calibration_metadata(config, camera_R_BC)
@@ -1428,7 +1439,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     if control_output_requested and flight_scope == "flight_noncollision_supervised_v2":
         guidance_cfg = dict(config.get("guidance", {}))
         velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
-        thrust_cfg = _acceleration_tilt_rate_config(config).thrust_feedforward
+        thrust_cfg = thrust_mapping
         if guidance_cfg.get("velocity_source") != "msp_kinematics":
             raise RuntimeError("flight_noncollision_supervised_v2 requires velocity_source=msp_kinematics")
         if msp_runtime_config.override_channels_mask != 15:
@@ -1475,10 +1486,12 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             raise RuntimeError("flight_active_supervised total guidance acceleration exceeds 7 m/s2")
         if (
             not thrust_cfg.enabled
-            or thrust_cfg.model != "measured_load_factor"
-            or thrust_cfg.calibration_id != "LOG00062_1275_1500"
+            or thrust_cfg.model != "voltage_throttle_lut"
+            or thrust_model is None
         ):
-            raise RuntimeError("flight_active_supervised requires measured LOG00062 thrust mapping")
+            raise RuntimeError(
+                "flight_active_supervised requires a hash-bound, validated voltage/throttle thrust LUT"
+            )
         if not bool(safety_cfg.get("require_acro_rate_mode", False)):
             raise RuntimeError("flight_active_supervised requires Acro/Rate mode")
         if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
@@ -1596,6 +1609,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             "max_pending": deferred_fusion.max_pending,
         },
         guidance=guidance_metadata,
+        thrust_model=thrust_model_status,
         camera_calibration=camera_calibration,
         platform_health={} if platform_health is None else platform_health.metadata(),
         runtime_diagnostics={
@@ -1823,6 +1837,31 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     config,
                     result,
                     loop_start,
+                    thrust_model=thrust_model,
+                    battery_voltage_v=(
+                        None
+                        if telemetry is None or telemetry.analog is None
+                        else telemetry.analog.vbat_v
+                    ),
+                )
+                current_voltage_v = (
+                    None
+                    if telemetry is None or telemetry.analog is None
+                    else telemetry.analog.vbat_v
+                )
+                detector_stats.update(
+                    thrust_model_configured=int(thrust_model_status["configured"]),
+                    thrust_model_ready=int(thrust_model_status["ready"]),
+                    thrust_model_reason=thrust_model_status["reason"],
+                    thrust_model_calibration_id=thrust_model_status["calibration_id"],
+                    thrust_model_sha256=thrust_model_status["sha256"],
+                    thrust_model_voltage_min_v=thrust_model_status["minimum_voltage_v"],
+                    thrust_model_voltage_max_v=thrust_model_status["maximum_voltage_v"],
+                    thrust_model_voltage_v="" if current_voltage_v is None else current_voltage_v,
+                    thrust_model_voltage_covered=int(
+                        thrust_model is not None
+                        and thrust_model.covers_voltage(current_voltage_v)
+                    ),
                 )
 
                 watchdog_age_s = watchdog.age_s(loop_start)
@@ -2242,6 +2281,74 @@ def _load_config(path: str) -> dict[str, Any]:
     config_path = Path(path).expanduser()
     with config_path.open("r") as stream:
         return json.load(stream)
+
+
+def _load_voltage_thrust_model(
+    config: dict[str, Any],
+    *,
+    config_path: Path,
+    required: bool,
+) -> tuple[VoltageThrottleThrustModel | None, dict[str, Any]]:
+    thrust = _acceleration_tilt_rate_config(config).thrust_feedforward
+    status: dict[str, Any] = {
+        "configured": thrust.enabled and thrust.model == "voltage_throttle_lut",
+        "required": bool(required),
+        "ready": False,
+        "reason": "not_configured",
+        "model_type": thrust.model,
+        "calibration_id": thrust.calibration_id,
+        "path": "",
+        "sha256": thrust.model_sha256,
+        "minimum_voltage_v": "",
+        "maximum_voltage_v": "",
+        "validation": {},
+    }
+    if not status["configured"]:
+        if required:
+            raise RuntimeError(
+                "active supervised control requires thrust_feedforward.model="
+                "voltage_throttle_lut"
+            )
+        return None, status
+
+    model_path = _resolve_config_artifact_path(thrust.model_path, config_path=config_path)
+    status["path"] = str(model_path)
+    try:
+        model = VoltageThrottleThrustModel.from_file(
+            model_path,
+            expected_sha256=thrust.model_sha256,
+            expected_calibration_id=thrust.calibration_id,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        status["reason"] = f"{type(exc).__name__}:{exc}"
+        if required:
+            raise RuntimeError(
+                f"active supervised thrust LUT preflight failed before hardware initialization: {exc}"
+            ) from exc
+        return None, status
+
+    status.update(
+        ready=True,
+        reason="ready",
+        calibration_id=model.calibration_id,
+        path=model.source_path,
+        sha256=model.source_sha256,
+        minimum_voltage_v=model.minimum_voltage_v,
+        maximum_voltage_v=model.maximum_voltage_v,
+        validation=dict(model.validation),
+    )
+    return model, status
+
+
+def _resolve_config_artifact_path(value: str, *, config_path: Path) -> Path:
+    path = Path(value).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    repository_candidate = (ROOT / path).resolve()
+    config_candidate = (config_path.expanduser().resolve().parent / path).resolve()
+    if repository_candidate.is_file() or not config_candidate.is_file():
+        return repository_candidate
+    return config_candidate
 
 
 def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -> None:
@@ -3144,6 +3251,9 @@ def _guidance_setpoint(
     config: dict[str, Any],
     result: VisionGuidanceResult | None,
     timestamp: float,
+    *,
+    thrust_model: VoltageThrottleThrustModel | None = None,
+    battery_voltage_v: float | None = None,
 ) -> tuple[GuidanceSetpoint, np.ndarray | None]:
     guidance = None if result is None else result.guidance
     if guidance is None:
@@ -3165,6 +3275,8 @@ def _guidance_setpoint(
         yaw_rate_deg_s=float(command_cfg.get("yaw_rate_bias_deg_s", 0.0)),
         mapping_type=str(command_cfg.get("mapping_type", "direct_rate_matrix")),
         accel_tilt_rate=command_cfg.get("accel_tilt_rate", {}),
+        thrust_model=thrust_model,
+        battery_voltage_v=battery_voltage_v,
     )
     body_vector = None
     if guidance.valid and result is not None and result.R_IB is not None:
@@ -3251,6 +3363,7 @@ def _write_run_meta(
     kinematics: dict[str, Any] | None = None,
     attitude_fusion: dict[str, Any] | None = None,
     guidance: dict[str, Any] | None = None,
+    thrust_model: dict[str, Any] | None = None,
     camera_calibration: dict[str, Any] | None = None,
     platform_health: dict[str, Any] | None = None,
     runtime_diagnostics: dict[str, Any] | None = None,
@@ -3288,6 +3401,7 @@ def _write_run_meta(
         "kinematics": kinematics or {},
         "attitude_fusion": attitude_fusion or {},
         "guidance": guidance or {},
+        "thrust_model": thrust_model or {},
         "camera_calibration": camera_calibration or {},
         "platform_health": platform_health or {},
         "runtime_diagnostics": runtime_diagnostics or {},
@@ -3700,6 +3814,17 @@ def _log_fields(channel_count: int) -> list[str]:
         "command_thrust_load_factor_raw_g",
         "command_thrust_raw",
         "command_thrust_limited",
+        "command_throttle_target_us",
+        "command_thrust_model_voltage_v",
+        "thrust_model_configured",
+        "thrust_model_ready",
+        "thrust_model_reason",
+        "thrust_model_calibration_id",
+        "thrust_model_sha256",
+        "thrust_model_voltage_min_v",
+        "thrust_model_voltage_max_v",
+        "thrust_model_voltage_v",
+        "thrust_model_voltage_covered",
         "rc_active",
         "rc_reason",
         "map_requested_roll_rate_deg_s",
@@ -3713,6 +3838,7 @@ def _log_fields(channel_count: int) -> list[str]:
         "map_yaw_stick",
         "map_requested_thrust",
         "map_limited_thrust",
+        "map_requested_throttle_us",
         "python_gc_collection_count",
         "python_gc_last_generation",
         "python_gc_last_pause_ms",
@@ -4340,6 +4466,29 @@ def _log_row(
             setpoint.thrust_command_raw, precision=6
         ),
         "command_thrust_limited": int(setpoint.thrust_command_limited),
+        "command_throttle_target_us": _format_optional_float(
+            setpoint.throttle_target_us, precision=3
+        ),
+        "command_thrust_model_voltage_v": _format_optional_float(
+            setpoint.thrust_model_voltage_v, precision=3
+        ),
+        "thrust_model_configured": detector_stats.get("thrust_model_configured", ""),
+        "thrust_model_ready": detector_stats.get("thrust_model_ready", ""),
+        "thrust_model_reason": detector_stats.get("thrust_model_reason", ""),
+        "thrust_model_calibration_id": detector_stats.get(
+            "thrust_model_calibration_id", ""
+        ),
+        "thrust_model_sha256": detector_stats.get("thrust_model_sha256", ""),
+        "thrust_model_voltage_min_v": detector_stats.get(
+            "thrust_model_voltage_min_v", ""
+        ),
+        "thrust_model_voltage_max_v": detector_stats.get(
+            "thrust_model_voltage_max_v", ""
+        ),
+        "thrust_model_voltage_v": detector_stats.get("thrust_model_voltage_v", ""),
+        "thrust_model_voltage_covered": detector_stats.get(
+            "thrust_model_voltage_covered", ""
+        ),
         "rc_active": int(rc_command.active),
         "rc_reason": rc_command.reason,
         "map_requested_roll_rate_deg_s": _sequence_field(rc_command.requested_rates_deg_s, 0),
@@ -4353,6 +4502,9 @@ def _log_row(
         "map_yaw_stick": _sequence_field(rc_command.stick_deflections, 2),
         "map_requested_thrust": "" if rc_command.requested_thrust is None else rc_command.requested_thrust,
         "map_limited_thrust": "" if rc_command.limited_thrust is None else rc_command.limited_thrust,
+        "map_requested_throttle_us": _format_optional_float(
+            rc_command.requested_throttle_us, precision=3
+        ),
         "python_gc_collection_count": detector_stats.get("python_gc_collection_count", ""),
         "python_gc_last_generation": detector_stats.get("python_gc_last_generation", ""),
         "python_gc_last_pause_ms": _stats_float(

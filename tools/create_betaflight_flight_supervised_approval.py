@@ -34,6 +34,7 @@ from vision_guidance.flight_control import (  # noqa: E402
     AccelerationTiltRateConfig,
     RcMappingConfig,
 )
+from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E402
 
 
 SCOPE = "flight_noncollision_supervised_v2"
@@ -47,7 +48,9 @@ THROTTLE_MAX_US = 1500
 THROTTLE_SLEW_US_PER_S = 600.0
 MIN_VBAT_V = 20.0
 MIN_GPS_SATELLITES = 6
-THRUST_CALIBRATION_ID = "LOG00062_1275_1500"
+REQUIRED_THRUST_VOLTAGE_MIN_V = 20.0
+REQUIRED_THRUST_VOLTAGE_MAX_V = 25.2
+MIN_THRUST_VALIDATION_SAMPLES = 100
 RELEASE_HIT_RATE_MIN = 0.80
 RELEASE_FOV_HIT_RATE_MIN = 0.80
 RELEASE_TRIALS_PER_CASE_MIN = 100
@@ -119,9 +122,10 @@ def main() -> None:
         output_path=output_path,
         parsed_cli=parsed_cli,
         fc_identity=dict(snapshot["fc_identity"]),
+        config_path=config_path,
     )
     approval = {
-        "schema_version": 2,
+        "schema_version": 3,
         "approved": True,
         "scope": SCOPE,
         "created_unix_s": time.time(),
@@ -154,6 +158,7 @@ def main() -> None:
             "acro_rate_mode_required": True,
         },
         "snapshot_flight_state": gps_evidence,
+        "thrust_model_evidence": evidence["guidance_command"]["thrust_model"],
         **evidence,
     }
     output_path.parent.mkdir(parents=True, exist_ok=True)
@@ -346,6 +351,7 @@ def validate_flight_supervised_config(
     output_path: Path,
     parsed_cli: dict[str, Any],
     fc_identity: dict[str, Any],
+    config_path: Path | None = None,
 ) -> dict[str, Any]:
     candidate = dict(config.get("candidate_profile", {}))
     profile = dict(config.get("flight_profile", {}))
@@ -383,6 +389,8 @@ def validate_flight_supervised_config(
         raise RuntimeError("control_authorization scope mismatch")
     if authorization.get("release_evidence_required") is not True:
         raise RuntimeError("control_authorization must require release evidence")
+    if authorization.get("thrust_model_evidence_required") is not True:
+        raise RuntimeError("control_authorization must require thrust-model evidence")
     configured_output = Path(str(authorization.get("approval_manifest", ""))).expanduser().resolve()
     if configured_output != output_path:
         raise RuntimeError("approval output must match control_authorization.approval_manifest")
@@ -481,7 +489,7 @@ def validate_flight_supervised_config(
     _validate_rate_profile(dict(config.get("rc_mapping", {})), parsed_cli)
 
     guidance = _validate_guidance(config)
-    command = _validate_guidance_command(config)
+    command = _validate_guidance_command(config, config_path=config_path)
     kinematics = dict(config.get("kinematics", {}))
     if int(kinematics.get("minimum_satellites", 0)) < MIN_GPS_SATELLITES:
         raise RuntimeError("at least six GPS satellites are required")
@@ -549,7 +557,11 @@ def _validate_guidance(config: dict[str, Any]) -> dict[str, Any]:
     return {"law": guidance["law"], "velocity_source": guidance["velocity_source"], **asdict(value)}
 
 
-def _validate_guidance_command(config: dict[str, Any]) -> dict[str, Any]:
+def _validate_guidance_command(
+    config: dict[str, Any],
+    *,
+    config_path: Path | None,
+) -> dict[str, Any]:
     command = dict(config.get("guidance_command", {}))
     if not math.isclose(float(command.get("hover_thrust", math.nan)), 0.5):
         raise RuntimeError("hover_thrust must map to measured 1275 us")
@@ -571,13 +583,13 @@ def _validate_guidance_command(config: dict[str, Any]) -> dict[str, Any]:
     thrust = accel.thrust_feedforward
     if (
         not thrust.enabled
-        or thrust.model != "measured_load_factor"
+        or thrust.model != "voltage_throttle_lut"
         or not math.isclose(thrust.hover_load_factor_g, 1.0)
         or not math.isclose(thrust.max_load_factor_g, 2.37)
         or not math.isclose(thrust.minimum_tilt_cosine, 0.5)
-        or thrust.calibration_id != THRUST_CALIBRATION_ID
     ):
-        raise RuntimeError("measured LOG00062 thrust feedforward binding mismatch")
+        raise RuntimeError("voltage/throttle thrust feedforward binding mismatch")
+    thrust_model = _validate_thrust_model(thrust, config_path=config_path)
     tilt = dict(command.get("tilt_envelope", {}))
     if (
         tilt.get("enabled") is not True
@@ -598,6 +610,66 @@ def _validate_guidance_command(config: dict[str, Any]) -> dict[str, Any]:
         "mapping_type": command.get("mapping_type"),
         "hover_thrust": command.get("hover_thrust"),
         "accel_tilt_rate": asdict(accel),
+        "thrust_model": thrust_model,
+    }
+
+
+def _validate_thrust_model(
+    thrust: Any,
+    *,
+    config_path: Path | None,
+) -> dict[str, Any]:
+    raw_path = Path(str(thrust.model_path)).expanduser()
+    if raw_path.is_absolute():
+        model_path = raw_path.resolve()
+    else:
+        repository_candidate = (ROOT / raw_path).resolve()
+        config_candidate = (
+            (config_path.resolve().parent / raw_path).resolve()
+            if config_path is not None
+            else repository_candidate
+        )
+        model_path = (
+            repository_candidate
+            if repository_candidate.is_file() or not config_candidate.is_file()
+            else config_candidate
+        )
+    try:
+        model = VoltageThrottleThrustModel.from_file(
+            model_path,
+            expected_sha256=thrust.model_sha256,
+            expected_calibration_id=thrust.calibration_id,
+        )
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"invalid voltage/throttle thrust LUT: {exc}") from exc
+    if (
+        model.minimum_voltage_v > REQUIRED_THRUST_VOLTAGE_MIN_V
+        or model.maximum_voltage_v < REQUIRED_THRUST_VOLTAGE_MAX_V
+    ):
+        raise RuntimeError("thrust LUT does not cover the full 20.0-25.2 V flight range")
+    try:
+        sample_count = int(model.validation["sample_count"])
+        median_error = float(model.validation["median_relative_error"])
+        p95_error = float(model.validation["p95_relative_error"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("thrust LUT validation metrics are incomplete") from exc
+    if sample_count < MIN_THRUST_VALIDATION_SAMPLES:
+        raise RuntimeError("thrust LUT held-out validation sample count is insufficient")
+    return {
+        "path": str(model_path),
+        "sha256": model.source_sha256,
+        "calibration_id": model.calibration_id,
+        "voltage_coverage_v": [model.minimum_voltage_v, model.maximum_voltage_v],
+        "throttle_coverage_us": [
+            float(model.throttle_us[0]),
+            float(model.throttle_us[-1]),
+        ],
+        "validation": {
+            "passed": True,
+            "sample_count": sample_count,
+            "median_relative_error": median_error,
+            "p95_relative_error": p95_error,
+        },
     }
 
 

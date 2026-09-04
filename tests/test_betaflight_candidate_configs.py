@@ -68,11 +68,27 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         mapping = runner._acceleration_tilt_rate_config(self.flight_supervised)
 
         self.assertTrue(mapping.thrust_feedforward.enabled)
-        self.assertEqual(mapping.thrust_feedforward.model, "measured_load_factor")
+        self.assertEqual(mapping.thrust_feedforward.model, "voltage_throttle_lut")
         self.assertEqual(
             mapping.thrust_feedforward.calibration_id,
-            "LOG00062_1275_1500",
+            "PENDING_FULL_6S_THRUST_LUT",
         )
+        self.assertEqual(mapping.thrust_feedforward.model_sha256, "0" * 64)
+
+        model, status = runner._load_voltage_thrust_model(
+            self.flight_supervised,
+            config_path=CONFIG_DIR / "betaflight.rk3588.velocity_png.flight_supervised.json",
+            required=False,
+        )
+        self.assertIsNone(model)
+        self.assertFalse(status["ready"])
+        with self.assertRaisesRegex(RuntimeError, "before hardware initialization"):
+            runner._load_voltage_thrust_model(
+                self.flight_supervised,
+                config_path=CONFIG_DIR
+                / "betaflight.rk3588.velocity_png.flight_supervised.json",
+                required=True,
+            )
 
     def test_noprop_fault_contract(self):
         config = self.noprop
@@ -307,7 +323,12 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(fov_priority["full_ratio"], 0.95)
         thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
         self.assertTrue(thrust["enabled"])
-        self.assertEqual(thrust["calibration_id"], "LOG00062_1275_1500")
+        self.assertEqual(thrust["model"], "voltage_throttle_lut")
+        self.assertEqual(thrust["calibration_id"], "PENDING_FULL_6S_THRUST_LUT")
+        self.assertEqual(config["control_authorization"]["minimum_approval_schema_version"], 3)
+        self.assertTrue(
+            config["control_authorization"]["thrust_model_evidence_required"]
+        )
         takeover = config["safety"]["takeover_duration_interlock"]
         self.assertTrue(takeover["enabled"])
         self.assertEqual(takeover["max_duration_s"], 2.0)

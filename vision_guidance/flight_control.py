@@ -7,6 +7,7 @@ from typing import Mapping, Protocol, Sequence
 import numpy as np
 
 from .geometry import validated_rotation_matrix
+from .thrust_model import VoltageThrottleThrustModel
 from .types import GuidanceEval
 
 
@@ -45,6 +46,8 @@ class GuidanceSetpoint:
     thrust_load_factor_raw_g: float | None = None
     thrust_command_raw: float | None = None
     thrust_command_limited: bool = False
+    throttle_target_us: float | None = None
+    thrust_model_voltage_v: float | None = None
 
     @classmethod
     def from_body_rates_rad_s(
@@ -225,6 +228,8 @@ class ThrustFeedforwardConfig:
     max_load_factor_g: float = 2.37
     minimum_tilt_cosine: float = 0.5
     calibration_id: str = ""
+    model_path: str = ""
+    model_sha256: str = ""
 
     @classmethod
     def from_mapping(cls, values: Mapping[str, object]) -> "ThrustFeedforwardConfig":
@@ -235,13 +240,22 @@ class ThrustFeedforwardConfig:
             max_load_factor_g=float(values.get("max_load_factor_g", 2.37)),
             minimum_tilt_cosine=float(values.get("minimum_tilt_cosine", 0.5)),
             calibration_id=str(values.get("calibration_id", "")).strip(),
+            model_path=str(values.get("model_path", "")).strip(),
+            model_sha256=str(values.get("model_sha256", "")).strip().lower(),
         )
 
     def __post_init__(self) -> None:
-        if self.model not in {"fixed_hover", "measured_load_factor"}:
+        if self.model not in {
+            "fixed_hover",
+            "measured_load_factor",
+            "voltage_throttle_lut",
+        }:
             raise ValueError("unsupported thrust feedforward model")
-        if self.enabled and self.model != "measured_load_factor":
-            raise ValueError("enabled thrust feedforward requires measured_load_factor")
+        if self.enabled and self.model not in {
+            "measured_load_factor",
+            "voltage_throttle_lut",
+        }:
+            raise ValueError("enabled thrust feedforward requires a calibrated model")
         if not np.isfinite(self.hover_load_factor_g) or self.hover_load_factor_g <= 0.0:
             raise ValueError("hover_load_factor_g must be finite and positive")
         if (
@@ -256,6 +270,13 @@ class ThrustFeedforwardConfig:
             raise ValueError("minimum_tilt_cosine must be in (0, 1]")
         if self.enabled and not self.calibration_id:
             raise ValueError("enabled thrust feedforward requires calibration_id")
+        if self.enabled and self.model == "voltage_throttle_lut":
+            if not self.model_path:
+                raise ValueError("voltage thrust feedforward requires model_path")
+            if len(self.model_sha256) != 64 or any(
+                character not in "0123456789abcdef" for character in self.model_sha256
+            ):
+                raise ValueError("voltage thrust feedforward requires a SHA256 hash")
 
 
 @dataclass(frozen=True)
@@ -367,6 +388,9 @@ class GuidanceCommandShaper:
                     setpoint.thrust,
                 ]
             )
+        ) or (
+            setpoint.throttle_target_us is not None
+            and not np.isfinite(setpoint.throttle_target_us)
         ):
             self.reset()
             invalid = replace(setpoint, valid=False, reject_reason="command_shaper_nonfinite_setpoint")
@@ -560,6 +584,7 @@ class RcCommand:
     stick_deflections: tuple[float, ...] = ()
     requested_thrust: float | None = None
     limited_thrust: float | None = None
+    requested_throttle_us: float | None = None
 
     def __post_init__(self) -> None:
         if not self.channels:
@@ -701,7 +726,12 @@ class RcCommandMapper:
             limited_rates.append(limited_rate)
             stick_deflections.append(self._rate_to_stick_deflection(role, limited_rate, limit))
         throttle_index = self._role_index("T")
-        raw, clipped, was_clipped = self._thrust_to_us_with_clip(setpoint.thrust)
+        if setpoint.throttle_target_us is None:
+            raw, clipped, was_clipped = self._thrust_to_us_with_clip(setpoint.thrust)
+        else:
+            raw = int(round(float(setpoint.throttle_target_us)))
+            clipped = self._clip_throttle_us(setpoint.throttle_target_us)
+            was_clipped = raw != clipped
         raw_channels[throttle_index] = raw
         channels[throttle_index] = clipped
         clipped_flags[throttle_index] = int(was_clipped)
@@ -722,6 +752,7 @@ class RcCommandMapper:
             stick_deflections=tuple(stick_deflections),
             requested_thrust=float(setpoint.thrust),
             limited_thrust=limited_thrust,
+            requested_throttle_us=setpoint.throttle_target_us,
         )
         self._previous = command
         return command
@@ -1446,6 +1477,8 @@ def guidance_eval_to_setpoint(
     yaw_rate_deg_s: float = 0.0,
     mapping_type: str = "direct_rate_matrix",
     accel_tilt_rate: Mapping[str, object] | AccelerationTiltRateConfig | None = None,
+    thrust_model: VoltageThrottleThrustModel | None = None,
+    battery_voltage_v: float | None = None,
 ) -> GuidanceSetpoint:
     mapping = str(mapping_type).strip().lower()
     if guidance is None:
@@ -1511,6 +1544,8 @@ def guidance_eval_to_setpoint(
             config,
             hover_thrust=float(hover_thrust),
             yaw_rate_deg_s=float(yaw_rate_deg_s),
+            thrust_model=thrust_model,
+            battery_voltage_v=battery_voltage_v,
         )
 
     gain = np.asarray(rate_gain_matrix, dtype=float)
@@ -1543,6 +1578,8 @@ def _acceleration_tilt_rate_setpoint(
     *,
     hover_thrust: float,
     yaw_rate_deg_s: float,
+    thrust_model: VoltageThrottleThrustModel | None,
+    battery_voltage_v: float | None,
 ) -> GuidanceSetpoint:
     roll_rad, pitch_rad, yaw_rad = _rotation_matrix_to_euler_frd(R_IB)
     cos_yaw = float(np.cos(yaw_rad))
@@ -1588,16 +1625,42 @@ def _acceleration_tilt_rate_setpoint(
             config.max_pitch_rate_deg_s,
         )
     )
-    thrust, thrust_model, required_specific_force, load_factor_raw, thrust_raw = (
-        _acceleration_thrust_feedforward(
+    try:
+        (
+            thrust,
+            thrust_model_name,
+            required_specific_force,
+            load_factor_raw,
+            thrust_raw,
+            throttle_target_us,
+            thrust_model_voltage_v,
+            thrust_limited,
+        ) = _acceleration_thrust_feedforward(
             vertical_force_mps2=vertical_force,
             roll_rad=roll_rad,
             pitch_rad=pitch_rad,
             hover_thrust=hover_thrust,
             gravity_mps2=config.gravity_mps2,
             config=config.thrust_feedforward,
+            thrust_model=thrust_model,
+            battery_voltage_v=battery_voltage_v,
         )
-    )
+    except ValueError as exc:
+        return GuidanceSetpoint(
+            timestamp=float(guidance.timestamp),
+            valid=False,
+            reject_reason=str(exc),
+            source="guidance_eval",
+            mapping_type="accel_tilt_rate",
+            desired_roll_angle_deg=desired_roll_deg,
+            desired_pitch_angle_deg=desired_pitch_deg,
+            current_roll_angle_deg=current_roll_deg,
+            current_pitch_angle_deg=current_pitch_deg,
+            roll_attitude_error_deg=roll_error_deg,
+            pitch_attitude_error_deg=pitch_error_deg,
+            thrust_model=config.thrust_feedforward.model,
+            thrust_model_voltage_v=battery_voltage_v,
+        )
     return GuidanceSetpoint(
         timestamp=float(guidance.timestamp),
         roll_rate_deg_s=roll_rate,
@@ -1613,11 +1676,13 @@ def _acceleration_tilt_rate_setpoint(
         current_pitch_angle_deg=current_pitch_deg,
         roll_attitude_error_deg=roll_error_deg,
         pitch_attitude_error_deg=pitch_error_deg,
-        thrust_model=thrust_model,
+        thrust_model=thrust_model_name,
         thrust_required_specific_force_mps2=required_specific_force,
         thrust_load_factor_raw_g=load_factor_raw,
         thrust_command_raw=thrust_raw,
-        thrust_command_limited=not np.isclose(thrust, thrust_raw),
+        thrust_command_limited=thrust_limited,
+        throttle_target_us=throttle_target_us,
+        thrust_model_voltage_v=thrust_model_voltage_v,
     )
 
 
@@ -1629,10 +1694,21 @@ def _acceleration_thrust_feedforward(
     hover_thrust: float,
     gravity_mps2: float,
     config: ThrustFeedforwardConfig,
-) -> tuple[float, str, float, float, float]:
+    thrust_model: VoltageThrottleThrustModel | None,
+    battery_voltage_v: float | None,
+) -> tuple[float, str, float, float, float, float | None, float | None, bool]:
     if not config.enabled:
         hover = float(hover_thrust)
-        return hover, "fixed_hover", float(vertical_force_mps2), 1.0, hover
+        return (
+            hover,
+            "fixed_hover",
+            float(vertical_force_mps2),
+            1.0,
+            hover,
+            None,
+            None,
+            False,
+        )
 
     tilt_cosine = max(
         config.minimum_tilt_cosine,
@@ -1640,6 +1716,30 @@ def _acceleration_thrust_feedforward(
     )
     required_specific_force = float(vertical_force_mps2) / tilt_cosine
     load_factor = required_specific_force / float(gravity_mps2)
+    if config.model == "voltage_throttle_lut":
+        if thrust_model is None:
+            raise ValueError("thrust_lut_unavailable")
+        if thrust_model.calibration_id != config.calibration_id:
+            raise ValueError("thrust_lut_calibration_id_mismatch")
+        if battery_voltage_v is None or not np.isfinite(battery_voltage_v):
+            raise ValueError("thrust_lut_voltage_missing")
+        if not thrust_model.covers_voltage(float(battery_voltage_v)):
+            raise ValueError("thrust_lut_voltage_outside_coverage")
+        lookup = thrust_model.throttle_for_specific_force(
+            float(battery_voltage_v),
+            required_specific_force,
+        )
+        return (
+            float(hover_thrust),
+            config.model,
+            required_specific_force,
+            load_factor,
+            float(hover_thrust),
+            lookup.throttle_us,
+            lookup.voltage_v,
+            lookup.limited,
+        )
+
     if load_factor <= config.hover_load_factor_g:
         raw_thrust = float(hover_thrust) * (
             load_factor / config.hover_load_factor_g
@@ -1657,6 +1757,9 @@ def _acceleration_thrust_feedforward(
         required_specific_force,
         load_factor,
         raw_thrust,
+        None,
+        None,
+        not np.isclose(thrust, raw_thrust),
     )
 
 

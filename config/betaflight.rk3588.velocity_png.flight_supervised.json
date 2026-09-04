@@ -130,9 +130,10 @@
     "enabled": true,
     "required_scope": "flight_noncollision_supervised_v2",
     "approval_manifest": "logs/betaflight_velocity_png_flight_noncollision_v2_approval.json",
-    "minimum_approval_schema_version": 2,
+    "minimum_approval_schema_version": 3,
     "rc_interlock_evidence_required": true,
-    "release_evidence_required": true
+    "release_evidence_required": true,
+    "thrust_model_evidence_required": true
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -357,11 +358,13 @@
       "min_vertical_specific_force_mps2": 0.5,
       "thrust_feedforward": {
         "enabled": true,
-        "model": "measured_load_factor",
+        "model": "voltage_throttle_lut",
         "hover_load_factor_g": 1,
         "max_load_factor_g": 2.37,
         "minimum_tilt_cosine": 0.5,
-        "calibration_id": "LOG00062_1275_1500"
+        "calibration_id": "PENDING_FULL_6S_THRUST_LUT",
+        "model_path": "config/betaflight.thrust_lut.pending.json",
+        "model_sha256": "0000000000000000000000000000000000000000000000000000000000000000"
       }
     },
     "axis_mapping_status": "verified_by_rbc_gyro_and_motor_mix_20260903"

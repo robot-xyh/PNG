@@ -49,6 +49,33 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             "api_major": 1,
             "api_minor": 47,
         }
+        self.temporary_directory = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temporary_directory.cleanup)
+        self.thrust_model_path = Path(self.temporary_directory.name) / "thrust_lut.json"
+        model = {
+            "schema_version": 1,
+            "model_type": "voltage_throttle_specific_force_lut",
+            "calibration_id": "test-full-6s-lut",
+            "voltage_v": [20.0, 25.2],
+            "throttle_us": [1200.0, 1300.0, 1500.0],
+            "specific_force_m_s2": [
+                [6.0, 10.0, 20.0],
+                [7.0, 11.0, 22.0],
+            ],
+            "validation": {
+                "passed": True,
+                "sample_count": 200,
+                "median_relative_error": 0.05,
+                "p95_relative_error": 0.15,
+            },
+        }
+        self.thrust_model_path.write_text(json.dumps(model), encoding="utf-8")
+        thrust = self.config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
+        thrust["calibration_id"] = model["calibration_id"]
+        thrust["model_path"] = str(self.thrust_model_path)
+        thrust["model_sha256"] = hashlib.sha256(
+            self.thrust_model_path.read_bytes()
+        ).hexdigest()
 
     def validate(self, config):
         return validate_flight_supervised_config(
@@ -67,7 +94,13 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             evidence["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"][
                 "calibration_id"
             ],
-            "LOG00062_1275_1500",
+            "test-full-6s-lut",
+        )
+        self.assertEqual(
+            evidence["guidance_command"]["thrust_model"]["sha256"],
+            self.config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"][
+                "model_sha256"
+            ],
         )
 
     def test_rejects_rate_acceleration_and_throttle_expansion(self):
@@ -96,7 +129,26 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"][
             "calibration_id"
         ] = "unverified"
-        with self.assertRaisesRegex(RuntimeError, "LOG00062"):
+        with self.assertRaisesRegex(RuntimeError, "calibration_id"):
+            self.validate(config)
+
+    def test_rejects_tampered_or_incomplete_thrust_lut(self):
+        config = copy.deepcopy(self.config)
+        config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"][
+            "model_sha256"
+        ] = "0" * 64
+        with self.assertRaisesRegex(RuntimeError, "SHA256"):
+            self.validate(config)
+
+        config = copy.deepcopy(self.config)
+        model = json.loads(self.thrust_model_path.read_text(encoding="utf-8"))
+        model["voltage_v"] = [22.0, 25.2]
+        narrow_path = Path(self.temporary_directory.name) / "narrow.json"
+        narrow_path.write_text(json.dumps(model), encoding="utf-8")
+        thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
+        thrust["model_path"] = str(narrow_path)
+        thrust["model_sha256"] = hashlib.sha256(narrow_path.read_bytes()).hexdigest()
+        with self.assertRaisesRegex(RuntimeError, "20.0-25.2"):
             self.validate(config)
 
     def test_rejects_wrong_timer_or_poll_schedule(self):

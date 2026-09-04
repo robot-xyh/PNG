@@ -493,6 +493,66 @@ class BetaflightRuntimeTest(unittest.TestCase):
             self.assertFalse(invalid.approved)
             self.assertEqual(invalid.reason, "release_evidence_invalid")
 
+    def test_authorization_binds_required_thrust_model_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"supervised"}\n', encoding="utf-8")
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            model = root / "thrust_lut.json"
+            model.write_text('{"model":"test"}\n', encoding="utf-8")
+            approval = root / "approval.json"
+            approval_data = {
+                "schema_version": 3,
+                "approved": True,
+                "scope": "flight_noncollision_supervised_v2",
+                "source_conflicts_resolved": True,
+                "snapshot_manifest": str(snapshot),
+                "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                "expected_fc_identity": {"fc_variant": "BTFL"},
+                "parameters_sha256": hashlib.sha256(parameters.read_bytes()).hexdigest(),
+                "thrust_model_evidence": {
+                    "path": str(model),
+                    "sha256": hashlib.sha256(model.read_bytes()).hexdigest(),
+                    "validation": {
+                        "passed": True,
+                        "sample_count": 200,
+                        "median_relative_error": 0.05,
+                        "p95_relative_error": 0.15,
+                    },
+                },
+            }
+            approval.write_text(json.dumps(approval_data) + "\n", encoding="utf-8")
+            values = {
+                "enabled": True,
+                "required_scope": "flight_noncollision_supervised_v2",
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 3,
+                "thrust_model_evidence_required": True,
+            }
+
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(status.approved)
+
+            model.write_text('{"model":"tampered"}\n', encoding="utf-8")
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertFalse(status.approved)
+            self.assertEqual(status.reason, "thrust_model_evidence_sha256_mismatch")
+
     def test_reorders_msp_logical_rpyt_to_aetr_wire_order(self):
         logical = (1600, 1400, 1550, 1050, 900, 1200, 1800, 2000)
 

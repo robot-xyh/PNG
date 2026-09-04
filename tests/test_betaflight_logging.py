@@ -901,7 +901,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 20)
+            self.assertEqual(data["log_schema_version"], 21)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
 

@@ -570,6 +570,46 @@ def resolve_control_authorization(
                 parameters_path=str(resolved_parameters_path),
                 parameters_sha256=actual_parameters_sha,
             )
+    if bool(values.get("thrust_model_evidence_required", False)):
+        thrust_evidence = approval.get("thrust_model_evidence")
+        reason = ""
+        if not isinstance(thrust_evidence, dict):
+            reason = "thrust_model_evidence_missing"
+        else:
+            model_path = Path(str(thrust_evidence.get("path", ""))).expanduser()
+            validation = thrust_evidence.get("validation", {})
+            if not isinstance(validation, dict):
+                validation = {}
+            try:
+                median_error = float(validation.get("median_relative_error"))
+                p95_error = float(validation.get("p95_relative_error"))
+                sample_count = int(validation.get("sample_count"))
+            except (TypeError, ValueError):
+                median_error = math.inf
+                p95_error = math.inf
+                sample_count = 0
+            if not model_path.is_file():
+                reason = "thrust_model_evidence_file_missing"
+            elif _sha256(model_path) != str(thrust_evidence.get("sha256", "")):
+                reason = "thrust_model_evidence_sha256_mismatch"
+            elif (
+                validation.get("passed") is not True
+                or median_error > 0.10
+                or p95_error > 0.20
+                or sample_count < 100
+            ):
+                reason = "thrust_model_evidence_invalid"
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                reason,
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
     return ControlAuthorizationStatus(
         True,
         "approved",
