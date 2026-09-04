@@ -263,6 +263,12 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             config["guidance"]["velocity_establishing_png"]["total_accel_limit_m_s2"],
             7,
         )
+        fov_priority = config["guidance"]["velocity_establishing_png"][
+            "fov_priority"
+        ]
+        self.assertTrue(fov_priority["enabled"])
+        self.assertEqual(fov_priority["start_ratio"], 0.75)
+        self.assertEqual(fov_priority["full_ratio"], 0.95)
         thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
         self.assertTrue(thrust["enabled"])
         self.assertEqual(thrust["calibration_id"], "LOG00062_1275_1500")

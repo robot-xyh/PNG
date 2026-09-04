@@ -3,6 +3,7 @@ import unittest
 import numpy as np
 
 from vision_guidance.betaflight_intercept_controller import (
+    FovPriorityConfig,
     InterceptPhase,
     VelocityEstablishingPngConfig,
     VelocityEstablishingPngController,
@@ -27,6 +28,85 @@ def _input(timestamp: float, *, los_timestamp=None, speed=0.0, valid=True):
 
 
 class VelocityEstablishingPngControllerTest(unittest.TestCase):
+    def test_fov_priority_is_identical_to_baseline_inside_start_ratio(self):
+        common = dict(
+            fixed_vm_m_s=10.0,
+            acquire_consecutive_frames=1,
+            total_accel_limit_m_s2=7.0,
+        )
+        baseline = VelocityEstablishingPngController(
+            VelocityEstablishingPngConfig(**common)
+        )
+        priority = VelocityEstablishingPngController(
+            VelocityEstablishingPngConfig(
+                **common,
+                fov_priority=FovPriorityConfig(
+                    enabled=True,
+                    horizontal_half_fov_deg=30.9,
+                    vertical_half_fov_deg=24.9,
+                ),
+            )
+        )
+
+        value = _input(0.0)
+        value = VelocityEstablishingPngInput(
+            **{
+                **value.__dict__,
+                "lambda_ned": np.array([0.0, 0.0, -1.0]),
+                "lambda_dot_ned_s": np.array([0.1, 0.0, 0.0]),
+            }
+        )
+        baseline_output = baseline.update(value)
+        priority_output = priority.update(value)
+
+        self.assertEqual(
+            baseline_output.acceleration_ned_m_s2,
+            priority_output.acceleration_ned_m_s2,
+        )
+        self.assertFalse(priority_output.fov_priority_active)
+        self.assertEqual(priority_output.fov_priority_weight, 0.0)
+
+    def test_fov_priority_removes_only_opposing_edge_acceleration(self):
+        controller = VelocityEstablishingPngController(
+            VelocityEstablishingPngConfig(
+                fixed_vm_m_s=10.0,
+                acquire_consecutive_frames=1,
+                speed_gain_s_inv=1.0,
+                speed_accel_limit_m_s2=20.0,
+                png_accel_limit_m_s2=20.0,
+                fov_centering_gain_s2=1.0,
+                fov_centering_accel_limit_m_s2=20.0,
+                total_accel_limit_m_s2=20.0,
+                fov_priority=FovPriorityConfig(
+                    enabled=True,
+                    start_ratio=0.5,
+                    full_ratio=0.8,
+                    horizontal_half_fov_deg=30.0,
+                    vertical_half_fov_deg=25.0,
+                ),
+            )
+        )
+        value = _input(0.0)
+        value = VelocityEstablishingPngInput(
+            **{
+                **value.__dict__,
+                "lambda_ned": np.array([0.0, 0.5, -0.8660254]),
+                "lambda_dot_ned_s": np.array([0.0, -0.5, 0.0]),
+                "velocity_ned_m_s": np.array([0.0, 10.0, 0.0]),
+            }
+        )
+
+        output = controller.update(value)
+
+        self.assertTrue(output.fov_priority_active)
+        self.assertAlmostEqual(output.fov_priority_weight, 1.0)
+        self.assertGreater(output.acceleration_ned_m_s2[1], 0.0)
+        self.assertLessEqual(np.linalg.norm(output.acceleration_ned_m_s2), 20.0)
+
+    def test_enabled_fov_priority_requires_rectangular_fov(self):
+        with self.assertRaisesRegex(ValueError, "requires positive"):
+            FovPriorityConfig(enabled=True)
+
     def test_bounded_los_prediction_advances_velocity_reference(self):
         controller = VelocityEstablishingPngController(
             VelocityEstablishingPngConfig(

@@ -45,6 +45,7 @@ from vision_guidance.betaflight_kinematics import (  # noqa: E402
     VehicleKinematicState,
 )
 from vision_guidance.betaflight_intercept_controller import (  # noqa: E402
+    FovPriorityConfig,
     VelocityEstablishingPngConfig,
     VelocityEstablishingPngController,
     VelocityEstablishingPngOutput,
@@ -2303,6 +2304,9 @@ def _velocity_establishing_config(
     if "fixed_vm_m_s" not in raw:
         raise RuntimeError("guidance.velocity_establishing_png.fixed_vm_m_s is required")
     try:
+        fov_priority_raw = raw.get("fov_priority", {})
+        if not isinstance(fov_priority_raw, dict):
+            raise ValueError("fov_priority must be a mapping")
         controller_config = VelocityEstablishingPngConfig(
             fixed_vm_m_s=float(raw["fixed_vm_m_s"]),
             navigation_constant=float(raw.get("navigation_constant", 3.0)),
@@ -2325,6 +2329,17 @@ def _velocity_establishing_config(
             gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),
             fov_constraint_half_angle_deg=float(
                 raw.get("fov_constraint_half_angle_deg", 0.0)
+            ),
+            fov_priority=FovPriorityConfig(
+                enabled=bool(fov_priority_raw.get("enabled", False)),
+                start_ratio=float(fov_priority_raw.get("start_ratio", 0.70)),
+                full_ratio=float(fov_priority_raw.get("full_ratio", 0.90)),
+                horizontal_half_fov_deg=float(
+                    fov_priority_raw.get("horizontal_half_fov_deg", 0.0)
+                ),
+                vertical_half_fov_deg=float(
+                    fov_priority_raw.get("vertical_half_fov_deg", 0.0)
+                ),
             ),
         )
     except (TypeError, ValueError) as exc:

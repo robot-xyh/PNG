@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import math
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from enum import Enum
 
 import numpy as np
@@ -12,6 +12,36 @@ class InterceptPhase(str, Enum):
     ACCELERATE = "ACCELERATE"
     PNG_TRACK = "PNG_TRACK"
     ABORT = "ABORT"
+
+
+@dataclass(frozen=True)
+class FovPriorityConfig:
+    enabled: bool = False
+    start_ratio: float = 0.70
+    full_ratio: float = 0.90
+    horizontal_half_fov_deg: float = 0.0
+    vertical_half_fov_deg: float = 0.0
+
+    def __post_init__(self) -> None:
+        for name in ("start_ratio", "full_ratio"):
+            value = float(getattr(self, name))
+            if not math.isfinite(value) or not 0.0 <= value <= 1.0:
+                raise ValueError(f"fov priority {name} must be in [0, 1]")
+        if self.full_ratio <= self.start_ratio:
+            raise ValueError("fov priority full_ratio must exceed start_ratio")
+        half_fov = (
+            float(self.horizontal_half_fov_deg),
+            float(self.vertical_half_fov_deg),
+        )
+        if any(
+            not math.isfinite(value) or not 0.0 <= value < 90.0
+            for value in half_fov
+        ):
+            raise ValueError("fov priority half-FOV values must be in [0, 90)")
+        if self.enabled and any(value <= 0.0 for value in half_fov):
+            raise ValueError(
+                "enabled fov priority requires positive rectangular half-FOV values"
+            )
 
 
 @dataclass(frozen=True)
@@ -32,6 +62,7 @@ class VelocityEstablishingPngConfig:
     los_prediction_max_s: float = 0.0
     gravity_m_s2: float = 9.80665
     fov_constraint_half_angle_deg: float = 0.0
+    fov_priority: FovPriorityConfig = field(default_factory=FovPriorityConfig)
 
     def __post_init__(self) -> None:
         positive = (
@@ -101,6 +132,8 @@ class VelocityEstablishingPngOutput:
     png_saturated: bool
     fov_saturated: bool
     fov_constraint_active: bool
+    fov_priority_active: bool
+    fov_priority_weight: float
     total_saturated: bool
 
     def to_dict(self) -> dict[str, object]:
@@ -191,8 +224,21 @@ class VelocityEstablishingPngController:
             fov_body, self.config.fov_centering_accel_limit_m_s2
         )
         fov_accel = R_IB @ fov_body
+        non_fov_accel = speed_accel + png_accel
+        priority_weight = _fov_priority_weight(
+            control_los,
+            R_IB,
+            self.config.fov_priority,
+        )
+        fov_priority_active = priority_weight > 0.0
+        if fov_priority_active:
+            non_fov_accel = _suppress_fov_opposition(
+                non_fov_accel,
+                fov_accel,
+                priority_weight,
+            )
         total, total_saturated = _clip_norm(
-            speed_accel + png_accel + fov_accel,
+            non_fov_accel + fov_accel,
             self.config.total_accel_limit_m_s2,
         )
         total, fov_constraint_active = _constrain_acceleration_to_los(
@@ -228,6 +274,8 @@ class VelocityEstablishingPngController:
             png_saturated=png_saturated,
             fov_saturated=fov_saturated,
             fov_constraint_active=fov_constraint_active,
+            fov_priority_active=fov_priority_active,
+            fov_priority_weight=priority_weight,
             total_saturated=total_saturated,
         )
 
@@ -293,8 +341,57 @@ class VelocityEstablishingPngController:
             png_saturated=False,
             fov_saturated=False,
             fov_constraint_active=False,
+            fov_priority_active=False,
+            fov_priority_weight=0.0,
             total_saturated=False,
         )
+
+
+def _fov_priority_weight(
+    los_ned: np.ndarray,
+    R_IB: np.ndarray,
+    config: FovPriorityConfig,
+) -> float:
+    if not config.enabled:
+        return 0.0
+    los_body = np.asarray(R_IB, dtype=float).T @ np.asarray(los_ned, dtype=float)
+    camera_forward = -float(los_body[2])
+    if camera_forward <= 0.0:
+        return 1.0
+    horizontal_deg = math.degrees(
+        math.atan2(abs(float(los_body[1])), camera_forward)
+    )
+    vertical_deg = math.degrees(
+        math.atan2(abs(float(los_body[0])), camera_forward)
+    )
+    ratio = max(
+        horizontal_deg / config.horizontal_half_fov_deg,
+        vertical_deg / config.vertical_half_fov_deg,
+    )
+    linear = float(
+        np.clip(
+            (ratio - config.start_ratio)
+            / (config.full_ratio - config.start_ratio),
+            0.0,
+            1.0,
+        )
+    )
+    return linear * linear * (3.0 - 2.0 * linear)
+
+
+def _suppress_fov_opposition(
+    non_fov_acceleration: np.ndarray,
+    fov_acceleration: np.ndarray,
+    weight: float,
+) -> np.ndarray:
+    non_fov = np.asarray(non_fov_acceleration, dtype=float)
+    fov = np.asarray(fov_acceleration, dtype=float)
+    fov_norm = float(np.linalg.norm(fov))
+    if fov_norm <= 1.0e-12 or weight <= 0.0:
+        return np.array(non_fov, dtype=float)
+    fov_direction = fov / fov_norm
+    opposing_scalar = min(0.0, float(np.dot(non_fov, fov_direction)))
+    return non_fov - float(weight) * opposing_scalar * fov_direction
 
 
 def _constrain_acceleration_to_los(

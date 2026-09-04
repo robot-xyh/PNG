@@ -243,7 +243,14 @@
       "velocity_timeout_s": 0.5,
       "los_prediction_max_s": 0.15,
       "gravity_m_s2": 9.80665,
-      "fov_constraint_half_angle_deg": 0
+      "fov_constraint_half_angle_deg": 0,
+      "fov_priority": {
+        "enabled": true,
+        "start_ratio": 0.75,
+        "full_ratio": 0.95,
+        "horizontal_half_fov_deg": 31.000688982474795,
+        "vertical_half_fov_deg": 24.91540513181656
+      }
     }
   },
   "rc_mapping": {
