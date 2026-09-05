@@ -1207,7 +1207,7 @@ def _repository_state() -> tuple[str, bool]:
             stderr=subprocess.DEVNULL,
         ).strip()
         status = subprocess.check_output(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=ROOT,
             text=True,
             stderr=subprocess.DEVNULL,

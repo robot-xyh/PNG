@@ -3761,7 +3761,7 @@ def _git_commit() -> str:
 def _git_dirty() -> bool | None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain"],
+            ["git", "status", "--porcelain", "--untracked-files=no"],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,
