@@ -344,7 +344,7 @@
       "enabled": true,
       "channel_count": 4,
       "max_output_us": 1500,
-      "max_spread_us": 150,
+      "max_spread_us": 250,
       "telemetry_timeout_s": 0.25,
       "latch_until_disarm": true
     },

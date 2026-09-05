@@ -39,6 +39,7 @@ ELEVATED_THROTTLE_REFERENCE_MAX_US = 1400
 ELEVATED_THROTTLE_RELATIVE_LIMIT_US = 40
 ELEVATED_MAX_MOTOR_OUTPUT_US = 1500
 MAX_NOPROP_MOTOR_SPREAD_US = 150
+ELEVATED_MAX_MOTOR_SPREAD_US = 250
 MAX_NOPROP_MOTOR_TELEMETRY_AGE_S = 0.75
 MAX_NOPROP_TAKEOVER_DURATION_S = 3.0
 MIN_ENTRY_HANDOFF_DURATION_S = 0.8
@@ -299,6 +300,7 @@ def _validate_noprop_config(
         if float(rc.get("thrust_max", 9999.0)) > 0.10:
             raise RuntimeError("low-power no-prop thrust_max exceeds 0.10")
         max_motor_output_us = LOW_POWER_MAX_MOTOR_OUTPUT_US
+        max_motor_spread_us = MAX_NOPROP_MOTOR_SPREAD_US
         max_motor_telemetry_age_s = MAX_NOPROP_MOTOR_TELEMETRY_AGE_S
         min_motor_poll_hz = 2.0
     else:
@@ -336,6 +338,7 @@ def _validate_noprop_config(
         if not 0.0 < throttle_slew <= 100.0:
             raise RuntimeError("elevated no-prop throttle slew must be in (0, 100] us/s")
         max_motor_output_us = ELEVATED_MAX_MOTOR_OUTPUT_US
+        max_motor_spread_us = ELEVATED_MAX_MOTOR_SPREAD_US
         max_motor_telemetry_age_s = 0.25
         min_motor_poll_hz = 10.0
     motor_interlock = dict(safety.get("motor_output_interlock", {}))
@@ -351,8 +354,10 @@ def _validate_noprop_config(
             f"no-prop motor output limit must be between throttle max and {max_motor_output_us} us"
         )
     motor_spread_limit_us = int(motor_interlock.get("max_spread_us", 9999))
-    if not 0 <= motor_spread_limit_us <= MAX_NOPROP_MOTOR_SPREAD_US:
-        raise RuntimeError("no-prop motor spread limit must be in [0, 150] us")
+    if not 0 <= motor_spread_limit_us <= max_motor_spread_us:
+        raise RuntimeError(
+            f"no-prop motor spread limit must be in [0, {max_motor_spread_us}] us"
+        )
     motor_timeout_s = float(motor_interlock.get("telemetry_timeout_s", 9999.0))
     if not 0.0 < motor_timeout_s <= max_motor_telemetry_age_s:
         raise RuntimeError(

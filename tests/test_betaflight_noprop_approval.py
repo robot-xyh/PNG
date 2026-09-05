@@ -427,6 +427,7 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         self.assertEqual(runtime["throttle_command_max_us"], 1400)
         self.assertEqual(config["rc_mapping"]["throttle_hover_us"], 1275)
         self.assertEqual(config["safety"]["motor_output_interlock"]["max_output_us"], 1500)
+        self.assertEqual(config["safety"]["motor_output_interlock"]["max_spread_us"], 250)
 
         missing = copy.deepcopy(config)
         missing["msp_runtime"].pop("throttle_reference_min_us")
@@ -447,6 +448,11 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         excessive_motor["safety"]["motor_output_interlock"]["max_output_us"] = 1501
         with self.assertRaisesRegex(RuntimeError, "between throttle max and 1500"):
             tool._validate_noprop_config(excessive_motor, output)
+
+        excessive_spread = copy.deepcopy(config)
+        excessive_spread["safety"]["motor_output_interlock"]["max_spread_us"] = 251
+        with self.assertRaisesRegex(RuntimeError, r"\[0, 250\]"):
+            tool._validate_noprop_config(excessive_spread, output)
 
         low_power = _with_verified_upward_camera(
             json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
