@@ -283,6 +283,8 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(config["rc_mapping"]["throttle_min_us"], 1200)
         self.assertEqual(config["rc_mapping"]["throttle_hover_us"], 1275)
         self.assertEqual(config["rc_mapping"]["throttle_max_us"], 1500)
+        self.assertEqual(config["safety"]["min_vbat_v"], 22)
+        self.assertEqual(config["safety"]["max_vbat_v"], 25.2)
         self.assertEqual(
             config["guidance"]["velocity_establishing_png"]["total_accel_limit_m_s2"],
             7,

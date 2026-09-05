@@ -409,6 +409,130 @@ class BetaflightRuntimeTest(unittest.TestCase):
             self.assertFalse(status.approved)
             self.assertEqual(status.reason, "approval_schema_version_too_old")
 
+    def test_authorization_rejects_dirty_or_unapproved_software_commit(self):
+        with tempfile.TemporaryDirectory() as directory:
+            approval = Path(directory) / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "approved": True,
+                        "scope": "flight_noncollision_supervised_v2",
+                        "source_conflicts_resolved": True,
+                        "software_binding": {
+                            "repository_commit": "a" * 40,
+                            "repository_dirty": False,
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": "flight_noncollision_supervised_v2",
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 4,
+                "software_binding_required": True,
+            }
+            dirty = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                repository_commit="a" * 40,
+                repository_dirty=True,
+            )
+            self.assertEqual(dirty.reason, "repository_dirty_or_unknown")
+
+            mismatch = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                repository_commit="b" * 40,
+                repository_dirty=False,
+            )
+            self.assertEqual(mismatch.reason, "software_commit_mismatch")
+
+    def test_authorization_rechecks_noprop_timing_source_bindings(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{}\n', encoding="utf-8")
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}),
+                encoding="utf-8",
+            )
+            timing_csv = root / "timing.csv"
+            timing_csv.write_text("elapsed_s\n0\n", encoding="utf-8")
+            timing_meta = root / "timing_meta.json"
+            timing_meta.write_text('{}\n', encoding="utf-8")
+
+            def artifact(path):
+                return {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+            timing = root / "timing_audit.json"
+            timing.write_text(
+                json.dumps(
+                    {
+                        "audit_schema_version": 1,
+                        "passed": True,
+                        "violations": [],
+                        "source_bindings": {
+                            "csv": artifact(timing_csv),
+                            "meta": artifact(timing_meta),
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 4,
+                        "approved": True,
+                        "scope": "flight_noncollision_supervised_v2",
+                        "source_conflicts_resolved": True,
+                        "snapshot_manifest": str(snapshot),
+                        "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                        "expected_fc_identity": {"fc_variant": "BTFL"},
+                        "parameters_sha256": hashlib.sha256(parameters.read_bytes()).hexdigest(),
+                        "noprop_timing_evidence": artifact(timing),
+                    }
+                ),
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": "flight_noncollision_supervised_v2",
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 4,
+                "noprop_timing_evidence_required": True,
+            }
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(status.approved)
+            self.assertEqual(
+                status.approval_sha256,
+                hashlib.sha256(approval.read_bytes()).hexdigest(),
+            )
+
+            timing_csv.write_text("elapsed_s\nchanged\n", encoding="utf-8")
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertEqual(status.reason, "noprop_timing_evidence_invalid")
+
     def test_authorization_binds_required_release_evidence(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

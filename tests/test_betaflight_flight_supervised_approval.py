@@ -15,6 +15,7 @@ if str(TOOLS) not in sys.path:
 
 from create_betaflight_flight_supervised_approval import (  # noqa: E402
     RELEASE_SOURCE_PATHS,
+    validate_noprop_timing_evidence,
     validate_rc_interlock_evidence,
     validate_finalized_run_evidence,
     validate_release_evidence,
@@ -58,7 +59,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             "schema_version": 1,
             "model_type": "voltage_throttle_specific_force_lut",
             "calibration_id": "test-full-6s-lut",
-            "voltage_v": [20.0, 25.2],
+            "voltage_v": [22.0, 25.2],
             "throttle_us": [1200.0, 1300.0, 1500.0],
             "specific_force_m_s2": [
                 [6.0, 10.0, 20.0],
@@ -69,6 +70,20 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 "sample_count": 200,
                 "median_relative_error": 0.05,
                 "p95_relative_error": 0.15,
+                "effective_sample_rate_hz": 10.0,
+                "three_by_five_sample_counts": [[10] * 5 for _ in range(3)],
+                "minimum_cell_samples": 5,
+                "filter_counts": {
+                    "armed_edge_takeoff_landing_trim": 10,
+                    "collision_or_force_outlier": 1,
+                    "high_angular_rate": 1,
+                    "motor_saturation": 1,
+                },
+            },
+            "dynamics": {
+                "model": "first_order_specific_force",
+                "first_order_time_constant_s": 0.08,
+                "fit_sample_count": 600,
             },
         }
         self.thrust_model_path.write_text(json.dumps(model), encoding="utf-8")
@@ -121,6 +136,11 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "throttle runtime envelope"):
             self.validate(config)
 
+        config = copy.deepcopy(self.config)
+        config["safety"]["max_vbat_v"] = 25.3
+        with self.assertRaisesRegex(RuntimeError, "maximum battery gate"):
+            self.validate(config)
+
     def test_rejects_old_relative_limit_and_wrong_thrust_binding(self):
         config = copy.deepcopy(self.config)
         config["msp_runtime"]["throttle_relative_limit_us"] = 40
@@ -144,13 +164,40 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
 
         config = copy.deepcopy(self.config)
         model = json.loads(self.thrust_model_path.read_text(encoding="utf-8"))
-        model["voltage_v"] = [22.0, 25.2]
+        model["voltage_v"] = [22.5, 25.2]
         narrow_path = Path(self.temporary_directory.name) / "narrow.json"
         narrow_path.write_text(json.dumps(model), encoding="utf-8")
         thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
         thrust["model_path"] = str(narrow_path)
         thrust["model_sha256"] = hashlib.sha256(narrow_path.read_bytes()).hexdigest()
-        with self.assertRaisesRegex(RuntimeError, "20.0-25.2"):
+        with self.assertRaisesRegex(RuntimeError, "22.0-25.2"):
+            self.validate(config)
+
+        for name, validation_update in (
+            ("failed", {"passed": False}),
+            ("high-error", {"p95_relative_error": 0.21}),
+        ):
+            config = copy.deepcopy(self.config)
+            model = json.loads(self.thrust_model_path.read_text(encoding="utf-8"))
+            model["validation"].update(validation_update)
+            invalid_path = Path(self.temporary_directory.name) / f"{name}.json"
+            invalid_path.write_text(json.dumps(model), encoding="utf-8")
+            thrust = config["guidance_command"]["accel_tilt_rate"][
+                "thrust_feedforward"
+            ]
+            thrust["model_path"] = str(invalid_path)
+            thrust["model_sha256"] = hashlib.sha256(
+                invalid_path.read_bytes()
+            ).hexdigest()
+            with self.assertRaisesRegex(RuntimeError, "validation"):
+                self.validate(config)
+
+        config = copy.deepcopy(self.config)
+        thrust = config["guidance_command"]["accel_tilt_rate"][
+            "thrust_feedforward"
+        ]
+        thrust["calibration_id"] = "PENDING_TEST_LUT"
+        with self.assertRaisesRegex(RuntimeError, "pending thrust LUT"):
             self.validate(config)
 
     def test_rejects_wrong_timer_or_poll_schedule(self):
@@ -183,7 +230,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 "path": str(self.thrust_model_path.resolve()),
                 "sha256": thrust["model_sha256"],
                 "calibration_id": thrust["calibration_id"],
-                "voltage_coverage_v": [20.0, 25.2],
+                "voltage_coverage_v": [22.0, 25.2],
                 "throttle_coverage_us": [1200.0, 1500.0],
             }
 
@@ -245,11 +292,13 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 "scenarios": [
                     {"name": scenario_names[0], "battery_voltage_v": 25.2},
                     {"name": scenario_names[1], "battery_voltage_v": 22.6},
-                    {"name": scenario_names[2], "battery_voltage_v": 20.0},
+                    {"name": scenario_names[2], "battery_voltage_v": 22.0},
                 ],
                 "acceptance": {
                     "initially_visible_hit_rate_min": 0.8,
                     "initially_visible_fov_hit_rate_min": 0.8,
+                    "mean_speed_hold_accel_saturation_fraction_max": 0.4,
+                    "mean_total_accel_saturation_fraction_max": 0.4,
                     "worst_minimum_range_m_max": None,
                 },
                 "paired_screening": {
@@ -376,6 +425,67 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                     runtime_config_sha256=config_sha256,
                 )
 
+    def test_noprop_timing_evidence_is_hash_bound_and_meets_50hz_contract(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            csv_path = root / "timing.csv"
+            csv_path.write_text("elapsed_s\n0.0\n", encoding="utf-8")
+            meta_path = root / "timing_meta.json"
+            meta_path.write_text(
+                json.dumps(
+                    {
+                        "repository_commit": "a" * 40,
+                        "repository_dirty": False,
+                        "allow_control": True,
+                        "control_mode": "msp_raw_rc",
+                        "config": {
+                            "bench_profile": {"scope": "noprop_bench"},
+                            "msp_runtime": {"control_publish_hz": 50.0},
+                            "logging": {"evidence_frames": {"enabled": True}},
+                        },
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            def binding(path):
+                return {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+
+            report_path = root / "timing_audit.json"
+            report = {
+                "audit_schema_version": 1,
+                "passed": True,
+                "violations": [],
+                "source_bindings": {
+                    "csv": binding(csv_path),
+                    "meta": binding(meta_path),
+                },
+                "metrics": {
+                    "set_raw_rc_write_rate_hz": 49.8,
+                    "set_raw_rc_write_p999_interval_s": 0.03,
+                    "max_send_gap_s": 0.05,
+                    "set_raw_rc_write_success_count": 500,
+                    "evidence_frame_write_count": 30,
+                    "evidence_frame_error_count": 0,
+                    "set_raw_rc_error_count": 0,
+                    "set_raw_rc_write_error_count": 0,
+                    "msp_rx_checksum_error_count": 0,
+                    "msp_rx_parser_error_count": 0,
+                },
+            }
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+
+            evidence = validate_noprop_timing_evidence(report, report_path)
+            self.assertEqual(evidence["repository_commit"], "a" * 40)
+            self.assertEqual(evidence["evidence_frame_count"], 30)
+
+            report["metrics"]["set_raw_rc_write_p999_interval_s"] = 0.041
+            with self.assertRaisesRegex(RuntimeError, "50 Hz"):
+                validate_noprop_timing_evidence(report, report_path)
+
     def test_snapshot_flight_state_requires_hashed_gps_and_voltage_samples(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -403,6 +513,23 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
 
             snapshot["capture"]["include_kinematics"] = False
             with self.assertRaisesRegex(RuntimeError, "include-kinematics"):
+                validate_snapshot_flight_state(snapshot, manifest_path)
+
+            snapshot["capture"]["include_kinematics"] = True
+            with telemetry.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(
+                    stream,
+                    fieldnames=("gps_fix", "gps_satellites", "vbat_v"),
+                )
+                writer.writeheader()
+                for satellites in (8, 9, 10):
+                    writer.writerow(
+                        {"gps_fix": 1, "gps_satellites": satellites, "vbat_v": 25.3}
+                    )
+            snapshot["artifacts"]["telemetry.csv"] = hashlib.sha256(
+                telemetry.read_bytes()
+            ).hexdigest()
+            with self.assertRaisesRegex(RuntimeError, "22.0-25.2"):
                 validate_snapshot_flight_state(snapshot, manifest_path)
 
     def test_finalized_log_only_run_is_required_and_config_bound(self):

@@ -7,6 +7,7 @@ import gc
 import hashlib
 import importlib
 import json
+import math
 import multiprocessing
 import os
 import platform
@@ -1359,6 +1360,17 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     timeout_s = float(serial_cfg.get("timeout_s", 0.2))
 
     control_output_requested = args.control_mode == "msp_raw_rc" and bool(args.allow_control)
+    raw_approval_path = str(
+        dict(config.get("control_authorization", {})).get("approval_manifest", "")
+    ).strip()
+    approval_artifact_path = (
+        None
+        if not raw_approval_path
+        else _resolve_config_artifact_path(
+            raw_approval_path,
+            config_path=Path(args.config),
+        )
+    )
     thrust_mapping = _acceleration_tilt_rate_config(config).thrust_feedforward
     thrust_model, thrust_model_status = _load_voltage_thrust_model(
         config,
@@ -1485,8 +1497,12 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             )
         if not bool(safety_cfg.get("require_acro_rate_mode", False)):
             raise RuntimeError("flight_active_supervised requires Acro/Rate mode")
-        if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
-            raise RuntimeError("flight_active_supervised requires safety.min_vbat_v >= 20 V")
+        if float(safety_cfg.get("min_vbat_v", 0.0)) < 22.0:
+            raise RuntimeError("flight_active_supervised requires safety.min_vbat_v >= 22 V")
+        if float(safety_cfg.get("max_vbat_v", math.inf)) > 25.2:
+            raise RuntimeError(
+                "flight_active_supervised requires safety.max_vbat_v <= 25.2 V"
+            )
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
@@ -1608,6 +1624,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 marker_path=marker_path,
                 evidence_index_path=evidence_index_path,
                 evidence_enabled=frame_config.enabled,
+                approval_path=approval_artifact_path,
             ),
             completion=completion,
         )
@@ -1688,6 +1705,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 marker_path=marker_path,
                 evidence_index_path=evidence_index_path,
                 evidence_enabled=frame_config.enabled,
+                approval_path=approval_artifact_path,
             ),
             completion=completion,
         )
@@ -1778,6 +1796,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 marker_path=marker_path,
                 evidence_index_path=evidence_index_path,
                 evidence_enabled=frame_config.enabled,
+                approval_path=approval_artifact_path,
             ),
             completion=completion,
         )
@@ -2395,6 +2414,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                 marker_path=marker_path,
                 evidence_index_path=evidence_index_path,
                 evidence_enabled=frame_config.enabled,
+                approval_path=approval_artifact_path,
             ),
             completion=completion,
         )
@@ -3098,6 +3118,8 @@ def _initialize_runtime_resources(
             fc_identity=fc_identity,
             box_ids=box_ids,
             parameters_path=args.config,
+            repository_commit=_git_commit(),
+            repository_dirty=_git_dirty(),
         )
         if (
             args.control_mode == "msp_raw_rc"
@@ -3524,10 +3546,15 @@ def _guidance_setpoint(
 
 
 def _voltage_ok(telemetry: BetaflightTelemetry | None, safety_cfg: dict[str, Any]) -> bool:
-    threshold = float(safety_cfg.get("min_vbat_v", 0.0))
-    if threshold <= 0.0:
+    minimum_v = float(safety_cfg.get("min_vbat_v", 0.0))
+    maximum_v = float(safety_cfg.get("max_vbat_v", math.inf))
+    if minimum_v <= 0.0 and math.isinf(maximum_v):
         return True
-    return bool(telemetry is not None and telemetry.analog is not None and telemetry.analog.vbat_v >= threshold)
+    return bool(
+        telemetry is not None
+        and telemetry.analog is not None
+        and minimum_v <= telemetry.analog.vbat_v <= maximum_v
+    )
 
 
 def _aux_enabled(
@@ -3605,6 +3632,7 @@ def _runtime_artifacts(
     evidence_index_path: Path,
     evidence_enabled: bool,
     log_path: Path | None = None,
+    approval_path: Path | None = None,
 ) -> tuple[Path, ...]:
     artifacts = [meta_path]
     if log_path is not None:
@@ -3612,6 +3640,8 @@ def _runtime_artifacts(
     artifacts.extend((events_path, marker_path))
     if evidence_enabled:
         artifacts.append(evidence_index_path)
+    if approval_path is not None and approval_path.is_file():
+        artifacts.append(approval_path)
     return tuple(artifacts)
 
 
@@ -3731,7 +3761,7 @@ def _git_commit() -> str:
 def _git_dirty() -> bool | None:
     try:
         result = subprocess.run(
-            ["git", "status", "--porcelain", "--untracked-files=no"],
+            ["git", "status", "--porcelain"],
             cwd=ROOT,
             text=True,
             stdout=subprocess.PIPE,

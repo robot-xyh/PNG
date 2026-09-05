@@ -5,6 +5,7 @@ import argparse
 import csv
 import json
 import math
+import subprocess
 import sys
 import time
 from dataclasses import asdict
@@ -46,9 +47,9 @@ THROTTLE_MIN_US = 1200
 THROTTLE_HOVER_US = 1275
 THROTTLE_MAX_US = 1500
 THROTTLE_SLEW_US_PER_S = 600.0
-MIN_VBAT_V = 20.0
+MIN_VBAT_V = 22.0
 MIN_GPS_SATELLITES = 6
-REQUIRED_THRUST_VOLTAGE_MIN_V = 20.0
+REQUIRED_THRUST_VOLTAGE_MIN_V = 22.0
 REQUIRED_THRUST_VOLTAGE_MAX_V = 25.2
 MIN_THRUST_VALIDATION_SAMPLES = 100
 MIN_FINALIZED_RUN_ROWS = 100
@@ -61,6 +62,8 @@ RELEASE_ROW_COUNT_MIN = 27000
 RELEASE_NONCOLLISION_TIMELY_ABORT_RATE_MIN = 0.99
 RELEASE_NONCOLLISION_UNSAFE_CONTACT_RATE_MAX = 0.01
 RELEASE_NONCOLLISION_ABORT_LEAD_TIME_S = 0.75
+RELEASE_SPEED_SATURATION_FRACTION_MAX = 0.40
+RELEASE_TOTAL_SATURATION_FRACTION_MAX = 0.40
 RELEASE_REQUIRED_SCENARIOS = {
     "final_chain_software_p95",
     "observed_active_flight_p95",
@@ -94,6 +97,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--release-evidence", required=True)
     parser.add_argument("--rc-interlock-evidence", required=True)
     parser.add_argument("--finalized-run-evidence", required=True)
+    parser.add_argument("--noprop-timing-evidence", required=True)
     parser.add_argument("--output", required=True)
     parser.add_argument("--operator", required=True)
     parser.add_argument("--acknowledge-supervised-flight", action="store_true")
@@ -110,6 +114,7 @@ def main() -> None:
     release_evidence_path = Path(args.release_evidence).expanduser().resolve()
     rc_interlock_path = Path(args.rc_interlock_evidence).expanduser().resolve()
     finalized_run_path = Path(args.finalized_run_evidence).expanduser().resolve()
+    noprop_timing_path = Path(args.noprop_timing_evidence).expanduser().resolve()
     output_path = Path(args.output).expanduser().resolve()
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
@@ -124,6 +129,21 @@ def main() -> None:
         finalized_run_path,
         runtime_config_sha256=config_sha256,
     )
+    noprop_timing_evidence = validate_noprop_timing_evidence(
+        _read_json(noprop_timing_path),
+        noprop_timing_path,
+    )
+    repository_commit, repository_dirty = _repository_state()
+    if repository_dirty:
+        raise RuntimeError("supervised approval requires a clean Git worktree")
+    if finalized_run_evidence["repository_commit"] != repository_commit:
+        raise RuntimeError(
+            "finalized LOG_ONLY evidence commit does not match the approval build"
+        )
+    if noprop_timing_evidence["repository_commit"] != repository_commit:
+        raise RuntimeError(
+            "no-prop timing evidence commit does not match the approval build"
+        )
     parsed_cli = _validate_snapshot(
         snapshot,
         snapshot_path,
@@ -164,6 +184,11 @@ def main() -> None:
         "release_evidence": release_evidence,
         "rc_interlock_evidence": rc_interlock_evidence,
         "finalized_run_evidence": finalized_run_evidence,
+        "noprop_timing_evidence": noprop_timing_evidence,
+        "software_binding": {
+            "repository_commit": repository_commit,
+            "repository_dirty": False,
+        },
         "limits": {
             "override_channels_mask": OVERRIDE_CHANNELS_MASK,
             "actual_algorithm_publication_limit_s": 2.0,
@@ -219,6 +244,16 @@ def validate_release_evidence(
     if (
         hit_rate_min != RELEASE_HIT_RATE_MIN
         or fov_hit_rate_min != RELEASE_FOV_HIT_RATE_MIN
+        or float(
+            acceptance.get(
+                "mean_speed_hold_accel_saturation_fraction_max", math.nan
+            )
+        )
+        != RELEASE_SPEED_SATURATION_FRACTION_MAX
+        or float(
+            acceptance.get("mean_total_accel_saturation_fraction_max", math.nan)
+        )
+        != RELEASE_TOTAL_SATURATION_FRACTION_MAX
         or acceptance.get("worst_minimum_range_m_max", "missing") is not None
     ):
         raise RuntimeError("release evidence must use the formal 80% probabilistic policy")
@@ -387,7 +422,7 @@ def _validate_release_thrust_binding(
     if min(scenario_voltages) > REQUIRED_THRUST_VOLTAGE_MIN_V or max(
         scenario_voltages
     ) < REQUIRED_THRUST_VOLTAGE_MAX_V:
-        raise RuntimeError("release simulation must exercise the 20.0-25.2 V endpoints")
+        raise RuntimeError("release simulation must exercise the 22.0-25.2 V endpoints")
 
 
 def _validate_release_policy_results(
@@ -481,6 +516,90 @@ def validate_rc_interlock_evidence(
         "schema_version": 1,
         "max_release_latency_ms": latency_ms,
         "checks": {name: True for name in required},
+    }
+
+
+def validate_noprop_timing_evidence(
+    report: dict[str, Any],
+    report_path: Path,
+) -> dict[str, Any]:
+    if (
+        report.get("audit_schema_version") != 1
+        or report.get("passed") is not True
+        or report.get("violations") != []
+    ):
+        raise RuntimeError("no-prop timing evidence must be a passing schema v1 audit")
+    bindings = _release_mapping(report.get("source_bindings"), "timing source bindings")
+    if set(bindings) != {"csv", "meta"}:
+        raise RuntimeError("no-prop timing evidence source bindings are incomplete")
+    resolved_paths: dict[str, Path] = {}
+    for name in ("csv", "meta"):
+        binding = _release_mapping(bindings.get(name), f"timing {name} binding")
+        path = Path(str(binding.get("path", ""))).expanduser().resolve()
+        if not path.is_file() or _sha256(path) != str(binding.get("sha256", "")):
+            raise RuntimeError(f"no-prop timing {name} evidence changed or is missing")
+        resolved_paths[name] = path
+
+    meta = _read_json(resolved_paths["meta"])
+    commit = str(meta.get("repository_commit", ""))
+    config = _release_mapping(meta.get("config"), "timing source config")
+    bench = _release_mapping(config.get("bench_profile"), "timing bench profile")
+    logging = _release_mapping(config.get("logging"), "timing logging")
+    frames = _release_mapping(logging.get("evidence_frames"), "timing evidence frames")
+    runtime = _release_mapping(config.get("msp_runtime"), "timing MSP runtime")
+    if (
+        len(commit) != 40
+        or meta.get("repository_dirty") is not False
+        or bench.get("scope") != "noprop_bench"
+        or meta.get("allow_control") is not True
+        or meta.get("control_mode") != "msp_raw_rc"
+        or frames.get("enabled") is not True
+        or float(runtime.get("control_publish_hz", 0.0)) != 50.0
+    ):
+        raise RuntimeError(
+            "no-prop timing evidence must use clean, active noprop_bench code with JPEG recording"
+        )
+
+    metrics = _release_mapping(report.get("metrics"), "timing metrics")
+    try:
+        write_rate_hz = float(metrics["set_raw_rc_write_rate_hz"])
+        p999_interval_s = float(metrics["set_raw_rc_write_p999_interval_s"])
+        maximum_gap_s = float(metrics["max_send_gap_s"])
+        write_count = int(metrics["set_raw_rc_write_success_count"])
+        evidence_frame_count = int(metrics["evidence_frame_write_count"])
+        evidence_frame_errors = int(metrics["evidence_frame_error_count"])
+        transport_errors = sum(
+            int(metrics[name])
+            for name in (
+                "set_raw_rc_error_count",
+                "set_raw_rc_write_error_count",
+                "msp_rx_checksum_error_count",
+                "msp_rx_parser_error_count",
+            )
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("no-prop timing metrics are incomplete") from exc
+    if (
+        write_rate_hz < 49.0
+        or p999_interval_s > 0.040
+        or maximum_gap_s > 0.060
+        or write_count < 100
+        or evidence_frame_count < MIN_FINALIZED_EVIDENCE_FRAMES
+        or evidence_frame_errors != 0
+        or transport_errors != 0
+    ):
+        raise RuntimeError("no-prop timing evidence does not satisfy the 50 Hz contract")
+    return {
+        "path": str(report_path),
+        "sha256": _sha256(report_path),
+        "audit_schema_version": 1,
+        "repository_commit": commit,
+        "set_raw_rc_write_rate_hz": write_rate_hz,
+        "set_raw_rc_write_p999_interval_s": p999_interval_s,
+        "max_send_gap_s": maximum_gap_s,
+        "set_raw_rc_write_success_count": write_count,
+        "evidence_frame_count": evidence_frame_count,
+        "source_bindings": dict(bindings),
     }
 
 
@@ -585,7 +704,9 @@ def validate_finalized_run_evidence(
                 _csv_int(row, "kinematics_valid") == 1
                 and _csv_int(row, "gps_fix") >= 1
                 and _csv_int(row, "gps_satellites") >= MIN_GPS_SATELLITES
-                and _csv_float(row, "vbat_v") >= MIN_VBAT_V
+                and MIN_VBAT_V
+                <= _csv_float(row, "vbat_v")
+                <= REQUIRED_THRUST_VOLTAGE_MAX_V
             ):
                 valid_flight_state_rows += 1
     if row_count < MIN_FINALIZED_RUN_ROWS:
@@ -608,6 +729,7 @@ def validate_finalized_run_evidence(
         "valid_flight_state_rows": valid_flight_state_rows,
         "set_raw_rc_attempt_count": maximum_set_raw_rc_attempts,
         "pairing_confidence": "unique",
+        "repository_commit": commit,
     }
 
 
@@ -670,17 +792,22 @@ def validate_snapshot_flight_state(
                 voltage = float(row.get("vbat_v", ""))
             except (TypeError, ValueError):
                 continue
-            if fix >= 1 and satellites >= MIN_GPS_SATELLITES and voltage >= MIN_VBAT_V:
+            if (
+                fix >= 1
+                and satellites >= MIN_GPS_SATELLITES
+                and MIN_VBAT_V <= voltage <= REQUIRED_THRUST_VOLTAGE_MAX_V
+            ):
                 valid_rows.append((fix, satellites, voltage))
     if len(valid_rows) < 3:
         raise RuntimeError(
-            "snapshot needs at least three samples with GPS >=6 satellites and VBAT >=20 V"
+            "snapshot needs at least three samples with GPS >=6 satellites and VBAT 22.0-25.2 V"
         )
     return {
         "valid_sample_count": len(valid_rows),
         "minimum_fix": min(value[0] for value in valid_rows),
         "minimum_satellites": min(value[1] for value in valid_rows),
         "minimum_vbat_v": min(value[2] for value in valid_rows),
+        "maximum_vbat_v": max(value[2] for value in valid_rows),
         "telemetry_sha256": expected_hash,
     }
 
@@ -733,6 +860,10 @@ def validate_flight_supervised_config(
         raise RuntimeError("control_authorization must require thrust-model evidence")
     if authorization.get("finalized_run_evidence_required") is not True:
         raise RuntimeError("control_authorization must require finalized run evidence")
+    if authorization.get("noprop_timing_evidence_required") is not True:
+        raise RuntimeError("control_authorization must require no-prop timing evidence")
+    if authorization.get("software_binding_required") is not True:
+        raise RuntimeError("control_authorization must require a clean software binding")
     configured_output = Path(str(authorization.get("approval_manifest", ""))).expanduser().resolve()
     if configured_output != output_path:
         raise RuntimeError("approval output must match control_authorization.approval_manifest")
@@ -785,7 +916,9 @@ def validate_flight_supervised_config(
     if safety.get("require_acro_rate_mode") is not True:
         raise RuntimeError("Acro/Rate mode is required")
     if float(safety.get("min_vbat_v", 0.0)) < MIN_VBAT_V:
-        raise RuntimeError("minimum battery gate must be at least 20 V")
+        raise RuntimeError("minimum battery gate must be at least 22 V")
+    if float(safety.get("max_vbat_v", math.inf)) > REQUIRED_THRUST_VOLTAGE_MAX_V:
+        raise RuntimeError("maximum battery gate must be at most 25.2 V")
     aux = dict(safety.get("aux_enable", {}))
     if (
         int(aux.get("channel_index", -1)) != 7
@@ -968,6 +1101,8 @@ def _validate_thrust_model(
     *,
     config_path: Path | None,
 ) -> dict[str, Any]:
+    if str(thrust.calibration_id).strip().upper().startswith("PENDING"):
+        raise RuntimeError("pending thrust LUT calibration cannot be approved")
     raw_path = Path(str(thrust.model_path)).expanduser()
     if raw_path.is_absolute():
         model_path = raw_path.resolve()
@@ -995,15 +1130,52 @@ def _validate_thrust_model(
         model.minimum_voltage_v > REQUIRED_THRUST_VOLTAGE_MIN_V
         or model.maximum_voltage_v < REQUIRED_THRUST_VOLTAGE_MAX_V
     ):
-        raise RuntimeError("thrust LUT does not cover the full 20.0-25.2 V flight range")
+        raise RuntimeError("thrust LUT does not cover the full 22.0-25.2 V flight range")
     try:
         sample_count = int(model.validation["sample_count"])
         median_error = float(model.validation["median_relative_error"])
         p95_error = float(model.validation["p95_relative_error"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("thrust LUT validation metrics are incomplete") from exc
+    if (
+        model.validation.get("passed") is not True
+        or not math.isfinite(median_error)
+        or not math.isfinite(p95_error)
+        or median_error > 0.10
+        or p95_error > 0.20
+    ):
+        raise RuntimeError(
+            "thrust LUT held-out validation does not pass release thresholds"
+        )
     if sample_count < MIN_THRUST_VALIDATION_SAMPLES:
         raise RuntimeError("thrust LUT held-out validation sample count is insufficient")
+    try:
+        effective_rate_hz = float(model.validation["effective_sample_rate_hz"])
+        coverage_counts = model.validation["three_by_five_sample_counts"]
+        minimum_cell_samples = int(model.validation["minimum_cell_samples"])
+        filter_counts = model.validation["filter_counts"]
+        time_constant_s = float(model.dynamics["first_order_time_constant_s"])
+        dynamics_sample_count = int(model.dynamics["fit_sample_count"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("thrust LUT filtering, coverage, or dynamics evidence is incomplete") from exc
+    if (
+        not math.isclose(effective_rate_hz, 10.0)
+        or not isinstance(coverage_counts, list)
+        or len(coverage_counts) != 3
+        or any(not isinstance(row, list) or len(row) != 5 for row in coverage_counts)
+        or minimum_cell_samples < 5
+        or any(int(value) < minimum_cell_samples for row in coverage_counts for value in row)
+        or not isinstance(filter_counts, dict)
+        or not {
+            "armed_edge_takeoff_landing_trim",
+            "collision_or_force_outlier",
+            "high_angular_rate",
+            "motor_saturation",
+        }.issubset(filter_counts)
+        or not 0.0 < time_constant_s <= 0.5
+        or dynamics_sample_count < 500
+    ):
+        raise RuntimeError("thrust LUT does not satisfy filtered 3x5 coverage and dynamics gates")
     return {
         "path": str(model_path),
         "sha256": model.source_sha256,
@@ -1018,8 +1190,33 @@ def _validate_thrust_model(
             "sample_count": sample_count,
             "median_relative_error": median_error,
             "p95_relative_error": p95_error,
+            "effective_sample_rate_hz": effective_rate_hz,
+            "three_by_five_sample_counts": coverage_counts,
+            "minimum_cell_samples": minimum_cell_samples,
         },
+        "dynamics": dict(model.dynamics),
     }
+
+
+def _repository_state() -> tuple[str, bool]:
+    try:
+        commit = subprocess.check_output(
+            ["git", "rev-parse", "HEAD"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--porcelain"],
+            cwd=ROOT,
+            text=True,
+            stderr=subprocess.DEVNULL,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:
+        raise RuntimeError("cannot determine repository state for supervised approval") from exc
+    if len(commit) != 40:
+        raise RuntimeError("repository commit is invalid")
+    return commit, bool(status.strip())
 
 
 if __name__ == "__main__":

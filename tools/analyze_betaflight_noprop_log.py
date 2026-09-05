@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import hashlib
 import json
 import math
 from pathlib import Path
@@ -563,6 +564,8 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "max_send_gap_s": max_send_gap_s,
         "set_raw_rc_write_rate_hz": _number(final.get("msp_set_raw_rc_write_rate_hz")),
         "set_raw_rc_write_p999_interval_s": _maximum(rows, "msp_set_raw_rc_write_p999_interval_s"),
+        "evidence_frame_write_count": _integer(final.get("evidence_frame_write_count")) or 0,
+        "evidence_frame_error_count": _integer(final.get("evidence_frame_error_count")) or 0,
         "max_set_raw_rc_ack_age_s": (
             _maximum(
                 (row for row in rows if _integer(row.get("msp_output_enabled")) == 1),
@@ -629,11 +632,29 @@ def analyze_log(csv_path: Path) -> dict[str, Any]:
         "audit_schema_version": 1,
         "source_csv": str(csv_path),
         "source_meta": str(meta_path),
+        "source_bindings": {
+            "csv": _file_binding(csv_path),
+            "meta": _file_binding(meta_path),
+        },
         "passed": not violations,
         "thresholds": thresholds,
         "metrics": metrics,
         "violations": violations,
         "warnings": warnings,
+    }
+
+
+def _file_binding(path: Path) -> dict[str, Any]:
+    if not path.is_file():
+        return {"path": str(path), "sha256": "", "bytes": 0}
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return {
+        "path": str(path.resolve()),
+        "sha256": digest.hexdigest(),
+        "bytes": path.stat().st_size,
     }
 
 

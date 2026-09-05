@@ -139,7 +139,9 @@
     "rc_interlock_evidence_required": true,
     "release_evidence_required": true,
     "thrust_model_evidence_required": true,
-    "finalized_run_evidence_required": true
+    "finalized_run_evidence_required": true,
+    "software_binding_required": true,
+    "noprop_timing_evidence_required": true
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -379,7 +381,8 @@
     "telemetry_timeout_s": 0.5,
     "attitude_timeout_s": 0.5,
     "watchdog_timeout_s": 0.25,
-    "min_vbat_v": 20,
+    "min_vbat_v": 22,
+    "max_vbat_v": 25.2,
     "takeover_duration_interlock": {
       "enabled": true,
       "max_duration_s": 2.0,

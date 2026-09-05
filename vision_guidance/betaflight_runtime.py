@@ -161,6 +161,7 @@ class ControlAuthorizationStatus:
     scope: str = ""
     parameters_path: str = ""
     parameters_sha256: str = ""
+    approval_sha256: str = ""
 
 
 @dataclass(frozen=True)
@@ -387,6 +388,8 @@ def resolve_control_authorization(
     fc_identity: dict[str, Any],
     box_ids: Sequence[int],
     parameters_path: str | Path | None = None,
+    repository_commit: str = "",
+    repository_dirty: bool | None = None,
 ) -> ControlAuthorizationStatus:
     if not bool(values.get("enabled", False)):
         return ControlAuthorizationStatus(False, "authorization_disabled")
@@ -416,6 +419,24 @@ def resolve_control_authorization(
     required_scope = str(values.get("required_scope", "")).strip()
     if required_scope and scope != required_scope:
         return ControlAuthorizationStatus(False, "authorization_scope_mismatch", str(approval_path), scope=scope)
+    if bool(values.get("software_binding_required", False)):
+        binding = approval.get("software_binding")
+        if not isinstance(binding, dict):
+            return ControlAuthorizationStatus(
+                False, "software_binding_missing", str(approval_path), scope=scope
+            )
+        if repository_dirty is not False:
+            return ControlAuthorizationStatus(
+                False, "repository_dirty_or_unknown", str(approval_path), scope=scope
+            )
+        if (
+            len(repository_commit) != 40
+            or binding.get("repository_commit") != repository_commit
+            or binding.get("repository_dirty") is not False
+        ):
+            return ControlAuthorizationStatus(
+                False, "software_commit_mismatch", str(approval_path), scope=scope
+            )
     snapshot_path = Path(str(approval.get("snapshot_manifest", ""))).expanduser()
     if not snapshot_path.is_file():
         return ControlAuthorizationStatus(False, "snapshot_manifest_missing", str(approval_path), str(snapshot_path))
@@ -672,16 +693,53 @@ def resolve_control_authorization(
                 parameters_path=str(resolved_parameters_path),
                 parameters_sha256=actual_parameters_sha,
             )
+    if bool(values.get("noprop_timing_evidence_required", False)):
+        timing_evidence = approval.get("noprop_timing_evidence")
+        reason = ""
+        if not isinstance(timing_evidence, dict):
+            reason = "noprop_timing_evidence_missing"
+        else:
+            evidence_path = Path(str(timing_evidence.get("path", ""))).expanduser()
+            if not evidence_path.is_file():
+                reason = "noprop_timing_evidence_file_missing"
+            elif _sha256(evidence_path) != str(timing_evidence.get("sha256", "")):
+                reason = "noprop_timing_evidence_sha256_mismatch"
+            else:
+                try:
+                    evidence_report = json.loads(evidence_path.read_text(encoding="utf-8"))
+                except (OSError, json.JSONDecodeError):
+                    reason = "noprop_timing_evidence_invalid"
+                else:
+                    if (
+                        not isinstance(evidence_report, dict)
+                        or evidence_report.get("audit_schema_version") != 1
+                        or evidence_report.get("passed") is not True
+                        or evidence_report.get("violations") != []
+                        or not _timing_source_bindings_intact(evidence_report)
+                    ):
+                        reason = "noprop_timing_evidence_invalid"
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                reason,
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
     return ControlAuthorizationStatus(
-        True,
-        "approved",
-        str(approval_path.resolve()),
-        str(snapshot_path.resolve()),
-        actual_sha,
-        True,
-        scope,
-        str(resolved_parameters_path.resolve()),
-        actual_parameters_sha,
+        approved=True,
+        reason="approved",
+        approval_path=str(approval_path.resolve()),
+        snapshot_path=str(snapshot_path.resolve()),
+        snapshot_sha256=actual_sha,
+        config_conflict_free=True,
+        scope=scope,
+        parameters_path=str(resolved_parameters_path.resolve()),
+        parameters_sha256=actual_parameters_sha,
+        approval_sha256=_sha256(approval_path),
     )
 
 
@@ -729,6 +787,13 @@ def _artifact_entry_intact(entry: Any) -> bool:
         return _sha256(path) == expected_sha256
     except OSError:
         return False
+
+
+def _timing_source_bindings_intact(report: dict[str, Any]) -> bool:
+    bindings = report.get("source_bindings")
+    if not isinstance(bindings, dict) or set(bindings) != {"csv", "meta"}:
+        return False
+    return all(_artifact_entry_intact(bindings[name]) for name in ("csv", "meta"))
 
 
 def merge_physical_rc(
