@@ -570,7 +570,7 @@ LOS rate 峰值、各导引分项峰值和饱和占比、Rate lag/相关系数/�
 ## 16. 可直接交给编码智能体的提示词
 
 ```text
-你是 AirSim/飞行控制数据对比工程师。工作目录：
+你是 AirSim/飞行控制数据对比工程师。参考工作目录：
 /home/linux/Documents/PNG-betaflight-upward-camera
 
 目标：基于真实外场最后一架次 LOG00106，建立只作用于 AirSim 的 LOG_ONLY 趋势复现和对比。
