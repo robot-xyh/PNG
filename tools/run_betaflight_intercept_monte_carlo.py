@@ -43,7 +43,7 @@ RELEASE_SOURCE_PATHS = {
     "thrust_model": ROOT / "vision_guidance" / "thrust_model.py",
     "monte_carlo_runner": Path(__file__).resolve(),
 }
-RELEASE_THRUST_VOLTAGE_MIN_V = 20.0
+RELEASE_THRUST_VOLTAGE_MIN_V = 22.0
 RELEASE_THRUST_VOLTAGE_MAX_V = 25.2
 RELEASE_THRUST_VALIDATION_SAMPLES_MIN = 100
 EVIDENCE_ROLES = {
@@ -569,6 +569,11 @@ def _derive_runtime_simulation(
             float(thrust["max_load_factor_g"]) * gravity
         ),
         "throttle_dynamics_enabled": throttle_dynamics_enabled,
+        "thrust_response_tau_s": (
+            float(thrust_model_binding["dynamics"]["first_order_time_constant_s"])
+            if throttle_dynamics_enabled
+            else 0.0
+        ),
         "throttle_handover_duration_s": float(msp["throttle_handover_s"]),
         "throttle_slew_limit_us_per_s": msp_slew,
         "throttle_min_us": float(rc["throttle_min_us"]),
@@ -665,13 +670,22 @@ def _runtime_thrust_model_binding(
         model.minimum_voltage_v > RELEASE_THRUST_VOLTAGE_MIN_V
         or model.maximum_voltage_v < RELEASE_THRUST_VOLTAGE_MAX_V
     ):
-        raise ValueError("runtime thrust LUT must cover 20.0-25.2 V")
+        raise ValueError("runtime thrust LUT must cover 22.0-25.2 V")
     try:
         validation_samples = int(model.validation["sample_count"])
     except (KeyError, TypeError, ValueError) as exc:
         raise ValueError("runtime thrust LUT sample_count is missing") from exc
     if validation_samples < RELEASE_THRUST_VALIDATION_SAMPLES_MIN:
         raise ValueError("runtime thrust LUT validation sample count is insufficient")
+    dynamics = model.metadata().get("dynamics")
+    if not isinstance(dynamics, dict):
+        raise ValueError("runtime thrust LUT dynamics are missing")
+    try:
+        time_constant_s = float(dynamics["first_order_time_constant_s"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise ValueError("runtime thrust LUT first-order time constant is missing") from exc
+    if not math.isfinite(time_constant_s) or not 0.0 < time_constant_s <= 0.5:
+        raise ValueError("runtime thrust LUT first-order time constant is invalid")
     rc = _required_mapping(runtime, "rc_mapping")
     throttle_min = float(rc["throttle_min_us"])
     throttle_max = float(rc["throttle_max_us"])

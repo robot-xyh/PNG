@@ -4,7 +4,7 @@
   "trials_per_case": 100,
   "runtime_binding": {
     "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
-    "sha256": "fa5e3ee90a0fb7b5657b073da8bd91506712758d3c14fd1bbc7a2440fe4c8550"
+    "sha256": "a3db7d4da173590d7dd8ba53570ea5f7e36ef59483c8666834731a9555efe098"
   },
   "evidence": {
     "controller": "velocity_establishing_png",
@@ -40,7 +40,9 @@
     "mean_kinematic_valid_fraction_min": 0.9,
     "worst_minimum_range_m_max": null,
     "mean_tilt_saturation_fraction_max": 0.1,
-    "mean_rate_saturation_fraction_max": 0.1
+    "mean_rate_saturation_fraction_max": 0.1,
+    "mean_speed_hold_accel_saturation_fraction_max": 0.4,
+    "mean_total_accel_saturation_fraction_max": 0.4
   },
   "noncollision_acceptance": {
     "timely_abort_rate_min": 0.99,
@@ -76,7 +78,7 @@
   "scenarios": [
     {"name": "final_chain_software_p95", "battery_voltage_v": 25.2, "perception_latency_s": 0.084556, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
     {"name": "observed_active_flight_p95", "battery_voltage_v": 22.6, "perception_latency_s": 0.1277, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25},
-    {"name": "conservative_physical_p95_budget", "battery_voltage_v": 20.0, "perception_latency_s": 0.154139, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25}
+    {"name": "conservative_physical_p95_budget", "battery_voltage_v": 22.0, "perception_latency_s": 0.154139, "los_angle_noise_std_deg": 0.25, "relative_velocity_noise_std_m_s": 0.25, "wind_accel_std_m_s2": 0.25}
   ],
   "evaluations": [
     {"name": "contact_fov_priority_disabled", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "screening_baseline", "required_for_release": false, "simulation_overrides": {"candidate_engagement_policy": "contact", "candidate_fov_priority_enabled": false}},

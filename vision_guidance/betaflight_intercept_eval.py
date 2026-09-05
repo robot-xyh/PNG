@@ -15,6 +15,8 @@ class InterceptionAcceptanceCriteria:
     worst_minimum_range_m_max: float | None = 1.0
     mean_tilt_saturation_fraction_max: float = 0.10
     mean_rate_saturation_fraction_max: float = 0.10
+    mean_speed_hold_accel_saturation_fraction_max: float = 0.40
+    mean_total_accel_saturation_fraction_max: float = 0.40
 
     def __post_init__(self) -> None:
         for name in (
@@ -25,6 +27,8 @@ class InterceptionAcceptanceCriteria:
             "mean_kinematic_valid_fraction_min",
             "mean_tilt_saturation_fraction_max",
             "mean_rate_saturation_fraction_max",
+            "mean_speed_hold_accel_saturation_fraction_max",
+            "mean_total_accel_saturation_fraction_max",
         ):
             value = float(getattr(self, name))
             if not math.isfinite(value) or not 0.0 <= value <= 1.0:
@@ -73,6 +77,12 @@ def evaluate_interception_results(
     mean_rate_saturation_fraction = _mean(
         _finite_float(row, "rate_saturation_fraction") for row in visible
     )
+    mean_speed_hold_accel_saturation_fraction = _mean(
+        _finite_float(row, "speed_hold_accel_saturation_fraction") for row in visible
+    )
+    mean_total_accel_saturation_fraction = _mean(
+        _finite_float(row, "total_accel_saturation_fraction") for row in visible
+    )
 
     checks = {
         "initially_visible_hit_rate": _minimum_check(
@@ -103,6 +113,14 @@ def evaluate_interception_results(
             mean_rate_saturation_fraction,
             criteria.mean_rate_saturation_fraction_max,
         ),
+        "mean_speed_hold_accel_saturation_fraction": _maximum_check(
+            mean_speed_hold_accel_saturation_fraction,
+            criteria.mean_speed_hold_accel_saturation_fraction_max,
+        ),
+        "mean_total_accel_saturation_fraction": _maximum_check(
+            mean_total_accel_saturation_fraction,
+            criteria.mean_total_accel_saturation_fraction_max,
+        ),
     }
     outcome_counts = {
         reason: sum(str(row.get("outcome_reason", "")) == reason for row in rows)
@@ -130,6 +148,10 @@ def evaluate_interception_results(
         "worst_minimum_range_m": worst_minimum_range_m,
         "mean_tilt_saturation_fraction": mean_tilt_saturation_fraction,
         "mean_rate_saturation_fraction": mean_rate_saturation_fraction,
+        "mean_speed_hold_accel_saturation_fraction": (
+            mean_speed_hold_accel_saturation_fraction
+        ),
+        "mean_total_accel_saturation_fraction": mean_total_accel_saturation_fraction,
         "outcome_counts": outcome_counts,
         "checks": checks,
         "passed": visible_count > 0 and all(

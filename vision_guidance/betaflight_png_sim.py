@@ -93,6 +93,7 @@ class ClosedLoopSimulationConfig:
     min_thrust_specific_force_m_s2: float = 4.903325
     max_thrust_specific_force_m_s2: float = 16.671305
     throttle_dynamics_enabled: bool = False
+    thrust_response_tau_s: float = 0.0
     throttle_handover_duration_s: float = 0.0
     throttle_slew_limit_us_per_s: float = 0.0
     throttle_min_us: float = 1200.0
@@ -282,6 +283,10 @@ class ClosedLoopSimulationConfig:
                 "enabled throttle dynamics require a positive throttle slew limit"
             )
         if self.throttle_dynamics_enabled:
+            if not math.isfinite(self.thrust_response_tau_s) or self.thrust_response_tau_s <= 0.0:
+                raise ValueError(
+                    "enabled throttle dynamics require a positive thrust_response_tau_s"
+                )
             if not math.isfinite(self.battery_voltage_v) or self.battery_voltage_v <= 0.0:
                 raise ValueError(
                     "enabled throttle dynamics require a positive battery_voltage_v"
@@ -665,6 +670,11 @@ def simulate_case(
         )
         if thrust_model is not None
         else None
+    )
+    actual_thrust_specific_force = (
+        thrust_model.specific_force(cfg.battery_voltage_v, cfg.throttle_hover_us)
+        if thrust_model is not None
+        else cfg.gravity_m_s2
     )
     setpoint = None
     samples = 0
@@ -1101,10 +1111,15 @@ def simulate_case(
             )
             if thrust_model is None:
                 raise RuntimeError("throttle dynamics require a loaded thrust LUT")
-            thrust_specific_force = thrust_model.specific_force(
+            target_thrust_specific_force = thrust_model.specific_force(
                 cfg.battery_voltage_v,
                 current_throttle_us,
             )
+            thrust_alpha = 1.0 - math.exp(-cfg.dt_s / cfg.thrust_response_tau_s)
+            actual_thrust_specific_force += thrust_alpha * (
+                target_thrust_specific_force - actual_thrust_specific_force
+            )
+            thrust_specific_force = actual_thrust_specific_force
             load_factor_g = thrust_specific_force / cfg.gravity_m_s2
             thrust_saturated = bool(setpoint.thrust_command_limited)
             counters["throttle_handover"] += int(handover_active)

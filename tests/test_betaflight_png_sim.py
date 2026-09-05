@@ -40,6 +40,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
                 entry_handoff_enabled=True,
                 entry_handoff_duration_s=0.8,
                 throttle_dynamics_enabled=True,
+                thrust_response_tau_s=0.08,
                 throttle_handover_duration_s=0.8,
                 throttle_slew_limit_us_per_s=600.0,
                 battery_voltage_v=22.6,
@@ -89,6 +90,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "battery_voltage_v"):
             ClosedLoopSimulationConfig(
                 throttle_dynamics_enabled=True,
+                thrust_response_tau_s=0.08,
                 throttle_slew_limit_us_per_s=600.0,
             )
 
@@ -98,6 +100,7 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
             common = {
                 "duration_s": 0.05,
                 "throttle_dynamics_enabled": True,
+                "thrust_response_tau_s": 0.08,
                 "throttle_slew_limit_us_per_s": 600.0,
                 "battery_voltage_v": 22.6,
                 "thrust_model_path": str(model_path),

@@ -161,14 +161,14 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
                 )
 
             narrow = self._thrust_model_values()
-            narrow["voltage_v"] = [21.0, 25.2]
+            narrow["voltage_v"] = [22.5, 25.2]
             narrow_path = root / "narrow_lut.json"
             narrow_path.write_text(json.dumps(narrow), encoding="utf-8")
             thrust["model_path"] = str(narrow_path)
             thrust["model_sha256"] = hashlib.sha256(narrow_path.read_bytes()).hexdigest()
             runtime_path.write_text(json.dumps(runtime), encoding="utf-8")
             narrow_digest = hashlib.sha256(runtime_path.read_bytes()).hexdigest()
-            with self.assertRaisesRegex(ValueError, "20.0-25.2"):
+            with self.assertRaisesRegex(ValueError, "22.0-25.2"):
                 _bind_runtime_config(
                     {"battery_voltage_v": 22.6},
                     {"config": str(runtime_path), "sha256": narrow_digest},
@@ -503,6 +503,8 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
             "minimum_range_m": 0.95,
             "tilt_saturation_fraction": 0.01,
             "rate_saturation_fraction": 0.01,
+            "speed_hold_accel_saturation_fraction": 0.01,
+            "total_accel_saturation_fraction": 0.01,
         }
 
     @staticmethod
@@ -511,7 +513,7 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
             "schema_version": 1,
             "model_type": "voltage_throttle_specific_force_lut",
             "calibration_id": "mc-unit-test-lut",
-            "voltage_v": [20.0, 25.2],
+            "voltage_v": [22.0, 25.2],
             "throttle_us": [1200.0, 1275.0, 1500.0],
             "specific_force_m_s2": [
                 [4.0, 9.5, 20.0],
@@ -522,6 +524,11 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
                 "sample_count": 200,
                 "median_relative_error": 0.05,
                 "p95_relative_error": 0.15,
+            },
+            "dynamics": {
+                "model": "first_order_specific_force",
+                "first_order_time_constant_s": 0.08,
+                "fit_sample_count": 600,
             },
         }
 
