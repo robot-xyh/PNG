@@ -86,6 +86,10 @@ EXPECTED_POLL_HZ = {
     "rc_poll_hz": 5.0,
     "analog_poll_hz": 1.0,
 }
+NOPROP_TIMING_EXPECTED_POLL_HZ = {
+    **EXPECTED_POLL_HZ,
+    "motor_poll_hz": 2.0,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -559,6 +563,15 @@ def validate_noprop_timing_evidence(
         raise RuntimeError(
             "no-prop timing evidence must use clean, active noprop_bench code with JPEG recording"
         )
+    for key, expected in NOPROP_TIMING_EXPECTED_POLL_HZ.items():
+        try:
+            actual = float(runtime[key])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(f"no-prop timing msp_runtime.{key} is missing") from exc
+        if not math.isclose(actual, expected, abs_tol=1.0e-9):
+            raise RuntimeError(
+                f"no-prop timing msp_runtime.{key} must be exactly {expected:g} Hz"
+            )
 
     metrics = _release_mapping(report.get("metrics"), "timing metrics")
     try:

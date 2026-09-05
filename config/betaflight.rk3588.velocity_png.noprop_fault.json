@@ -51,11 +51,11 @@
     "transport_mode": "async_pipeline",
     "telemetry_poll_hz": 5,
     "status_poll_hz": 5,
-    "attitude_poll_hz": 10,
+    "attitude_poll_hz": 20,
     "raw_imu_poll_hz": 5,
     "motor_poll_hz": 2,
-    "rc_poll_hz": 10,
-    "analog_poll_hz": 2,
+    "rc_poll_hz": 5,
+    "analog_poll_hz": 1,
     "control_publish_hz": 50,
     "physical_rc_timeout_s": 0.25,
     "override_grace_hold_s": 0.35,
@@ -102,7 +102,13 @@
     "altitude_poll_hz": 5
   },
   "logging": {
-    "platform_health_hz": 1
+    "platform_health_hz": 1,
+    "csv_flush_interval_s": 1,
+    "evidence_frames": {
+      "enabled": true,
+      "max_fps": 5,
+      "jpeg_quality": 80
+    }
   },
   "telemetry_web": {
     "enabled": true,

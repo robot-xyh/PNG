@@ -440,7 +440,17 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                         "control_mode": "msp_raw_rc",
                         "config": {
                             "bench_profile": {"scope": "noprop_bench"},
-                            "msp_runtime": {"control_publish_hz": 50.0},
+                            "msp_runtime": {
+                                "control_publish_hz": 50.0,
+                                "status_poll_hz": 5.0,
+                                "attitude_poll_hz": 20.0,
+                                "raw_imu_poll_hz": 5.0,
+                                "raw_gps_poll_hz": 5.0,
+                                "altitude_poll_hz": 5.0,
+                                "motor_poll_hz": 2.0,
+                                "rc_poll_hz": 5.0,
+                                "analog_poll_hz": 1.0,
+                            },
                             "logging": {"evidence_frames": {"enabled": True}},
                         },
                     }
@@ -482,6 +492,16 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             self.assertEqual(evidence["repository_commit"], "a" * 40)
             self.assertEqual(evidence["evidence_frame_count"], 30)
 
+            timing_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+            timing_meta["config"]["msp_runtime"]["attitude_poll_hz"] = 10.0
+            meta_path.write_text(json.dumps(timing_meta), encoding="utf-8")
+            report["source_bindings"]["meta"] = binding(meta_path)
+            with self.assertRaisesRegex(RuntimeError, "attitude_poll_hz"):
+                validate_noprop_timing_evidence(report, report_path)
+
+            timing_meta["config"]["msp_runtime"]["attitude_poll_hz"] = 20.0
+            meta_path.write_text(json.dumps(timing_meta), encoding="utf-8")
+            report["source_bindings"]["meta"] = binding(meta_path)
             report["metrics"]["set_raw_rc_write_p999_interval_s"] = 0.041
             with self.assertRaisesRegex(RuntimeError, "50 Hz"):
                 validate_noprop_timing_evidence(report, report_path)
