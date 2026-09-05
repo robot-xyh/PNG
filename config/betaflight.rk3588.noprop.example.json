@@ -2,6 +2,8 @@
   "bench_profile": {
     "scope": "noprop_bench",
     "description": "Restricted PNG-to-MSP bench profile; all propellers must be physically removed.",
+    "all_propellers_removed_required": true,
+    "throttle_test_mode": "low_power",
     "rate_limit_deg_s": 3.0,
     "throttle_pwm_range": [1000, 1100]
   },

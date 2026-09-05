@@ -31,10 +31,13 @@ from vision_guidance.betaflight_runtime import (  # noqa: E402
 
 MSP_OVERRIDE_PERMANENT_ID = 50
 MAX_NOPROP_RATE_DEG_S = 3.0
-MAX_NOPROP_THROTTLE_US = 1100
-MIN_NOPROP_THROTTLE_REFERENCE_US = 980
-MAX_NOPROP_THROTTLE_REFERENCE_US = 1200
-MAX_NOPROP_MOTOR_OUTPUT_US = 1200
+LOW_POWER_MAX_THROTTLE_US = 1100
+LOW_POWER_MIN_THROTTLE_REFERENCE_US = 980
+LOW_POWER_MAX_MOTOR_OUTPUT_US = 1200
+ELEVATED_THROTTLE_REFERENCE_MIN_US = 1200
+ELEVATED_THROTTLE_REFERENCE_MAX_US = 1400
+ELEVATED_THROTTLE_RELATIVE_LIMIT_US = 40
+ELEVATED_MAX_MOTOR_OUTPUT_US = 1500
 MAX_NOPROP_MOTOR_SPREAD_US = 150
 MAX_NOPROP_MOTOR_TELEMETRY_AGE_S = 0.75
 MAX_NOPROP_TAKEOVER_DURATION_S = 3.0
@@ -82,7 +85,10 @@ def main() -> None:
     )
     guidance = _validate_guidance_config(config)
     guidance_command_frames = _validate_guidance_command_frames(config)
+    bench = dict(config.get("bench_profile", {}))
     runtime = dict(config.get("msp_runtime", {}))
+    rc = dict(config.get("rc_mapping", {}))
+    motor_interlock = dict(dict(config.get("safety", {})).get("motor_output_interlock", {}))
 
     approval = {
         "schema_version": 1,
@@ -100,13 +106,15 @@ def main() -> None:
         "parameters_sha256": _sha256(config_path),
         "limits": {
             "max_rate_deg_s": MAX_NOPROP_RATE_DEG_S,
-            "max_throttle_us": MAX_NOPROP_THROTTLE_US,
+            "throttle_test_mode": str(bench["throttle_test_mode"]),
+            "max_throttle_us": int(rc["throttle_max_us"]),
+            "throttle_relative_limit_us": int(runtime["throttle_relative_limit_us"]),
             "min_throttle_reference_us": int(runtime["throttle_reference_min_us"]),
             "max_throttle_reference_us": int(runtime["throttle_reference_max_us"]),
             "max_throttle_transition_command_us": int(runtime["throttle_command_max_us"]),
-            "max_motor_output_us": MAX_NOPROP_MOTOR_OUTPUT_US,
-            "max_motor_spread_us": MAX_NOPROP_MOTOR_SPREAD_US,
-            "max_motor_telemetry_age_s": MAX_NOPROP_MOTOR_TELEMETRY_AGE_S,
+            "max_motor_output_us": int(motor_interlock["max_output_us"]),
+            "max_motor_spread_us": int(motor_interlock["max_spread_us"]),
+            "max_motor_telemetry_age_s": float(motor_interlock["telemetry_timeout_s"]),
             "max_takeover_duration_s": MAX_NOPROP_TAKEOVER_DURATION_S,
             "prefill_required": True,
             "msp_override_permanent_id": MSP_OVERRIDE_PERMANENT_ID,
@@ -227,6 +235,12 @@ def _validate_noprop_config(
         raise RuntimeError("ARM must remain on physical RC5/AUX1")
     if int(runtime.get("prefill_valid_min_us", 0)) < 900:
         raise RuntimeError("no-prop prefill must reject 885 us startup values")
+    bench = dict(config.get("bench_profile", {}))
+    if bench.get("all_propellers_removed_required") is not True:
+        raise RuntimeError("no-prop approval must explicitly require all propellers removed")
+    throttle_test_mode = str(bench.get("throttle_test_mode", ""))
+    if throttle_test_mode not in {"low_power", "elevated_reference"}:
+        raise RuntimeError("no-prop throttle_test_mode must be low_power or elevated_reference")
     throttle_runtime_keys = (
         "throttle_relative_limit_us",
         "throttle_reference_min_us",
@@ -245,24 +259,6 @@ def _validate_noprop_config(
     throttle_reference_max_us = int(runtime["throttle_reference_max_us"])
     throttle_command_min_us = int(runtime["throttle_command_min_us"])
     throttle_command_max_us = int(runtime["throttle_command_max_us"])
-    if throttle_relative_limit_us != 0:
-        raise RuntimeError("no-prop throttle_relative_limit_us must be zero")
-    if (
-        throttle_command_min_us != MIN_NOPROP_THROTTLE_REFERENCE_US
-        or throttle_reference_min_us != MIN_NOPROP_THROTTLE_REFERENCE_US
-    ):
-        raise RuntimeError(
-            "no-prop throttle reference envelope must include the measured 980-1000 us idle range"
-        )
-    if not (
-        MAX_NOPROP_THROTTLE_US
-        <= throttle_reference_max_us
-        <= throttle_command_max_us
-        <= MAX_NOPROP_THROTTLE_REFERENCE_US
-    ):
-        raise RuntimeError(
-            "no-prop throttle reference/transition maximum must stay within 1100-1200 us"
-        )
 
     rc = dict(config.get("rc_mapping", {}))
     if rc.get("rate_mapping_type") != "betaflight":
@@ -276,14 +272,72 @@ def _validate_noprop_config(
     throttle_min_us = int(rc.get("throttle_min_us", 0))
     throttle_hover_us = int(rc.get("throttle_hover_us", 0))
     throttle_max_us = int(rc.get("throttle_max_us", 9999))
-    if not 1000 <= throttle_min_us <= throttle_hover_us <= throttle_max_us <= MAX_NOPROP_THROTTLE_US:
-        raise RuntimeError("no-prop throttle PWM envelope must stay within 1000-1100 us")
-    if int(rc.get("neutral_throttle_us", 0)) != 1000:
-        raise RuntimeError("no-prop neutral_throttle_us must be 1000")
     if float(rc.get("max_delta_us_per_s", 9999.0)) > 100.0:
         raise RuntimeError("no-prop RC slew limit must not exceed 100 us/s")
-    if float(rc.get("thrust_max", 9999.0)) > 0.10:
-        raise RuntimeError("thrust_max exceeds no-prop limit")
+    if throttle_test_mode == "low_power":
+        if list(bench.get("throttle_pwm_range", [])) != [1000, 1100]:
+            raise RuntimeError("low-power no-prop declared throttle range must be 1000-1100 us")
+        if throttle_relative_limit_us != 0:
+            raise RuntimeError("low-power no-prop throttle_relative_limit_us must be zero")
+        if (
+            throttle_command_min_us != LOW_POWER_MIN_THROTTLE_REFERENCE_US
+            or throttle_reference_min_us != LOW_POWER_MIN_THROTTLE_REFERENCE_US
+            or throttle_reference_max_us != LOW_POWER_MAX_THROTTLE_US
+            or throttle_command_max_us != LOW_POWER_MAX_THROTTLE_US
+        ):
+            raise RuntimeError("low-power no-prop throttle reference envelope must be 980-1100 us")
+        if not (
+            1000
+            <= throttle_min_us
+            <= throttle_hover_us
+            <= throttle_max_us
+            <= LOW_POWER_MAX_THROTTLE_US
+        ):
+            raise RuntimeError("low-power no-prop throttle PWM envelope must stay within 1000-1100 us")
+        if int(rc.get("neutral_throttle_us", 0)) != 1000:
+            raise RuntimeError("low-power no-prop neutral_throttle_us must be 1000")
+        if float(rc.get("thrust_max", 9999.0)) > 0.10:
+            raise RuntimeError("low-power no-prop thrust_max exceeds 0.10")
+        max_motor_output_us = LOW_POWER_MAX_MOTOR_OUTPUT_US
+        max_motor_telemetry_age_s = MAX_NOPROP_MOTOR_TELEMETRY_AGE_S
+        min_motor_poll_hz = 2.0
+    else:
+        if list(bench.get("throttle_pwm_range", [])) != [1200, 1400]:
+            raise RuntimeError("elevated no-prop declared throttle range must be 1200-1400 us")
+        if list(bench.get("manual_throttle_reference_range_us", [])) != [1200, 1400]:
+            raise RuntimeError("elevated no-prop manual throttle reference range must be 1200-1400 us")
+        if (
+            throttle_relative_limit_us != ELEVATED_THROTTLE_RELATIVE_LIMIT_US
+            or throttle_reference_min_us != ELEVATED_THROTTLE_REFERENCE_MIN_US
+            or throttle_reference_max_us != ELEVATED_THROTTLE_REFERENCE_MAX_US
+            or throttle_command_min_us != ELEVATED_THROTTLE_REFERENCE_MIN_US
+            or throttle_command_max_us != ELEVATED_THROTTLE_REFERENCE_MAX_US
+        ):
+            raise RuntimeError("elevated no-prop runtime throttle envelope must be 1200-1400 us with +/-40 us limiting")
+        if (
+            throttle_min_us,
+            throttle_hover_us,
+            throttle_max_us,
+            int(rc.get("neutral_throttle_us", 0)),
+        ) != (1200, 1275, 1400, 1200):
+            raise RuntimeError("elevated no-prop algorithm throttle mapping must be 1200/1275/1400 us")
+        if not math.isclose(float(rc.get("thrust_hover", math.nan)), 0.5) or not math.isclose(
+            float(rc.get("thrust_max", math.nan)), 1.0
+        ):
+            raise RuntimeError("elevated no-prop thrust mapping must use hover=0.5 and max=1.0")
+        if not math.isclose(
+            float(dict(config.get("guidance_command", {})).get("hover_thrust", math.nan)),
+            0.5,
+        ):
+            raise RuntimeError("elevated no-prop guidance hover thrust must be 0.5")
+        if float(runtime.get("throttle_handover_s", 0.0)) < 0.8:
+            raise RuntimeError("elevated no-prop throttle handover must be at least 0.8 s")
+        throttle_slew = float(runtime.get("throttle_slew_limit_us_per_s", 0.0))
+        if not 0.0 < throttle_slew <= 100.0:
+            raise RuntimeError("elevated no-prop throttle slew must be in (0, 100] us/s")
+        max_motor_output_us = ELEVATED_MAX_MOTOR_OUTPUT_US
+        max_motor_telemetry_age_s = 0.25
+        min_motor_poll_hz = 10.0
     motor_interlock = dict(safety.get("motor_output_interlock", {}))
     if motor_interlock.get("enabled") is not True:
         raise RuntimeError("no-prop motor_output_interlock must be enabled")
@@ -292,16 +346,22 @@ def _validate_noprop_config(
     if int(motor_interlock.get("channel_count", 0)) != 4:
         raise RuntimeError("no-prop motor_output_interlock must monitor four motors")
     motor_output_limit_us = int(motor_interlock.get("max_output_us", 9999))
-    if not throttle_max_us <= motor_output_limit_us <= MAX_NOPROP_MOTOR_OUTPUT_US:
-        raise RuntimeError("no-prop motor output limit must be between throttle max and 1200 us")
+    if not throttle_max_us <= motor_output_limit_us <= max_motor_output_us:
+        raise RuntimeError(
+            f"no-prop motor output limit must be between throttle max and {max_motor_output_us} us"
+        )
     motor_spread_limit_us = int(motor_interlock.get("max_spread_us", 9999))
     if not 0 <= motor_spread_limit_us <= MAX_NOPROP_MOTOR_SPREAD_US:
         raise RuntimeError("no-prop motor spread limit must be in [0, 150] us")
     motor_timeout_s = float(motor_interlock.get("telemetry_timeout_s", 9999.0))
-    if not 0.0 < motor_timeout_s <= MAX_NOPROP_MOTOR_TELEMETRY_AGE_S:
-        raise RuntimeError("no-prop motor telemetry timeout must be in (0, 0.75] s")
-    if float(runtime.get("motor_poll_hz", 0.0)) < 2.0:
-        raise RuntimeError("no-prop motor interlock requires motor_poll_hz >= 2")
+    if not 0.0 < motor_timeout_s <= max_motor_telemetry_age_s:
+        raise RuntimeError(
+            f"no-prop motor telemetry timeout must be in (0, {max_motor_telemetry_age_s}] s"
+        )
+    if float(runtime.get("motor_poll_hz", 0.0)) < min_motor_poll_hz:
+        raise RuntimeError(
+            f"no-prop motor interlock requires motor_poll_hz >= {min_motor_poll_hz:g}"
+        )
     takeover_interlock = dict(safety.get("takeover_duration_interlock", {}))
     if takeover_interlock.get("enabled") is not True:
         raise RuntimeError("no-prop takeover_duration_interlock must be enabled")

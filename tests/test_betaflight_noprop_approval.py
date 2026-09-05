@@ -293,12 +293,12 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
             },
             {
                 "status_poll_hz": 5,
-                "attitude_poll_hz": 20,
+                "attitude_poll_hz": 10,
                 "raw_imu_poll_hz": 5,
-                "raw_gps_poll_hz": 5,
-                "altitude_poll_hz": 5,
-                "motor_poll_hz": 2,
-                "rc_poll_hz": 5,
+                "raw_gps_poll_hz": 0,
+                "altitude_poll_hz": 0,
+                "motor_poll_hz": 10,
+                "rc_poll_hz": 10,
                 "analog_poll_hz": 1,
             },
         )
@@ -419,26 +419,43 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
 
         tool._validate_noprop_config(config, output)
         runtime = config["msp_runtime"]
-        self.assertEqual(runtime["throttle_relative_limit_us"], 0)
-        self.assertEqual(runtime["throttle_reference_min_us"], 980)
-        self.assertEqual(runtime["throttle_reference_max_us"], 1200)
-        self.assertEqual(runtime["throttle_command_min_us"], 980)
-        self.assertEqual(runtime["throttle_command_max_us"], 1200)
+        self.assertEqual(config["bench_profile"]["throttle_test_mode"], "elevated_reference")
+        self.assertEqual(runtime["throttle_relative_limit_us"], 40)
+        self.assertEqual(runtime["throttle_reference_min_us"], 1200)
+        self.assertEqual(runtime["throttle_reference_max_us"], 1400)
+        self.assertEqual(runtime["throttle_command_min_us"], 1200)
+        self.assertEqual(runtime["throttle_command_max_us"], 1400)
+        self.assertEqual(config["rc_mapping"]["throttle_hover_us"], 1275)
+        self.assertEqual(config["safety"]["motor_output_interlock"]["max_output_us"], 1500)
 
         missing = copy.deepcopy(config)
         missing["msp_runtime"].pop("throttle_reference_min_us")
         with self.assertRaisesRegex(RuntimeError, "must be explicit"):
             tool._validate_noprop_config(missing, output)
 
-        removed_idle_envelope = copy.deepcopy(config)
-        removed_idle_envelope["msp_runtime"]["throttle_reference_min_us"] = 1000
-        with self.assertRaisesRegex(RuntimeError, "980-1000 us idle range"):
-            tool._validate_noprop_config(removed_idle_envelope, output)
+        narrowed_reference = copy.deepcopy(config)
+        narrowed_reference["msp_runtime"]["throttle_reference_min_us"] = 1250
+        with self.assertRaisesRegex(RuntimeError, "1200-1400 us"):
+            tool._validate_noprop_config(narrowed_reference, output)
 
         excessive = copy.deepcopy(config)
-        excessive["msp_runtime"]["throttle_command_max_us"] = 1201
-        with self.assertRaisesRegex(RuntimeError, "within 1100-1200 us"):
+        excessive["msp_runtime"]["throttle_command_max_us"] = 1401
+        with self.assertRaisesRegex(RuntimeError, "1200-1400 us"):
             tool._validate_noprop_config(excessive, output)
+
+        excessive_motor = copy.deepcopy(config)
+        excessive_motor["safety"]["motor_output_interlock"]["max_output_us"] = 1501
+        with self.assertRaisesRegex(RuntimeError, "between throttle max and 1500"):
+            tool._validate_noprop_config(excessive_motor, output)
+
+        low_power = _with_verified_upward_camera(
+            json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
+        )
+        low_output = (
+            ROOT / low_power["control_authorization"]["approval_manifest"]
+        ).resolve()
+        tool._validate_noprop_config(low_power, low_output)
+        self.assertEqual(low_power["bench_profile"]["throttle_test_mode"], "low_power")
 
     def test_noprop_approval_requires_bounded_takeover_duration(self):
         config = _with_verified_upward_camera(
