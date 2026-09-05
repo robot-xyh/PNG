@@ -263,6 +263,36 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         self.assertEqual(metadata["law"], "velocity_establishing_png")
         self.assertEqual(metadata["velocity_source"], "bench_zero_velocity")
         self.assertEqual(metadata["fixed_gain"], 30.0)
+        self.assertEqual(config["msp_runtime"]["override_channels_mask"], 15)
+        self.assertEqual(
+            {
+                key: config["msp_runtime"][key]
+                for key in (
+                    "status_poll_hz",
+                    "attitude_poll_hz",
+                    "raw_imu_poll_hz",
+                    "raw_gps_poll_hz",
+                    "altitude_poll_hz",
+                    "motor_poll_hz",
+                    "rc_poll_hz",
+                    "analog_poll_hz",
+                )
+            },
+            {
+                "status_poll_hz": 5,
+                "attitude_poll_hz": 20,
+                "raw_imu_poll_hz": 5,
+                "raw_gps_poll_hz": 5,
+                "altitude_poll_hz": 5,
+                "motor_poll_hz": 2,
+                "rc_poll_hz": 5,
+                "analog_poll_hz": 1,
+            },
+        )
+        self.assertEqual(
+            config["logging"]["evidence_frames"],
+            {"enabled": True, "max_fps": 5, "jpeg_quality": 80},
+        )
         self.assertEqual(
             config["guidance_command"]["accel_tilt_rate"]["pitch_rate_sign"],
             -1.0,
