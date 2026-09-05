@@ -7,6 +7,7 @@ import json
 import math
 import sys
 import time
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -472,7 +473,7 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
             fixed_vm_m_s=controller.fixed_vm_m_s,
             fixed_gain=controller.navigation_constant * controller.fixed_vm_m_s,
             velocity_source=velocity_source,
-            velocity_establishing_png=dict(controller.__dict__),
+            velocity_establishing_png=asdict(controller),
         )
     return metadata
 

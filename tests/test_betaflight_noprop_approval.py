@@ -260,6 +260,7 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
 
         tool._validate_noprop_config(config, output)
         metadata = tool._validate_guidance_config(config)
+        json.dumps(metadata)
         self.assertEqual(metadata["law"], "velocity_establishing_png")
         self.assertEqual(metadata["velocity_source"], "bench_zero_velocity")
         self.assertEqual(metadata["fixed_gain"], 30.0)
