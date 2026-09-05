@@ -54,6 +54,7 @@ class BetaflightThrustCoverageAuditTest(unittest.TestCase):
 
         self.assertEqual(result["two_dimensional_sample_counts"], [[1, 0], [0, 1]])
         self.assertEqual(result["two_dimensional_empty_cell_count"], 2)
+        self.assertEqual(result["two_dimensional_insufficient_cell_count"], 2)
 
     def test_coverage_mask_applies_force_voltage_and_throttle_limits(self):
         samples = np.asarray(

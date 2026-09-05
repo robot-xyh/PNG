@@ -29,15 +29,15 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
             root = Path(directory)
             host_path = root / "host.csv"
             blackbox_path = root / "blackbox.csv"
-            sample_count = 1500
+            sample_count = 7000
             time_s = np.arange(sample_count, dtype=float) * 0.01
-            phase = np.arange(sample_count) % 300 / 299.0
+            phase = np.arange(sample_count) % 100 / 99.0
             throttle_us = 1175.0 + 350.0 * phase
-            voltage_v = 25.3 - 5.5 * time_s / time_s[-1]
+            voltage_v = 25.3 - 3.4 * time_s / time_s[-1]
             force = (
-                5.0
-                + 0.045 * (throttle_us - 1175.0)
-                + 0.35 * (voltage_v - 19.8)
+                8.0
+                + 0.035 * (throttle_us - 1175.0)
+                + 0.20 * (voltage_v - 21.9)
             )
             command = 1000.0 + (throttle_us - 1050.0) * 1000.0 / 950.0
             acc_z = force / 9.80665 * 2048.0
@@ -59,15 +59,28 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
             with blackbox_path.open("w", newline="", encoding="utf-8") as stream:
                 writer = csv.writer(stream)
                 writer.writerow(tool.REQUIRED_BLACKBOX_FIELDS)
-                for timestamp, throttle, battery, acceleration in zip(
-                    time_s,
-                    command,
-                    voltage_v,
-                    acc_z,
+                for index, (timestamp, throttle, battery, acceleration) in enumerate(
+                    zip(time_s, command, voltage_v, acc_z)
                 ):
-                    writer.writerow(
-                        [timestamp * 1.0e6, throttle, battery, 0.0, 0.0, acceleration]
-                    )
+                    gyro = 200.0 if index == 3050 else 0.0
+                    motor = 1950.0 if index == 3051 else 500.0
+                    if index == 3052:
+                        acceleration = 3.0 * 2048.0
+                    writer.writerow([
+                        timestamp * 1.0e6,
+                        throttle,
+                        battery,
+                        0.0,
+                        0.0,
+                        acceleration,
+                        gyro,
+                        0.0,
+                        0.0,
+                        motor,
+                        500.0,
+                        500.0,
+                        500.0,
+                    ])
 
             result = tool.calibrate(
                 host_csv=host_path,
@@ -81,10 +94,10 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
                 idle_command=1000.0,
                 alignment_search_s=0.1,
                 alignment_step_s=0.01,
-                voltage_knot_count=5,
-                throttle_knot_count=7,
+                voltage_knot_count=3,
+                throttle_knot_count=5,
                 minimum_samples=500,
-                required_voltage_v=(20.0, 25.2),
+                required_voltage_v=(22.0, 25.2),
                 required_throttle_us=(1200.0, 1500.0),
             )
 
@@ -93,13 +106,25 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
                 result["validation"]["p95_relative_error"],
                 0.20,
             )
+            self.assertEqual(
+                np.asarray(result["validation"]["three_by_five_sample_counts"]).shape,
+                (3, 5),
+            )
+            self.assertGreater(
+                result["dynamics"]["first_order_time_constant_s"],
+                0.0,
+            )
+            filters = result["validation"]["filter_counts"]
+            self.assertGreater(filters["collision_or_force_outlier"], 0)
+            self.assertGreater(filters["high_angular_rate"], 0)
+            self.assertGreater(filters["motor_saturation"], 0)
 
     def test_narrow_voltage_evidence_is_marked_non_passing(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             host_path = root / "host.csv"
             blackbox_path = root / "blackbox.csv"
-            sample_count = 600
+            sample_count = 2000
             time_s = np.arange(sample_count, dtype=float) * 0.01
             throttle_us = 1175.0 + 350.0 * (np.arange(sample_count) % 100) / 99.0
             voltage_v = np.linspace(24.1, 25.0, sample_count)
@@ -115,13 +140,23 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
                 writer = csv.writer(stream)
                 writer.writerow(tool.REQUIRED_BLACKBOX_FIELDS)
                 writer.writerows(
-                    zip(
-                        time_s * 1.0e6,
-                        command,
-                        voltage_v,
-                        np.zeros(sample_count),
-                        np.zeros(sample_count),
-                        acc_z,
+                    [
+                        timestamp * 1.0e6,
+                        throttle,
+                        battery,
+                        0.0,
+                        0.0,
+                        acceleration,
+                        0.0,
+                        0.0,
+                        0.0,
+                        500.0,
+                        500.0,
+                        500.0,
+                        500.0,
+                    ]
+                    for timestamp, throttle, battery, acceleration in zip(
+                        time_s, command, voltage_v, acc_z
                     )
                 )
 
@@ -140,7 +175,7 @@ class CalibrateBetaflightThrustLutTest(unittest.TestCase):
                 voltage_knot_count=4,
                 throttle_knot_count=5,
                 minimum_samples=500,
-                required_voltage_v=(20.0, 25.2),
+                required_voltage_v=(22.0, 25.2),
                 required_throttle_us=(1200.0, 1500.0),
             )
 

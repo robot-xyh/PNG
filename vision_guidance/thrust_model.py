@@ -35,6 +35,7 @@ class VoltageThrottleThrustModel:
         throttle_us: np.ndarray,
         specific_force_m_s2: np.ndarray,
         validation: Mapping[str, object],
+        dynamics: Mapping[str, object] | None = None,
         source_path: str = "",
         source_sha256: str = "",
     ) -> None:
@@ -43,6 +44,7 @@ class VoltageThrottleThrustModel:
         self.throttle_us = np.asarray(throttle_us, dtype=float)
         self.specific_force_m_s2 = np.asarray(specific_force_m_s2, dtype=float)
         self.validation = dict(validation)
+        self.dynamics = {} if dynamics is None else dict(dynamics)
         self.source_path = str(source_path)
         self.source_sha256 = str(source_sha256)
         self._validate()
@@ -67,6 +69,7 @@ class VoltageThrottleThrustModel:
                 values.get("specific_force_m_s2", []), dtype=float
             ),
             validation=dict(values.get("validation", {})),
+            dynamics=dict(values.get("dynamics", {})),
             source_path=source_path,
             source_sha256=source_sha256,
         )
@@ -158,7 +161,16 @@ class VoltageThrottleThrustModel:
                 float(self.throttle_us[-1]),
             ],
             "validation": dict(self.validation),
+            "dynamics": dict(self.dynamics),
         }
+
+    @property
+    def first_order_time_constant_s(self) -> float | None:
+        try:
+            value = float(self.dynamics["first_order_time_constant_s"])
+        except (KeyError, TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) and value > 0.0 else None
 
     def _validate(self) -> None:
         if not self.calibration_id:

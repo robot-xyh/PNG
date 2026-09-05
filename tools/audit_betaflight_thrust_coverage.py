@@ -115,26 +115,41 @@ def audit(*, manifest_path: Path, decoder_path: Path) -> dict[str, Any]:
     summary = _summarize_coverage(samples, manifest)
     minimum_samples = int(requirements["minimum_effective_samples"])
     minimum_holdout = int(requirements["minimum_holdout_samples"])
+    minimum_cell_samples = int(requirements.get("minimum_cell_samples", 1))
+    voltage_endpoint_tolerance_v = float(
+        requirements.get("voltage_endpoint_tolerance_v", 0.0)
+    )
+    throttle_endpoint_tolerance_us = float(
+        requirements.get("throttle_endpoint_tolerance_us", 0.0)
+    )
     potential_holdout = int(math.ceil(len(samples) / 5.0))
     checks = {
         "voltage_min_reached": bool(
-            len(samples) and float(np.min(samples[:, 1])) <= voltage_range[0]
+            len(samples)
+            and float(np.min(samples[:, 1]))
+            <= voltage_range[0] + voltage_endpoint_tolerance_v
         ),
         "voltage_max_reached": bool(
-            len(samples) and float(np.max(samples[:, 1])) >= voltage_range[1]
+            len(samples)
+            and float(np.max(samples[:, 1]))
+            >= voltage_range[1] - voltage_endpoint_tolerance_v
         ),
         "throttle_min_reached": bool(
-            len(samples) and float(np.min(samples[:, 2])) <= throttle_range[0]
+            len(samples)
+            and float(np.min(samples[:, 2]))
+            <= throttle_range[0] + throttle_endpoint_tolerance_us
         ),
         "throttle_max_reached": bool(
-            len(samples) and float(np.max(samples[:, 2])) >= throttle_range[1]
+            len(samples)
+            and float(np.max(samples[:, 2]))
+            >= throttle_range[1] - throttle_endpoint_tolerance_us
         ),
         "effective_sample_count": len(samples) >= minimum_samples,
         "potential_holdout_sample_count": potential_holdout >= minimum_holdout,
     }
     blockers = [name for name, passed in checks.items() if not passed]
-    if summary["two_dimensional_empty_cell_count"]:
-        blockers.append("two_dimensional_coverage_has_empty_cells")
+    if summary["two_dimensional_minimum_cell_count"] < minimum_cell_samples:
+        blockers.append("three_voltage_by_five_throttle_coverage_insufficient")
 
     return {
         "schema_version": 1,
@@ -158,6 +173,7 @@ def audit(*, manifest_path: Path, decoder_path: Path) -> dict[str, Any]:
             "checks": checks,
             "effective_sample_count": int(len(samples)),
             "potential_every_fifth_holdout_sample_count": potential_holdout,
+            "minimum_cell_samples_required": minimum_cell_samples,
             "force_rejected_sample_count": int(np.count_nonzero(~force_valid)),
             **summary,
             "fit_error_evaluation": "not_run_until_coverage_is_complete",
@@ -369,6 +385,17 @@ def _summarize_coverage(samples: np.ndarray, manifest: dict[str, Any]) -> dict[s
         "voltage_bin_sample_counts": np.sum(counts, axis=1).tolist(),
         "throttle_bin_sample_counts": np.sum(counts, axis=0).tolist(),
         "two_dimensional_empty_cell_count": int(np.count_nonzero(counts == 0)),
+        "two_dimensional_insufficient_cell_count": int(
+            np.count_nonzero(
+                counts
+                < int(
+                    dict(manifest.get("requirements", {})).get(
+                        "minimum_cell_samples", 1
+                    )
+                )
+            )
+        ),
+        "two_dimensional_minimum_cell_count": int(np.min(counts)),
     }
 
 
