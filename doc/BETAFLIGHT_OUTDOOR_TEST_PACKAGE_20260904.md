@@ -50,7 +50,7 @@
 |---|---|---|---|---|
 |旧控制器速度建立项 `76.85%`、总加速度 `86.45%` 饱和|代码已修复：速度参考斜坡在失效/重获时连续，当前非碰撞控制器提前退出|[十脉冲回放](evidence/BETAFLIGHT_OUTDOOR_PULSE_REPLAY_20260904.json) 覆盖全部 `10` 个算法脉冲；新控制器两项饱和均为 `0%`|当前代码的 LOG_ONLY 与短时闭环架次|是，直到新实测完成|
 |LOG00106 近距继续闭合并碰撞|代码已修复：`noncollision` 按 bbox/TTC 进入锁存 ABORT|同一回放在接触前 `1.085447 s` ABORT，高于 `0.75 s` 门槛|新控制器实机 ABORT 后飞手 RC7 退出及安全间隔|是|
-|旧推力模型瞬态高估约 `19%`|批准和运行时已强制电压相关 `voltage_throttle_lut`；MC 动力学也只允许同一 LUT，不再回退分段线性载荷因子|单元测试覆盖 LUT 正向比力、反向油门、哈希和电压越界拒绝；[现有覆盖审计](BETAFLIGHT_THRUST_LUT_COVERAGE_AUDIT_20260904.md) 得到 `7567` 个 10 Hz 样本，但仅覆盖 `22.25--25.11 V`，且 `1350 us` 以上只有 `18` 个|合格的全运行范围推力 LUT；先决定保持 `20.0--25.2 V` 还是正式收窄安全运行电压，再只补低电压/高油门缺口|是；当前配置故意指向不存在的 `betaflight.thrust_lut.pending.json`|
+|旧推力模型瞬态高估约 `19%`|批准和运行时已强制电压相关 `voltage_throttle_lut`；MC 动力学也只允许同一 LUT，不再回退分段线性载荷因子；主动范围已统一为 `22.0--25.2 V`|单元测试覆盖 LUT 正向比力、反向油门、哈希、误差门槛和电压越界拒绝；[22 V覆盖审计](BETAFLIGHT_THRUST_LUT_COVERAGE_AUDIT_20260904.md) 得到 `7564` 个 10 Hz 样本，但低端只到 `22.25 V`，3×5网格有6格不足5个样本|补齐 `22 V` 端点及低、中电压高油门格，生成通过留出验证和动力时间常数门槛的 LUT|是；当前配置故意指向不存在的 `betaflight.thrust_lut.pending.json`|
 |旧 MC 报告为 schema v2、旧配置哈希且混淆 contact/noncollision|代码已修复：MC 输出 schema v3，绑定运行配置、控制器/仿真/runner 源码及 LUT 哈希；contact 命中率与 noncollision 及时 ABORT 分栏|策略分栏和批准端篡改拒绝单元测试通过|装入真实 LUT 后重跑 MC100；contact hit 与 FOV-hit 在三个场景均须 `>=80%`，noncollision 及时 ABORT 率须 `>=99%`|是|
 |旧运行缺少可持久复核的图像和完整结束证据|代码已修复：CSV/events/meta/JPEG/frame index/manifest 原子终结，关键文件 `fsync`，Blackbox 固件模式绑定|日志、finalize、runtime evidence 专项测试通过|用当前干净提交采集 finalized LOG_ONLY 架次：至少 `100` 行、`25` 帧、唯一 Blackbox 配对|是|
 |旧主动批准可与代码/证据漂移|旧批准链已退役；schema v4 在创建和启动时复核配置、MC、RC 联锁、finalized 架次、LUT 和文件哈希|批准工具专项测试通过|新快照、新 RC 联锁证据、新 MC100、新 finalized 架次，随后重新生成批准文件|是|
@@ -59,7 +59,7 @@
 |相机时间戳不是硬件曝光时刻|未伪造修复；MC 保留实测和保守延迟场景|现有闭环响应仅能估计 P50/P95，不能称为硬件同步测量|后续硬件时间同步或闪光/光电延迟测量；当前先采用 `154.139 ms` 保守场景|作为模型局限记录，不单独替代上述硬门槛|
 
 当前监督配置 SHA256 为
-`fa5e3ee90a0fb7b5657b073da8bd91506712758d3c14fd1bbc7a2440fe4c8550`。由于推力 LUT
+`a3db7d4da173590d7dd8ba53570ea5f7e36ef59483c8666834731a9555efe098`。由于推力 LUT
 仍为 `PENDING_FULL_6S_THRUST_LUT`，正式 MC 配置会在任务创建前明确失败，批准工具也会拒绝；不得
 创建假 LUT、使用旧 MC 报告或手工编辑批准 JSON 绕过。
 
