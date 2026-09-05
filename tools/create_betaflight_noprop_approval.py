@@ -32,6 +32,8 @@ from vision_guidance.betaflight_runtime import (  # noqa: E402
 MSP_OVERRIDE_PERMANENT_ID = 50
 MAX_NOPROP_RATE_DEG_S = 3.0
 MAX_NOPROP_THROTTLE_US = 1100
+MIN_NOPROP_THROTTLE_REFERENCE_US = 980
+MAX_NOPROP_THROTTLE_REFERENCE_US = 1200
 MAX_NOPROP_MOTOR_OUTPUT_US = 1200
 MAX_NOPROP_MOTOR_SPREAD_US = 150
 MAX_NOPROP_MOTOR_TELEMETRY_AGE_S = 0.75
@@ -80,6 +82,7 @@ def main() -> None:
     )
     guidance = _validate_guidance_config(config)
     guidance_command_frames = _validate_guidance_command_frames(config)
+    runtime = dict(config.get("msp_runtime", {}))
 
     approval = {
         "schema_version": 1,
@@ -98,6 +101,9 @@ def main() -> None:
         "limits": {
             "max_rate_deg_s": MAX_NOPROP_RATE_DEG_S,
             "max_throttle_us": MAX_NOPROP_THROTTLE_US,
+            "min_throttle_reference_us": int(runtime["throttle_reference_min_us"]),
+            "max_throttle_reference_us": int(runtime["throttle_reference_max_us"]),
+            "max_throttle_transition_command_us": int(runtime["throttle_command_max_us"]),
             "max_motor_output_us": MAX_NOPROP_MOTOR_OUTPUT_US,
             "max_motor_spread_us": MAX_NOPROP_MOTOR_SPREAD_US,
             "max_motor_telemetry_age_s": MAX_NOPROP_MOTOR_TELEMETRY_AGE_S,
@@ -221,6 +227,42 @@ def _validate_noprop_config(
         raise RuntimeError("ARM must remain on physical RC5/AUX1")
     if int(runtime.get("prefill_valid_min_us", 0)) < 900:
         raise RuntimeError("no-prop prefill must reject 885 us startup values")
+    throttle_runtime_keys = (
+        "throttle_relative_limit_us",
+        "throttle_reference_min_us",
+        "throttle_reference_max_us",
+        "throttle_command_min_us",
+        "throttle_command_max_us",
+    )
+    missing_throttle_runtime_keys = [key for key in throttle_runtime_keys if key not in runtime]
+    if missing_throttle_runtime_keys:
+        raise RuntimeError(
+            "no-prop runtime throttle envelope must be explicit; missing "
+            + ", ".join(missing_throttle_runtime_keys)
+        )
+    throttle_relative_limit_us = int(runtime["throttle_relative_limit_us"])
+    throttle_reference_min_us = int(runtime["throttle_reference_min_us"])
+    throttle_reference_max_us = int(runtime["throttle_reference_max_us"])
+    throttle_command_min_us = int(runtime["throttle_command_min_us"])
+    throttle_command_max_us = int(runtime["throttle_command_max_us"])
+    if throttle_relative_limit_us != 0:
+        raise RuntimeError("no-prop throttle_relative_limit_us must be zero")
+    if (
+        throttle_command_min_us != MIN_NOPROP_THROTTLE_REFERENCE_US
+        or throttle_reference_min_us != MIN_NOPROP_THROTTLE_REFERENCE_US
+    ):
+        raise RuntimeError(
+            "no-prop throttle reference envelope must include the measured 980-1000 us idle range"
+        )
+    if not (
+        MAX_NOPROP_THROTTLE_US
+        <= throttle_reference_max_us
+        <= throttle_command_max_us
+        <= MAX_NOPROP_THROTTLE_REFERENCE_US
+    ):
+        raise RuntimeError(
+            "no-prop throttle reference/transition maximum must stay within 1100-1200 us"
+        )
 
     rc = dict(config.get("rc_mapping", {}))
     if rc.get("rate_mapping_type") != "betaflight":

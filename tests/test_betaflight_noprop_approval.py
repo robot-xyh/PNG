@@ -406,6 +406,40 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "latch until DISARM"):
             tool._validate_noprop_config(not_latched, output)
 
+    def test_noprop_approval_requires_explicit_bounded_throttle_reference(self):
+        config = _with_verified_upward_camera(
+            json.loads(
+                (
+                    ROOT
+                    / "config/betaflight.rk3588.noprop.velocity_establishing.example.json"
+                ).read_text()
+            )
+        )
+        output = (ROOT / config["control_authorization"]["approval_manifest"]).resolve()
+
+        tool._validate_noprop_config(config, output)
+        runtime = config["msp_runtime"]
+        self.assertEqual(runtime["throttle_relative_limit_us"], 0)
+        self.assertEqual(runtime["throttle_reference_min_us"], 980)
+        self.assertEqual(runtime["throttle_reference_max_us"], 1200)
+        self.assertEqual(runtime["throttle_command_min_us"], 980)
+        self.assertEqual(runtime["throttle_command_max_us"], 1200)
+
+        missing = copy.deepcopy(config)
+        missing["msp_runtime"].pop("throttle_reference_min_us")
+        with self.assertRaisesRegex(RuntimeError, "must be explicit"):
+            tool._validate_noprop_config(missing, output)
+
+        removed_idle_envelope = copy.deepcopy(config)
+        removed_idle_envelope["msp_runtime"]["throttle_reference_min_us"] = 1000
+        with self.assertRaisesRegex(RuntimeError, "980-1000 us idle range"):
+            tool._validate_noprop_config(removed_idle_envelope, output)
+
+        excessive = copy.deepcopy(config)
+        excessive["msp_runtime"]["throttle_command_max_us"] = 1201
+        with self.assertRaisesRegex(RuntimeError, "within 1100-1200 us"):
+            tool._validate_noprop_config(excessive, output)
+
     def test_noprop_approval_requires_bounded_takeover_duration(self):
         config = _with_verified_upward_camera(
             json.loads((ROOT / "config/betaflight.rk3588.noprop.example.json").read_text())
