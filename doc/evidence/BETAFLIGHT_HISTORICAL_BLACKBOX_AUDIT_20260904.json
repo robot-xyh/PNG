@@ -1,0 +1,5017 @@
+{
+  "context": {
+    "bytes": 14292,
+    "path": "config/betaflight.thrust_coverage_sources.20260904.json",
+    "sha256": "b96f99fb371b897463e8fcef86953d6fc2d8458e950f185536889c11b635c96a"
+  },
+  "diagnostic_internal_throttle_coverage": {
+    "all": {
+      "internal_throttle": [
+        1200.0,
+        1500.0
+      ],
+      "sample_count_10hz": 10206,
+      "throttle_bin_counts": [
+        5489,
+        4535,
+        80,
+        56,
+        23,
+        23
+      ],
+      "throttle_bin_edges": [
+        1200.0,
+        1250.0,
+        1300.0,
+        1350.0,
+        1400.0,
+        1450.0,
+        1500.000001
+      ],
+      "voltage_v": [
+        20.63,
+        25.1
+      ]
+    },
+    "flight_like": {
+      "internal_throttle": [
+        1200.0,
+        1500.0
+      ],
+      "sample_count_10hz": 10128,
+      "throttle_bin_counts": [
+        5429,
+        4530,
+        76,
+        54,
+        20,
+        19
+      ],
+      "throttle_bin_edges": [
+        1200.0,
+        1250.0,
+        1300.0,
+        1350.0,
+        1400.0,
+        1450.0,
+        1500.000001
+      ],
+      "voltage_v": [
+        20.63,
+        25.1
+      ]
+    },
+    "known_outdoor": {
+      "internal_throttle": [
+        1200.0,
+        1500.0
+      ],
+      "sample_count_10hz": 7641,
+      "throttle_bin_counts": [
+        3692,
+        3851,
+        53,
+        27,
+        10,
+        8
+      ],
+      "throttle_bin_edges": [
+        1200.0,
+        1250.0,
+        1300.0,
+        1350.0,
+        1400.0,
+        1450.0,
+        1500.000001
+      ],
+      "voltage_v": [
+        20.63,
+        24.97
+      ]
+    },
+    "supplemental_flight_like": {
+      "internal_throttle": [
+        1200.0,
+        1478.5
+      ],
+      "sample_count_10hz": 1874,
+      "throttle_bin_counts": [
+        1278,
+        527,
+        30,
+        27,
+        8,
+        4
+      ],
+      "throttle_bin_edges": [
+        1200.0,
+        1250.0,
+        1300.0,
+        1350.0,
+        1400.0,
+        1450.0,
+        1500.000001
+      ],
+      "voltage_v": [
+        22.54,
+        25.1
+      ]
+    }
+  },
+  "files": [
+    {
+      "blackbox_bfl": {
+        "bytes": 586516,
+        "path": "logs/blackbox_import/LOG00001.BFL",
+        "sha256": "d29269d593771e109f4923c8c423b432524e87ea425a625654b20b3048146b3a"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "flight_or_unrestrained_dynamic",
+        "release_evidence_class": "supplemental_only"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": "No GPS, host CSV, or scene metadata; venue cannot be claimed as outdoor.",
+        "scene": "legacy_dynamic_flight_without_scene_record",
+        "source": "Blackbox physics signature",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 17628,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1202.0,
+          1478.5
+        ],
+        "sample_count_10hz": 120,
+        "throttle_bin_counts": [
+          68,
+          29,
+          7,
+          13,
+          2,
+          1
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          22.54,
+          24.36
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 120,
+      "duration_s": 21.82082,
+      "id": "LOG00001",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": null,
+        "gps_speed_max_m_s": null,
+        "internal_throttle_max": 1537.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 5.38,
+        "powered_current_max_a": 49.82,
+        "powered_duration_s": 14.228546000000001,
+        "powered_gyro_norm_raw_p95_max": [
+          71.27690879147964,
+          130.13838787997952
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9900847252320467,
+          1.9098052696231442,
+          3.408796356076216
+        ],
+        "powered_voltage_v": [
+          22.0,
+          24.47
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 31634,
+        "path": "logs/blackbox_import/LOG00002.BFL",
+        "sha256": "80492aef90329c1b0ae4984d8c2f4e8df585e9743042978e3eb5664aca435be1"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 765,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.94686,
+      "id": "LOG00002",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 172.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 14634,
+        "path": "logs/blackbox_import/LOG00003.BFL",
+        "sha256": "698842ca92575d40b1bd124d42babfb8c5057d249657555c9a2772677a2e20e5"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 237,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.292464,
+      "id": "LOG00003",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 171.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 109613,
+        "path": "logs/blackbox_import/LOG00004.BFL",
+        "sha256": "b6d6d52f1b5a0216f38a4785f7b9d047147248346ca1bebd8c05b7bb6a6b2231"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 3182,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 3.941691,
+      "id": "LOG00004",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 172.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 18661,
+        "path": "logs/blackbox_import/LOG00005.BFL",
+        "sha256": "d3857ce3b056e7014de6d1bc3f197bc6908d5ccca6ce1c54e7b7d88cfbfd0243"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 373,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.463656,
+      "id": "LOG00005",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 171.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 13599,
+        "path": "logs/blackbox_import/LOG00006.BFL",
+        "sha256": "bf6cb56391e70f08405533db18f73b13ed1c3a0705c9c92680820a1e3b3fc4b4"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 213,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.267872,
+      "id": "LOG00006",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 170.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 6611757,
+        "path": "logs/blackbox_import/LOG00007.BFL",
+        "sha256": "672309be190a615715edf0eb6230a9ca997f79eb5b8cd308919a32cf6eb84ae1"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 205460,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 254.682803,
+      "id": "LOG00007",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1092.0,
+        "motor_raw_max": 345.0,
+        "powered_baro_altitude_range_m": 0.08,
+        "powered_current_max_a": 1.26,
+        "powered_duration_s": 0.235074,
+        "powered_gyro_norm_raw_p95_max": [
+          0.0,
+          1.0
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9982779557505153,
+          1.0240111840679316,
+          1.0321476815073705
+        ],
+        "powered_voltage_v": [
+          23.74,
+          23.82
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 584975,
+        "path": "logs/blackbox_import/LOG00008.BFL",
+        "sha256": "ce961ef1fb60513f51f4bf3e860e68b932610a09c28d06a8548c2133b06529c7"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 17993,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 22.30258,
+      "id": "LOG00008",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 321.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 21742,
+        "path": "logs/blackbox_import/LOG00009.BFL",
+        "sha256": "659e6d857aaca26464b586e1fde7753e1fbb254003caac5d0d15c41ee926fbb5"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 463,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.583592,
+      "id": "LOG00009",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 166.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 15268,
+        "path": "logs/blackbox_import/LOG00010.BFL",
+        "sha256": "0159904e04708fa26f16fb46fce17864ddc3d5ba67568623f4d97c0fc8a26107"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 266,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.333512,
+      "id": "LOG00010",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 168.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3580895,
+        "path": "logs/blackbox_import/LOG00011.BFL",
+        "sha256": "2774fddb755e72b5f6a46b7a41e276108fd02d1cf2e4bdfa8dc35c0eb2e67551"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 111477,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 138.154145,
+      "id": "LOG00011",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 207.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 296419,
+        "path": "logs/blackbox_import/LOG00012.BFL",
+        "sha256": "3cc148422aec46816f9653e8e4f9a99201e1c2228d1ea99dfe215d5b1ace23b8"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 9031,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 11.191426,
+      "id": "LOG00012",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 167.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 10593788,
+        "path": "logs/blackbox_import/LOG00013.BFL",
+        "sha256": "67b53dc280e01ef600cfcb1a2e33426b8009655b4d598991d5c55060e97ec32f"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 329816,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 408.778541,
+      "id": "LOG00013",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 298.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2504346,
+        "path": "logs/blackbox_import/LOG00014.BFL",
+        "sha256": "7b403d40bbd527988566bb1ceb8c865df34c0518e46b81f5a53528b57b8dd883"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 77949,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 96.613085,
+      "id": "LOG00014",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 173.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 5362931,
+        "path": "logs/blackbox_import/LOG00015.BFL",
+        "sha256": "15becf1ded927ba4797dc1fcb5c7e111f27883c0d4aa03dd47e1d383137b8e03"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 167156,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 207.1651,
+      "id": "LOG00015",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 177.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 23667,
+        "path": "logs/blackbox_import/LOG00016.BFL",
+        "sha256": "85e7c630f4a038fb8d51fd46217a10e3119600ec6d3743cfad820b4f5feb9266"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 531,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.658255,
+      "id": "LOG00016",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 170.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2541117,
+        "path": "logs/blackbox_import/LOG00017.BFL",
+        "sha256": "a9939f0a8ec9b09badd41b754672422a69200b2e643391232693715dce1ea08f"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 79153,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 98.081003,
+      "id": "LOG00017",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 278.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1278423,
+        "path": "logs/blackbox_import/LOG00018.BFL",
+        "sha256": "8fa89aac43f0bda97b9b9ce320308ccc487706553493c191429831dd62316132"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 39707,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 49.206251,
+      "id": "LOG00018",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 193.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 5052974,
+        "path": "logs/blackbox_import/LOG00019.BFL",
+        "sha256": "c41f54730ab4650130f52f016759225b89e1392705178d23f6f10b1a28ef842d"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 157277,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 194.896548,
+      "id": "LOG00019",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 246.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 51648,
+        "path": "logs/blackbox_import/LOG00020.BFL",
+        "sha256": "479d86963ba9612ec1ae703e7de5320a21abeb4daf7e94c2706adb6e0164d348"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 1399,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 1.743699,
+      "id": "LOG00020",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 173.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 8999904,
+        "path": "logs/blackbox_import/LOG00021.BFL",
+        "sha256": "087ccc3213d0689a340b19eeeb5bfca8cacf23de1cf4464241bd2b8a9c258ed2"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 280288,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 347.357999,
+      "id": "LOG00021",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 298.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 5598502,
+        "path": "logs/blackbox_import/LOG00022.BFL",
+        "sha256": "165a0f3f148a962cd443a48f7762bb01676a989b89d9f31de6fcf55162bfbe19"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 174492,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 216.274437,
+      "id": "LOG00022",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 278.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 7548068,
+        "path": "logs/blackbox_import/LOG00023.BFL",
+        "sha256": "38bd0dc5d26bca74d44a96d9d557751bb698d0024c17c3a1fbd416b49f0ca862"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 234213,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 290.251632,
+      "id": "LOG00023",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1045.0,
+        "motor_raw_max": 2033.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 16365,
+        "path": "logs/blackbox_import/LOG00024.BFL",
+        "sha256": "a6968ca60467b39d4fb5f4f6cabc8b8280d6302690b15da05389742a6a9a86e3"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 290,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.358219,
+      "id": "LOG00024",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 166.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3437307,
+        "path": "logs/blackbox_import/LOG00025.BFL",
+        "sha256": "9fdb7ffe1dedbd0ac221233c01b9779cc4e432b7fc31d427b088a0fec9566ca6"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 106557,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 132.050311,
+      "id": "LOG00025",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 169.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2839261,
+        "path": "logs/blackbox_import/LOG00026.BFL",
+        "sha256": "7d6263d18666d4eacd257fd3a47824575d8b172eaa4443224ac325b8679c7c2d"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 87970,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 109.016846,
+      "id": "LOG00026",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1070.0,
+        "motor_raw_max": 297.0,
+        "powered_baro_altitude_range_m": 0.0,
+        "powered_current_max_a": 1.56,
+        "powered_duration_s": 0.8067970000000031,
+        "powered_gyro_norm_raw_p95_max": [
+          1.0,
+          1.0
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9866878646644038,
+          0.9920720866044408,
+          0.9952581753120708
+        ],
+        "powered_voltage_v": [
+          24.11,
+          24.16
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 5737747,
+        "path": "logs/blackbox_import/LOG00027.BFL",
+        "sha256": "4d4cb3632766cedbda37e517f818076b4fea7b8841019e276d394cd9791fa46d"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 178005,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 220.628068,
+      "id": "LOG00027",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1044.0,
+        "motor_raw_max": 571.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 6370394,
+        "path": "logs/blackbox_import/LOG00028.BFL",
+        "sha256": "d098f2104550127b3720d1094f8092b9042281875674b1850e6be0953b146dc4"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 197948,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 245.363477,
+      "id": "LOG00028",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 1713.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 30088,
+        "path": "logs/blackbox_import/LOG00029.BFL",
+        "sha256": "177211d69923300105d827fb52aa433ec41fd05d4631acd4b0520724e492a06c"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 723,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.905886,
+      "id": "LOG00029",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 168.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 18625,
+        "path": "logs/blackbox_import/LOG00030.BFL",
+        "sha256": "08ab6ae7b66a3f9b1eefd125a7e8ec9546c1bfaf124676bc0d00f50c62885216"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 371,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.46242,
+      "id": "LOG00030",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 167.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 67071,
+        "path": "logs/blackbox_import/LOG00031.BFL",
+        "sha256": "b6dad4e7b244e2e78bed39b642b1a8d82669337793623ae81984adf209f97ed1"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 1876,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 2.323471,
+      "id": "LOG00031",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 168.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 167026,
+        "path": "logs/blackbox_import/LOG00032.BFL",
+        "sha256": "0ee659ae43e2b0797545bcedf6b28e3dafacd0238ba222c4481d908752303086"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 4975,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 6.163713,
+      "id": "LOG00032",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 61966,
+        "path": "logs/blackbox_import/LOG00033.BFL",
+        "sha256": "989f3c454098325e19d1c33c1ef3b8d393a0e7761da80dadd3f6fe6b8857fd35"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 1725,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 2.139019,
+      "id": "LOG00033",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 171.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 31221,
+        "path": "logs/blackbox_import/LOG00034.BFL",
+        "sha256": "509967ea71632566cd2c537871d39682b580beb490a339d821bba492075699d3"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 755,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.934322,
+      "id": "LOG00034",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 168.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 133564,
+        "path": "logs/blackbox_import/LOG00035.BFL",
+        "sha256": "5b43a3faf840ceb8f43315420e7ffc6a766bf5a0d1385f85bc2dae9cb7c41596"
+      },
+      "classification": {
+        "automatic_physical_class": "brief_or_fixed_powered_test",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "legacy_brief_powered_or_fixed_test",
+        "source": "Blackbox physics signature",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 3855,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1204.0,
+          1489.0
+        ],
+        "sample_count_10hz": 23,
+        "throttle_bin_counts": [
+          5,
+          5,
+          4,
+          2,
+          3,
+          4
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.09,
+          23.51
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 23,
+      "duration_s": 4.775847,
+      "id": "LOG00035",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1617.0,
+        "motor_raw_max": 1377.0,
+        "powered_baro_altitude_range_m": 0.08,
+        "powered_current_max_a": 6.56,
+        "powered_duration_s": 3.5711450000000005,
+        "powered_gyro_norm_raw_p95_max": [
+          1.4142135623730951,
+          5.0990195135927845
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9872985900022384,
+          0.9993370361695845,
+          1.0182632219452197
+        ],
+        "powered_voltage_v": [
+          23.04,
+          23.53
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3282482,
+        "path": "logs/blackbox_import/LOG00036.BFL",
+        "sha256": "10c2aa62ff48f0615278817a9123599a13215dbcae5d3ea9388002fde1a00189"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 102153,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 126.599223,
+      "id": "LOG00036",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 1375.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 33153,
+        "path": "logs/blackbox_import/LOG00037.BFL",
+        "sha256": "ec172bddfc1f482e4b99a04bb366b530baab0e86c412e56eb6473433f221b269"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 813,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 1.00642,
+      "id": "LOG00037",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 167.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 25694072,
+        "path": "logs/blackbox_import/LOG00038.BFL",
+        "sha256": "2c7b43f44b53695900391df1372b4b634a6f3c580b81fbc5df4a1259e699a3d6"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 799876,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 991.305047,
+      "id": "LOG00038",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3536251,
+        "path": "logs/blackbox_import/LOG00039.BFL",
+        "sha256": "dd731521ba43bd46f8d8d03c85e5bf36788679871cac4c125cae5850f6005002"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 110215,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 136.584759,
+      "id": "LOG00039",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 175.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3734419,
+        "path": "logs/blackbox_import/LOG00040.BFL",
+        "sha256": "ad008de1b82aa8e422a0c9dd836c78afd28d39dc4a78fb912af563a92743f2c3"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 116413,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 144.26227,
+      "id": "LOG00040",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 210.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 4033845,
+        "path": "logs/blackbox_import/LOG00041.BFL",
+        "sha256": "bf293341dd2834efd4beb30b58b92ec314178ba113084d59057460bf8bc3ddee"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 125749,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 155.829421,
+      "id": "LOG00041",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 195.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3677753,
+        "path": "logs/blackbox_import/LOG00042.BFL",
+        "sha256": "4e9938851e5cad82f4be67591d4d0da2f3ddfc1baa56d9cadb39a0e52dd7285f"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 114168,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 141.488814,
+      "id": "LOG00042",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 1323.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 7873,
+        "path": "logs/blackbox_import/LOG00050.BFL",
+        "sha256": "fd2d246821e605bb1d8d29f70ba23d3d2ef239c33ff130f9c6a2a339f11bf0b0"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 27,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.032201,
+      "id": "LOG00050",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 163.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3026189,
+        "path": "logs/blackbox_import/LOG00051.BFL",
+        "sha256": "9ffd7470b81092003e3b17ec80826158ffff5547487029a37930bc056efe8da6"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 94065,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 116.546609,
+      "id": "LOG00051",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1029.0,
+        "motor_raw_max": 627.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 19063,
+        "path": "logs/blackbox_import/LOG00052.BFL",
+        "sha256": "a4955e0b02ad090d34cce57043ad0fafea62289ae31589016858e49b870e75d9"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 374,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.457028,
+      "id": "LOG00052",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 216.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 334807,
+        "path": "logs/blackbox_import/LOG00053.BFL",
+        "sha256": "957569b4e818b8571ea9e283ca7fac94f39e9b836b8656a038670e8cbe97dceb"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 10100,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 12.502981,
+      "id": "LOG00053",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 924.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 13348,
+        "path": "logs/blackbox_import/LOG00054.BFL",
+        "sha256": "4105ede4ff43ff09b97b11b68a4bee2baa7bfea0d487000747e1e799507f7271"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 197,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.254926,
+      "id": "LOG00054",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 234.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 961747,
+        "path": "logs/blackbox_import/LOG00055.BFL",
+        "sha256": "edb43c7f8ab9c7de3c1805183cc605595740019d1eb6ede0e499fbe86534cc7e"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "flight_or_unrestrained_dynamic",
+        "release_evidence_class": "supplemental_only"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": "No GPS, host CSV, or scene metadata; venue cannot be claimed as outdoor.",
+        "scene": "legacy_dynamic_flight_without_scene_record",
+        "source": "doc/BETAFLIGHT_BLACKBOX_LOG00050_57_ANALYSIS.md",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 28325,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1465.0
+        ],
+        "sample_count_10hz": 246,
+        "throttle_bin_counts": [
+          133,
+          76,
+          14,
+          14,
+          6,
+          3
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.51,
+          25.1
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 246,
+      "duration_s": 35.06429,
+      "id": "LOG00055",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1563.0,
+        "motor_raw_max": 2036.0,
+        "powered_baro_altitude_range_m": 7.55,
+        "powered_current_max_a": 60.09,
+        "powered_duration_s": 29.595255,
+        "powered_gyro_norm_raw_p95_max": [
+          48.99234454669529,
+          159.00314462299164
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.966417147983957,
+          1.7862718100567556,
+          4.251572514374647
+        ],
+        "powered_voltage_v": [
+          21.07,
+          25.11
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2963050,
+        "path": "logs/blackbox_import/LOG00056.BFL",
+        "sha256": "f92f6e9d12e08d176ebfc3e2231e56aa815442ab4466236913c9ac0bca71a843"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unidentified",
+        "source": "physics_screen_only",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 92051,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 113.962867,
+      "id": "LOG00056",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 260.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1834475,
+        "path": "logs/blackbox_import/LOG00057.BFL",
+        "sha256": "7c0fe0ae1193e5524facefb2285f58cff9c196e7a5facfc74187596c7cc28235"
+      },
+      "classification": {
+        "automatic_physical_class": "brief_or_fixed_powered_test",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "hover_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "F01_INDOOR_manual_hover",
+        "source": "doc/BETAFLIGHT_BLACKBOX_LOG00050_57_ANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 55834,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1203.0,
+          1298.0
+        ],
+        "sample_count_10hz": 295,
+        "throttle_bin_counts": [
+          27,
+          268,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          24.3,
+          24.67
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 295,
+      "duration_s": 69.134059,
+      "id": "LOG00057",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1298.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 5.34,
+        "powered_current_max_a": 76.59,
+        "powered_duration_s": 30.852317999999997,
+        "powered_gyro_norm_raw_p95_max": [
+          10.63014581273465,
+          163.45641620933696
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.993617191677052,
+          1.0556383155208873,
+          3.9458562193021884
+        ],
+        "powered_voltage_v": [
+          22.55,
+          24.81
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 4748482,
+        "path": "logs/blackbox_import/LOG00062.BFL",
+        "sha256": "601a50923a7424117158024d1012cf5cb14de8b2c572790e6e33856d5cfec46a"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "THRUST_ENVELOPE_manual_flight",
+        "source": "doc/BETAFLIGHT_LOG00062_THRUST_ENVELOPE_ANALYSIS.md",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 145219,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1473.0
+        ],
+        "sample_count_10hz": 779,
+        "throttle_bin_counts": [
+          625,
+          143,
+          2,
+          0,
+          2,
+          7
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          24.18,
+          25.06
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 779,
+      "duration_s": 178.672863,
+      "id": "LOG00062",
+      "physics": {
+        "gps_distinct_update_count": 1230,
+        "gps_nonzero_row_count": 145218,
+        "gps_satellite_max": 20,
+        "gps_speed_max_m_s": 2.38,
+        "internal_throttle_max": 1473.0,
+        "motor_raw_max": 1985.0,
+        "powered_baro_altitude_range_m": 23.97,
+        "powered_current_max_a": 40.92,
+        "powered_duration_s": 81.93744700000002,
+        "powered_gyro_norm_raw_p95_max": [
+          19.05255888325765,
+          97.73433378296492
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9963179990376059,
+          1.1162510713137999,
+          2.476155726002071
+        ],
+        "powered_voltage_v": [
+          23.28,
+          25.22
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1527926,
+        "path": "logs/blackbox_import/LOG00063.BFL",
+        "sha256": "9aaa92ef10733af0d7f6fb93008cef11b7eaa069b0f2660cd9f682fba2a1a296"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "hover_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "manual_hover_confirmation",
+        "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 45428,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1201.0,
+          1256.0
+        ],
+        "sample_count_10hz": 523,
+        "throttle_bin_counts": [
+          510,
+          13,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          24.6,
+          25.05
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 523,
+      "duration_s": 55.81569,
+      "id": "LOG00063",
+      "physics": {
+        "gps_distinct_update_count": 520,
+        "gps_nonzero_row_count": 45427,
+        "gps_satellite_max": 21,
+        "gps_speed_max_m_s": 2.05,
+        "internal_throttle_max": 1257.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 7.59,
+        "powered_current_max_a": 36.86,
+        "powered_duration_s": 53.95523,
+        "powered_gyro_norm_raw_p95_max": [
+          39.173967957670776,
+          189.06612599828665
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9924800171269759,
+          1.0844140653034127,
+          2.896971997856195
+        ],
+        "powered_voltage_v": [
+          23.81,
+          25.18
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1603040,
+        "path": "logs/blackbox_import/LOG00064.BFL",
+        "sha256": "b60432fc33951ebc66a9b30cba7139861eb9cdb345acf9fb7dfb84f07aac4b06"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "low_throttle_arm_and_mode_switch",
+        "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 49813,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 61.426001,
+      "id": "LOG00064",
+      "physics": {
+        "gps_distinct_update_count": 254,
+        "gps_nonzero_row_count": 49812,
+        "gps_satellite_max": 23,
+        "gps_speed_max_m_s": 0.15,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 214.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1531717,
+        "path": "logs/blackbox_import/LOG00065.BFL",
+        "sha256": "526a166be3f0963efbd7e9fda342fb41f235683d51b0f145d6a2b53de82a9e93"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique_partial",
+        "note": null,
+        "scene": "manual_acro_flight",
+        "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md",
+        "venue": "unknown"
+      },
+      "decoded_row_count": 45476,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1288.0
+        ],
+        "sample_count_10hz": 524,
+        "throttle_bin_counts": [
+          374,
+          150,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          24.52,
+          24.89
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 524,
+      "duration_s": 55.81397,
+      "id": "LOG00065",
+      "physics": {
+        "gps_distinct_update_count": 528,
+        "gps_nonzero_row_count": 45475,
+        "gps_satellite_max": 23,
+        "gps_speed_max_m_s": 5.55,
+        "internal_throttle_max": 1288.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 9.37,
+        "powered_current_max_a": 34.25,
+        "powered_duration_s": 53.854271999999995,
+        "powered_gyro_norm_raw_p95_max": [
+          67.67015219596406,
+          136.83932183404008
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          1.00890616284742,
+          1.1806407887151043,
+          3.4185867884310617
+        ],
+        "powered_voltage_v": [
+          23.04,
+          25.08
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 14919,
+        "path": "logs/blackbox_import/LOG00078.BFL",
+        "sha256": "860a68bf95eb85731fe0dbe460add950d9fa3e002df5031495c5c7f316e47ab7"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_short_arm",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 246,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.30381,
+      "id": "LOG00078",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 263.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 4206137,
+        "path": "logs/blackbox_import/LOG00079.BFL",
+        "sha256": "247b29fa17e3f8f103fa8c85377cce3e9d0e5a438c886efadc7888b95410a060"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_manual_input",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 130515,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 161.691282,
+      "id": "LOG00079",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 4899215,
+        "path": "logs/blackbox_import/LOG00080.BFL",
+        "sha256": "f3d3ffb73b36127d7039e7015dd0199c1ecef3eaba656311934831704cfc7324"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_idle_low_output",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 152205,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 188.572368,
+      "id": "LOG00080",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 225.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 3349598,
+        "path": "logs/blackbox_import/LOG00081.BFL",
+        "sha256": "f30abb1fcceb76585da2589ac759268b5470e8324efec5247c2133c4ef28ff95"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_idle_low_output",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 103986,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 128.81801,
+      "id": "LOG00081",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 182.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 923896,
+        "path": "logs/blackbox_import/LOG00082.BFL",
+        "sha256": "23b7474ab9dec20baf69f07930de32e7cc2b003085dd82600c532f8a62395372"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "rig_passthrough",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 28514,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 35.339174,
+      "id": "LOG00082",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 326.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 511647,
+        "path": "logs/blackbox_import/LOG00083.BFL",
+        "sha256": "28c37103b3eae886a7b7e4ecc85623071997da3578aa465749a1d0032067adec"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_idle_low_output",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 15687,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 19.458408,
+      "id": "LOG00083",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 189.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1521900,
+        "path": "logs/blackbox_import/LOG00084.BFL",
+        "sha256": "3e9a1372844aafd5e4f91a137a464961601d3aa8dfe0a7027cd633a1273233ac"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "rig_active_pulse",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 47072,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 58.318561,
+      "id": "LOG00084",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1126.0,
+        "motor_raw_max": 566.0,
+        "powered_baro_altitude_range_m": 0.17,
+        "powered_current_max_a": 3.63,
+        "powered_duration_s": 0.7598690000000001,
+        "powered_gyro_norm_raw_p95_max": [
+          3.3166247903554,
+          5.477225575051661
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9871590617286944,
+          1.0170020252045946,
+          1.0357265988449518
+        ],
+        "powered_voltage_v": [
+          24.02,
+          24.35
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1606662,
+        "path": "logs/blackbox_import/LOG00085.BFL",
+        "sha256": "91017a7c53b515a9bea0603394f906b16a72ffb093e5c41143a1d5a9178add7f"
+      },
+      "classification": {
+        "automatic_physical_class": "brief_or_fixed_powered_test",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "brief_or_fixed_powered_test",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "rig_limited_pulses",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "indoor"
+      },
+      "decoded_row_count": 49511,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1236.0
+        ],
+        "sample_count_10hz": 55,
+        "throttle_bin_counts": [
+          55,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.03,
+          23.56
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 55,
+      "duration_s": 61.338337,
+      "id": "LOG00085",
+      "physics": {
+        "gps_distinct_update_count": 0,
+        "gps_nonzero_row_count": 0,
+        "gps_satellite_max": 0,
+        "gps_speed_max_m_s": 0.0,
+        "internal_throttle_max": 1236.0,
+        "motor_raw_max": 885.0,
+        "powered_baro_altitude_range_m": 0.94,
+        "powered_current_max_a": 9.97,
+        "powered_duration_s": 12.103200000000001,
+        "powered_gyro_norm_raw_p95_max": [
+          5.0990195135927845,
+          8.12403840463596
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9861020877287988,
+          1.0312796847498023,
+          1.1044048676178686
+        ],
+        "powered_voltage_v": [
+          22.97,
+          24.33
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1479272,
+        "path": "logs/blackbox_import/LOG00086.BFL",
+        "sha256": "c1c5c5645561f46605e7807e884c36621b0b9b7371f972a416e9d4991424c513"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "hover_flight",
+        "release_evidence_class": "supplemental_only"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "manual_free_flight_baseline",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 44149,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1201.0,
+          1287.0
+        ],
+        "sample_count_10hz": 464,
+        "throttle_bin_counts": [
+          405,
+          59,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.89,
+          24.97
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 464,
+      "duration_s": 54.234473,
+      "id": "LOG00086",
+      "physics": {
+        "gps_distinct_update_count": 509,
+        "gps_nonzero_row_count": 44148,
+        "gps_satellite_max": 24,
+        "gps_speed_max_m_s": 2.77,
+        "internal_throttle_max": 1287.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 8.19,
+        "powered_current_max_a": 39.3,
+        "powered_duration_s": 49.144582,
+        "powered_gyro_norm_raw_p95_max": [
+          33.54101966249684,
+          163.2789024950866
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          1.001013004290914,
+          1.100024758395846,
+          4.6098823656063495
+        ],
+        "powered_voltage_v": [
+          23.89,
+          25.16
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 13080,
+        "path": "logs/blackbox_import/LOG00087.BFL",
+        "sha256": "9b1df2709159a7543732c7741f982ec84cf55f45d1f615bc3aef4c5e2a9516bf"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "short_arm",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 186,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.226705,
+      "id": "LOG00087",
+      "physics": {
+        "gps_distinct_update_count": 2,
+        "gps_nonzero_row_count": 185,
+        "gps_satellite_max": 24,
+        "gps_speed_max_m_s": 0.1,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 180.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 31004,
+        "path": "logs/blackbox_import/LOG00088.BFL",
+        "sha256": "2c1de526d57764602a726dc6187401db10a851d100a2624c11293ea4d99a6dc9"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "short_arm",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 750,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 0.935248,
+      "id": "LOG00088",
+      "physics": {
+        "gps_distinct_update_count": 5,
+        "gps_nonzero_row_count": 749,
+        "gps_satellite_max": 23,
+        "gps_speed_max_m_s": 0.07,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 202.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2579859,
+        "path": "logs/blackbox_import/LOG00089.BFL",
+        "sha256": "16bebdf98de63051e0be8a883835c4e126056b76cea1e393a3203a4964163127"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "PNG_free_flight_first",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 77261,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1428.0
+        ],
+        "sample_count_10hz": 917,
+        "throttle_bin_counts": [
+          801,
+          110,
+          3,
+          1,
+          2,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.82,
+          24.9
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 917,
+      "duration_s": 94.834979,
+      "id": "LOG00089",
+      "physics": {
+        "gps_distinct_update_count": 913,
+        "gps_nonzero_row_count": 77260,
+        "gps_satellite_max": 27,
+        "gps_speed_max_m_s": 3.2,
+        "internal_throttle_max": 1447.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 8.27,
+        "powered_current_max_a": 80.64,
+        "powered_duration_s": 93.389566,
+        "powered_gyro_norm_raw_p95_max": [
+          23.2163735324878,
+          181.25120689253356
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9921376373497394,
+          1.072556886556403,
+          3.474597915879256
+        ],
+        "powered_voltage_v": [
+          21.81,
+          25.06
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2592271,
+        "path": "logs/blackbox_import/LOG00090.BFL",
+        "sha256": "09d63f25ceb8cd4f1c939fce4b84e8c78f0acf1300074c2dc6573daa33425bff"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "supplemental_only"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "partial",
+        "note": null,
+        "scene": "PNG_free_flight_second_host_tail_missing",
+        "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 77337,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1201.0,
+          1340.0
+        ],
+        "sample_count_10hz": 916,
+        "throttle_bin_counts": [
+          590,
+          321,
+          5,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.81,
+          24.59
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 916,
+      "duration_s": 94.953346,
+      "id": "LOG00090",
+      "physics": {
+        "gps_distinct_update_count": 908,
+        "gps_nonzero_row_count": 77336,
+        "gps_satellite_max": 27,
+        "gps_speed_max_m_s": 5.11,
+        "internal_throttle_max": 1341.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 10.64,
+        "powered_current_max_a": 73.7,
+        "powered_duration_s": 92.91663999999996,
+        "powered_gyro_norm_raw_p95_max": [
+          32.155870381627054,
+          311.0064308016797
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9992699342313568,
+          1.094543517936023,
+          5.9190213818957425
+        ],
+        "powered_voltage_v": [
+          22.41,
+          24.71
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2959721,
+        "path": "logs/blackbox_import/LOG00094.BFL",
+        "sha256": "f21df6ed39208f3a9f8068906f85b1c9804c84f35d6eecd93479961503403161"
+      },
+      "classification": {
+        "automatic_physical_class": "no_material_powered_excitation",
+        "flight_like": false,
+        "formal_coverage_included": false,
+        "physical_class": "no_material_powered_excitation",
+        "release_evidence_class": "not_usable"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": "Internal throttle stayed at 1000, so this Blackbox cannot support a thrust audit.",
+        "scene": "host_reported_manual_flight_blackbox_no_excitation",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 92032,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": null,
+        "sample_count_10hz": 0,
+        "throttle_bin_counts": [
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ],
+        "voltage_v": null
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 0,
+      "duration_s": 113.587562,
+      "id": "LOG00094",
+      "physics": {
+        "gps_distinct_update_count": 478,
+        "gps_nonzero_row_count": 92031,
+        "gps_satellite_max": 23,
+        "gps_speed_max_m_s": 0.15,
+        "internal_throttle_max": 1000.0,
+        "motor_raw_max": 234.0,
+        "powered_baro_altitude_range_m": null,
+        "powered_current_max_a": null,
+        "powered_duration_s": 0.0,
+        "powered_gyro_norm_raw_p95_max": null,
+        "powered_specific_force_g_p50_p95_max": null,
+        "powered_voltage_v": null
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2244985,
+        "path": "logs/blackbox_import/LOG00095.BFL",
+        "sha256": "7277c52813fc2b15107e1daa9d852dc2a5b74b80cb7fb8b4eb2d5d9de04c7cd8"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_run_aux_disabled_arm_1",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 67929,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1202.0,
+          1481.0
+        ],
+        "sample_count_10hz": 775,
+        "throttle_bin_counts": [
+          522,
+          249,
+          1,
+          1,
+          0,
+          2
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.04,
+          24.62
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 775,
+      "duration_s": 83.407057,
+      "id": "LOG00095",
+      "physics": {
+        "gps_distinct_update_count": 787,
+        "gps_nonzero_row_count": 67928,
+        "gps_satellite_max": 28,
+        "gps_speed_max_m_s": 2.21,
+        "internal_throttle_max": 1481.0,
+        "motor_raw_max": 1267.0,
+        "powered_baro_altitude_range_m": 11.86,
+        "powered_current_max_a": 55.22,
+        "powered_duration_s": 78.92181,
+        "powered_gyro_norm_raw_p95_max": [
+          32.01562118716424,
+          91.62968951164245
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9940453504308822,
+          1.1167888000264143,
+          2.6255062614167204
+        ],
+        "powered_voltage_v": [
+          21.73,
+          24.87
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1057188,
+        "path": "logs/blackbox_import/LOG00096.BFL",
+        "sha256": "1c5e425d4340aa3cc1c43d2ccaaf00d57ce10ab2db936366c8afeca5db8428a8"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_run_aux_disabled_arm_2",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 31643,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1402.0
+        ],
+        "sample_count_10hz": 359,
+        "throttle_bin_counts": [
+          199,
+          154,
+          4,
+          0,
+          2,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.35,
+          24.33
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 359,
+      "duration_s": 38.832666,
+      "id": "LOG00096",
+      "physics": {
+        "gps_distinct_update_count": 376,
+        "gps_nonzero_row_count": 31642,
+        "gps_satellite_max": 28,
+        "gps_speed_max_m_s": 2.61,
+        "internal_throttle_max": 1402.0,
+        "motor_raw_max": 1632.0,
+        "powered_baro_altitude_range_m": 11.02,
+        "powered_current_max_a": 42.83,
+        "powered_duration_s": 37.763823,
+        "powered_gyro_norm_raw_p95_max": [
+          43.178119105582184,
+          129.1317157014496
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9982104381938175,
+          1.2389571404078978,
+          2.066076010724747
+        ],
+        "powered_voltage_v": [
+          22.48,
+          24.55
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 430524,
+        "path": "logs/blackbox_import/LOG00097.BFL",
+        "sha256": "cfa07c229a00aa7e3bfcf19ee7c9472a7b6684a296992bc734ef8a1ca6bb5ddc"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": false,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "supplemental_only"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "none",
+        "note": null,
+        "scene": "unpaired_short_flight",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 12720,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1202.0,
+          1312.0
+        ],
+        "sample_count_10hz": 128,
+        "throttle_bin_counts": [
+          82,
+          42,
+          4,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.87,
+          24.24
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 128,
+      "duration_s": 15.624079,
+      "id": "LOG00097",
+      "physics": {
+        "gps_distinct_update_count": 142,
+        "gps_nonzero_row_count": 12719,
+        "gps_satellite_max": 29,
+        "gps_speed_max_m_s": 3.69,
+        "internal_throttle_max": 1313.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 6.31,
+        "powered_current_max_a": 49.4,
+        "powered_duration_s": 14.090498,
+        "powered_gyro_norm_raw_p95_max": [
+          77.00649323271382,
+          268.1492121935099
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9929035636580491,
+          1.269295160506027,
+          2.6297305488349387
+        ],
+        "powered_voltage_v": [
+          21.64,
+          24.45
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1891293,
+        "path": "logs/blackbox_import/LOG00098.BFL",
+        "sha256": "4a3eecdd56cef345ff6c601d2fb11de9016e94c3c4339ee936a243d0fd852337"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_flight",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 56997,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1202.0,
+          1360.0
+        ],
+        "sample_count_10hz": 682,
+        "throttle_bin_counts": [
+          328,
+          340,
+          7,
+          7,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.53,
+          24.26
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 682,
+      "duration_s": 69.972244,
+      "id": "LOG00098",
+      "physics": {
+        "gps_distinct_update_count": 673,
+        "gps_nonzero_row_count": 56996,
+        "gps_satellite_max": 30,
+        "gps_speed_max_m_s": 5.82,
+        "internal_throttle_max": 1361.0,
+        "motor_raw_max": 1544.0,
+        "powered_baro_altitude_range_m": 15.91,
+        "powered_current_max_a": 20.49,
+        "powered_duration_s": 69.18301599999998,
+        "powered_gyro_norm_raw_p95_max": [
+          45.02221673796171,
+          109.5673308974897
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9968581912737244,
+          1.141421533737147,
+          4.6908807896982845
+        ],
+        "powered_voltage_v": [
+          23.1,
+          24.43
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 2238990,
+        "path": "logs/blackbox_import/LOG00099.BFL",
+        "sha256": "9720a8887757e06995d72a3bd3c658dcfdb8fb8397e60a5b6c810d2b8db77928"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_flight_two_pulses",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 67707,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1428.0
+        ],
+        "sample_count_10hz": 789,
+        "throttle_bin_counts": [
+          266,
+          519,
+          3,
+          0,
+          1,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.29,
+          24.12
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 789,
+      "duration_s": 83.17368,
+      "id": "LOG00099",
+      "physics": {
+        "gps_distinct_update_count": 786,
+        "gps_nonzero_row_count": 67706,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 2.7,
+        "internal_throttle_max": 1533.0,
+        "motor_raw_max": 1332.0,
+        "powered_baro_altitude_range_m": 10.34,
+        "powered_current_max_a": 58.93,
+        "powered_duration_s": 80.83951399999998,
+        "powered_gyro_norm_raw_p95_max": [
+          36.138621999185304,
+          132.00378782444085
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9904293191946929,
+          1.1026467472569315,
+          2.8828936309563082
+        ],
+        "powered_voltage_v": [
+          20.86,
+          24.24
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1207653,
+        "path": "logs/blackbox_import/LOG00100.BFL",
+        "sha256": "e07b90622400bacb74f1f23b225eee9c34e8b986b474970315434ec4ea5ce0f4"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_moving_target",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 36305,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1367.0
+        ],
+        "sample_count_10hz": 412,
+        "throttle_bin_counts": [
+          120,
+          284,
+          5,
+          3,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.11,
+          23.78
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 412,
+      "duration_s": 44.610516,
+      "id": "LOG00100",
+      "physics": {
+        "gps_distinct_update_count": 407,
+        "gps_nonzero_row_count": 36304,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 3.12,
+        "internal_throttle_max": 1369.0,
+        "motor_raw_max": 1246.0,
+        "powered_baro_altitude_range_m": 18.01,
+        "powered_current_max_a": 21.64,
+        "powered_duration_s": 43.39309899999999,
+        "powered_gyro_norm_raw_p95_max": [
+          33.12099032335839,
+          78.39642849007855
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9881150177482176,
+          1.137446303559927,
+          1.6540413290946727
+        ],
+        "powered_voltage_v": [
+          22.99,
+          24.04
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1185083,
+        "path": "logs/blackbox_import/LOG00101.BFL",
+        "sha256": "634f725f6bfddf84f46c5d358f0571416c53ef80055e301458555e94bfcc8699"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_moving_target",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 35732,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1203.0,
+          1330.0
+        ],
+        "sample_count_10hz": 412,
+        "throttle_bin_counts": [
+          91,
+          318,
+          3,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          23.15,
+          23.68
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 412,
+      "duration_s": 43.904583,
+      "id": "LOG00101",
+      "physics": {
+        "gps_distinct_update_count": 415,
+        "gps_nonzero_row_count": 35731,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 2.53,
+        "internal_throttle_max": 1346.0,
+        "motor_raw_max": 1094.0,
+        "powered_baro_altitude_range_m": 16.75,
+        "powered_current_max_a": 15.32,
+        "powered_duration_s": 42.644864,
+        "powered_gyro_norm_raw_p95_max": [
+          31.883376820900487,
+          106.0801583709225
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9902539975478577,
+          1.0884810100656113,
+          1.5727949116384907
+        ],
+        "powered_voltage_v": [
+          22.76,
+          23.89
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 919835,
+        "path": "logs/blackbox_import/LOG00102.BFL",
+        "sha256": "134884fa48fe8aee369122ccb6224b8180d74e8478c5858a1117789b2559d97a"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_target_loss",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 27643,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1208.0,
+          1372.0
+        ],
+        "sample_count_10hz": 317,
+        "throttle_bin_counts": [
+          125,
+          184,
+          4,
+          4,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          22.99,
+          23.58
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 317,
+      "duration_s": 33.943706,
+      "id": "LOG00102",
+      "physics": {
+        "gps_distinct_update_count": 321,
+        "gps_nonzero_row_count": 27642,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 3.27,
+        "internal_throttle_max": 1374.0,
+        "motor_raw_max": 1283.0,
+        "powered_baro_altitude_range_m": 13.54,
+        "powered_current_max_a": 20.0,
+        "powered_duration_s": 32.793198000000004,
+        "powered_gyro_norm_raw_p95_max": [
+          35.14114371750007,
+          83.14445261110329
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9816319833747786,
+          1.1332131560053886,
+          1.9114068117049685
+        ],
+        "powered_voltage_v": [
+          22.66,
+          23.77
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 965647,
+        "path": "logs/blackbox_import/LOG00103.BFL",
+        "sha256": "f127e301f980e11968ff557a022c0d5783e72559ab4e1171d348d8a6370cbdc1"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_short_pulse",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 29125,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1205.0,
+          1344.0
+        ],
+        "sample_count_10hz": 339,
+        "throttle_bin_counts": [
+          52,
+          283,
+          4,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          22.99,
+          23.51
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 339,
+      "duration_s": 35.779354,
+      "id": "LOG00103",
+      "physics": {
+        "gps_distinct_update_count": 330,
+        "gps_nonzero_row_count": 29124,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 3.12,
+        "internal_throttle_max": 1345.0,
+        "motor_raw_max": 991.0,
+        "powered_baro_altitude_range_m": 9.0,
+        "powered_current_max_a": 13.0,
+        "powered_duration_s": 34.918679999999995,
+        "powered_gyro_norm_raw_p95_max": [
+          24.814271960987824,
+          89.00561780022652
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9838368594880198,
+          1.0789598462675847,
+          2.6844343398688557
+        ],
+        "powered_voltage_v": [
+          22.88,
+          23.7
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1433911,
+        "path": "logs/blackbox_import/LOG00104.BFL",
+        "sha256": "eefc4f84c56c2732d9ac269bb6ad8137d287f9575b2ade3d7dda43ef3f4b2918"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_short_pulse_high_vision_age",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 43357,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1209.0,
+          1292.0
+        ],
+        "sample_count_10hz": 516,
+        "throttle_bin_counts": [
+          45,
+          471,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          22.97,
+          23.44
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 516,
+      "duration_s": 53.270275,
+      "id": "LOG00104",
+      "physics": {
+        "gps_distinct_update_count": 499,
+        "gps_nonzero_row_count": 43356,
+        "gps_satellite_max": 32,
+        "gps_speed_max_m_s": 2.81,
+        "internal_throttle_max": 1293.0,
+        "motor_raw_max": 887.0,
+        "powered_baro_altitude_range_m": 9.5,
+        "powered_current_max_a": 13.9,
+        "powered_duration_s": 52.31239299999999,
+        "powered_gyro_norm_raw_p95_max": [
+          33.015148038438355,
+          80.23091673413684
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9877516944849183,
+          1.0802948717983167,
+          1.3064951908389493
+        ],
+        "powered_voltage_v": [
+          22.87,
+          23.6
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 1185212,
+        "path": "logs/blackbox_import/LOG00105.BFL",
+        "sha256": "29e3dd7d7f29de4ff538a9b8dde6546314852aa5b965a5fb004482cea40d5345"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": null,
+        "scene": "supervised_active_short_pulse",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 35867,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1200.0,
+          1292.0
+        ],
+        "sample_count_10hz": 417,
+        "throttle_bin_counts": [
+          56,
+          361,
+          0,
+          0,
+          0,
+          0
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          22.95,
+          23.39
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 417,
+      "duration_s": 44.09162,
+      "id": "LOG00105",
+      "physics": {
+        "gps_distinct_update_count": 390,
+        "gps_nonzero_row_count": 35866,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 3.24,
+        "internal_throttle_max": 1294.0,
+        "motor_raw_max": 1159.0,
+        "powered_baro_altitude_range_m": 7.15,
+        "powered_current_max_a": 15.37,
+        "powered_duration_s": 42.988941,
+        "powered_gyro_norm_raw_p95_max": [
+          24.228082879171435,
+          64.31174076325411
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9882456053082138,
+          1.0636051713225483,
+          3.9750520726757794
+        ],
+        "powered_voltage_v": [
+          22.48,
+          23.55
+        ]
+      }
+    },
+    {
+      "blackbox_bfl": {
+        "bytes": 651894,
+        "path": "logs/blackbox_import/LOG00106.BFL",
+        "sha256": "fc58d049df776a6a771f312ec5ad71bbd96763b5db7ed60f1b00116f6ed748ec"
+      },
+      "classification": {
+        "automatic_physical_class": "flight_or_unrestrained_dynamic",
+        "flight_like": true,
+        "formal_coverage_included": true,
+        "physical_class": "dynamic_flight",
+        "release_evidence_class": "paired_primary_candidate"
+      },
+      "clean_end": true,
+      "context": {
+        "host_pair": "unique",
+        "note": "Only pre-contact samples may be used for thrust analysis.",
+        "scene": "supervised_active_static_target_contact",
+        "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md",
+        "venue": "outdoor"
+      },
+      "decoded_row_count": 18688,
+      "diagnostic_internal_throttle_coverage": {
+        "internal_throttle": [
+          1207.0,
+          1500.0
+        ],
+        "sample_count_10hz": 198,
+        "throttle_bin_counts": [
+          10,
+          156,
+          10,
+          11,
+          5,
+          6
+        ],
+        "throttle_bin_edges": [
+          1200.0,
+          1250.0,
+          1300.0,
+          1350.0,
+          1400.0,
+          1450.0,
+          1500.000001
+        ],
+        "voltage_v": [
+          20.63,
+          23.21
+        ]
+      },
+      "diagnostic_internal_throttle_sample_count_10hz": 198,
+      "duration_s": 22.962053,
+      "id": "LOG00106",
+      "physics": {
+        "gps_distinct_update_count": 195,
+        "gps_nonzero_row_count": 18687,
+        "gps_satellite_max": 31,
+        "gps_speed_max_m_s": 3.3,
+        "internal_throttle_max": 1500.0,
+        "motor_raw_max": 2047.0,
+        "powered_baro_altitude_range_m": 13.29,
+        "powered_current_max_a": 82.06,
+        "powered_duration_s": 21.677606,
+        "powered_gyro_norm_raw_p95_max": [
+          151.76544380338845,
+          963.2040282307794
+        ],
+        "powered_specific_force_g_p50_p95_max": [
+          0.9978164436596384,
+          1.7601289256197674,
+          4.841934799193385
+        ],
+        "powered_voltage_v": [
+          19.76,
+          23.39
+        ]
+      }
+    }
+  ],
+  "interpretation": [
+    "Formal release coverage remains defined by paired host receiver PWM and Blackbox data in the primary coverage audit.",
+    "This scan may identify old flights for independent model validation or for locating missing host archives.",
+    "It must not be added arithmetically to the formal effective-sample total."
+  ],
+  "method": {
+    "baro_altitude_scale": "baroAlt raw centimeters divided by 100",
+    "decoded_csv_directory": "/tmp/all_blackbox_coverage.NQJidU",
+    "limitations": [
+      "Internal rcCommand[3] is not interchangeable with receiver PWM at the endpoints.",
+      "A flight-like physics signature does not prove an outdoor venue.",
+      "Blackbox-only files cannot become hash-bound release LUT evidence without a unique host CSV and scene provenance."
+    ],
+    "resample_hz": 10.0,
+    "specific_force": "norm(accSmooth)/2048",
+    "throttle_source": "Betaflight internal rcCommand[3]"
+  },
+  "purpose": "historical_blackbox_screening_not_release_lut_calibration",
+  "schema_version": 1,
+  "summary": {
+    "clean_end_count": 80,
+    "file_count": 80,
+    "formal_coverage_included_count": 15,
+    "physical_class_counts": {
+      "brief_or_fixed_powered_test": 9,
+      "dynamic_flight": 16,
+      "flight_or_unrestrained_dynamic": 2,
+      "hover_flight": 3,
+      "no_material_powered_excitation": 50
+    },
+    "release_evidence_class_counts": {
+      "not_usable": 59,
+      "paired_primary_candidate": 16,
+      "supplemental_only": 5
+    },
+    "supplemental_flight_like_count": 5,
+    "supplemental_flight_like_ids": [
+      "LOG00001",
+      "LOG00055",
+      "LOG00086",
+      "LOG00090",
+      "LOG00097"
+    ],
+    "venue_counts": {
+      "indoor": 9,
+      "outdoor": 18,
+      "unknown": 53
+    }
+  }
+}

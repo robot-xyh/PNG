@@ -18,6 +18,9 @@
    Pitch 跟踪、LOS rate、NED 加速度、FOV、饱和和油门交接等 13 项问题。
 5. [LOG00106 AirSim 交接说明](BETAFLIGHT_LOG00106_AIRSIM_HANDOFF.md)：提供仿真输入、字段合同、
    趋势验收标准和可直接交给另一位编码智能体的提示词。
+6. [推力 LUT 现有数据覆盖审计](BETAFLIGHT_THRUST_LUT_COVERAGE_AUDIT_20260904.md)：按 10 Hz
+   时间桶审计 15 个可配对带桨日志，并复查全部80个历史Blackbox，明确现有电压/油门覆盖、
+   早期补充证据及最小补采区间。
 
 ## 3. 机器可读证据与图
 
@@ -47,7 +50,7 @@
 |---|---|---|---|---|
 |旧控制器速度建立项 `76.85%`、总加速度 `86.45%` 饱和|代码已修复：速度参考斜坡在失效/重获时连续，当前非碰撞控制器提前退出|[十脉冲回放](evidence/BETAFLIGHT_OUTDOOR_PULSE_REPLAY_20260904.json) 覆盖全部 `10` 个算法脉冲；新控制器两项饱和均为 `0%`|当前代码的 LOG_ONLY 与短时闭环架次|是，直到新实测完成|
 |LOG00106 近距继续闭合并碰撞|代码已修复：`noncollision` 按 bbox/TTC 进入锁存 ABORT|同一回放在接触前 `1.085447 s` ABORT，高于 `0.75 s` 门槛|新控制器实机 ABORT 后飞手 RC7 退出及安全间隔|是|
-|旧推力模型瞬态高估约 `19%`|批准和运行时已强制电压相关 `voltage_throttle_lut`；MC 动力学也只允许同一 LUT，不再回退分段线性载荷因子|单元测试覆盖 LUT 正向比力、反向油门、哈希和电压越界拒绝|合格的 `20.0--25.2 V` 全 6S 推力 LUT，至少 `100` 个留出验证样本|是；当前配置故意指向不存在的 `betaflight.thrust_lut.pending.json`|
+|旧推力模型瞬态高估约 `19%`|批准和运行时已强制电压相关 `voltage_throttle_lut`；MC 动力学也只允许同一 LUT，不再回退分段线性载荷因子|单元测试覆盖 LUT 正向比力、反向油门、哈希和电压越界拒绝；[现有覆盖审计](BETAFLIGHT_THRUST_LUT_COVERAGE_AUDIT_20260904.md) 得到 `7567` 个 10 Hz 样本，但仅覆盖 `22.25--25.11 V`，且 `1350 us` 以上只有 `18` 个|合格的全运行范围推力 LUT；先决定保持 `20.0--25.2 V` 还是正式收窄安全运行电压，再只补低电压/高油门缺口|是；当前配置故意指向不存在的 `betaflight.thrust_lut.pending.json`|
 |旧 MC 报告为 schema v2、旧配置哈希且混淆 contact/noncollision|代码已修复：MC 输出 schema v3，绑定运行配置、控制器/仿真/runner 源码及 LUT 哈希；contact 命中率与 noncollision 及时 ABORT 分栏|策略分栏和批准端篡改拒绝单元测试通过|装入真实 LUT 后重跑 MC100；contact hit 与 FOV-hit 在三个场景均须 `>=80%`，noncollision 及时 ABORT 率须 `>=99%`|是|
 |旧运行缺少可持久复核的图像和完整结束证据|代码已修复：CSV/events/meta/JPEG/frame index/manifest 原子终结，关键文件 `fsync`，Blackbox 固件模式绑定|日志、finalize、runtime evidence 专项测试通过|用当前干净提交采集 finalized LOG_ONLY 架次：至少 `100` 行、`25` 帧、唯一 Blackbox 配对|是|
 |旧主动批准可与代码/证据漂移|旧批准链已退役；schema v4 在创建和启动时复核配置、MC、RC 联锁、finalized 架次、LUT 和文件哈希|批准工具专项测试通过|新快照、新 RC 联锁证据、新 MC100、新 finalized 架次，随后重新生成批准文件|是|

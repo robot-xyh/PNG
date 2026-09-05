@@ -1,0 +1,225 @@
+{
+  "schema_version": 1,
+  "purpose": "Audit reusable prop-on flight evidence before collecting more thrust-LUT data",
+  "decoder_commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+  "acc_1g_raw": 2048.0,
+  "resample_hz": 10.0,
+  "requirements": {
+    "voltage_v": [20.0, 25.2],
+    "throttle_us": [1200.0, 1500.0],
+    "specific_force_g": [0.3, 3.0],
+    "minimum_effective_samples": 500,
+    "minimum_holdout_samples": 100,
+    "maximum_median_relative_error": 0.1,
+    "maximum_p95_relative_error": 0.2
+  },
+  "voltage_bin_edges_v": [20.0, 21.0, 22.0, 23.0, 24.0, 25.0, 25.200001],
+  "throttle_bin_edges_us": [1200.0, 1250.0, 1300.0, 1350.0, 1400.0, 1450.0, 1500.000001],
+  "historical_blackbox_context": {
+    "LOG00001": {
+      "venue": "unknown",
+      "scene": "legacy_dynamic_flight_without_scene_record",
+      "host_pair": "none",
+      "physical_class": "flight_or_unrestrained_dynamic",
+      "release_evidence_class": "supplemental_only",
+      "source": "Blackbox physics signature",
+      "note": "No GPS, host CSV, or scene metadata; venue cannot be claimed as outdoor."
+    },
+    "LOG00035": {
+      "venue": "unknown",
+      "scene": "legacy_brief_powered_or_fixed_test",
+      "host_pair": "none",
+      "physical_class": "brief_or_fixed_powered_test",
+      "release_evidence_class": "not_usable",
+      "source": "Blackbox physics signature"
+    },
+    "LOG00055": {
+      "venue": "unknown",
+      "scene": "legacy_dynamic_flight_without_scene_record",
+      "host_pair": "none",
+      "physical_class": "flight_or_unrestrained_dynamic",
+      "release_evidence_class": "supplemental_only",
+      "source": "doc/BETAFLIGHT_BLACKBOX_LOG00050_57_ANALYSIS.md",
+      "note": "No GPS, host CSV, or scene metadata; venue cannot be claimed as outdoor."
+    },
+    "LOG00057": {
+      "venue": "indoor",
+      "scene": "F01_INDOOR_manual_hover",
+      "host_pair": "unique",
+      "physical_class": "hover_flight",
+      "release_evidence_class": "paired_primary_candidate",
+      "source": "doc/BETAFLIGHT_BLACKBOX_LOG00050_57_ANALYSIS.md"
+    },
+    "LOG00062": {
+      "venue": "unknown",
+      "scene": "THRUST_ENVELOPE_manual_flight",
+      "host_pair": "unique",
+      "physical_class": "dynamic_flight",
+      "release_evidence_class": "paired_primary_candidate",
+      "source": "doc/BETAFLIGHT_LOG00062_THRUST_ENVELOPE_ANALYSIS.md"
+    },
+    "LOG00063": {
+      "venue": "unknown",
+      "scene": "manual_hover_confirmation",
+      "host_pair": "unique",
+      "physical_class": "hover_flight",
+      "release_evidence_class": "paired_primary_candidate",
+      "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md"
+    },
+    "LOG00064": {
+      "venue": "unknown",
+      "scene": "low_throttle_arm_and_mode_switch",
+      "host_pair": "none",
+      "physical_class": "brief_or_fixed_powered_test",
+      "release_evidence_class": "not_usable",
+      "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md"
+    },
+    "LOG00065": {
+      "venue": "unknown",
+      "scene": "manual_acro_flight",
+      "host_pair": "unique_partial",
+      "physical_class": "dynamic_flight",
+      "release_evidence_class": "paired_primary_candidate",
+      "source": "doc/BETAFLIGHT_LOG00063_65_HOVER_ACRO_ANALYSIS.md"
+    },
+    "LOG00078": {"venue": "indoor", "scene": "rig_short_arm", "host_pair": "none", "physical_class": "no_material_powered_excitation", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00079": {"venue": "indoor", "scene": "rig_manual_input", "host_pair": "none", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00080": {"venue": "indoor", "scene": "rig_idle_low_output", "host_pair": "none", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00081": {"venue": "indoor", "scene": "rig_idle_low_output", "host_pair": "none", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00082": {"venue": "indoor", "scene": "rig_passthrough", "host_pair": "unique", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00083": {"venue": "indoor", "scene": "rig_idle_low_output", "host_pair": "none", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00084": {"venue": "indoor", "scene": "rig_active_pulse", "host_pair": "unique", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00085": {"venue": "indoor", "scene": "rig_limited_pulses", "host_pair": "none", "physical_class": "brief_or_fixed_powered_test", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00086": {"venue": "outdoor", "scene": "manual_free_flight_baseline", "host_pair": "none", "physical_class": "hover_flight", "release_evidence_class": "supplemental_only", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00087": {"venue": "outdoor", "scene": "short_arm", "host_pair": "none", "physical_class": "no_material_powered_excitation", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00088": {"venue": "outdoor", "scene": "short_arm", "host_pair": "none", "physical_class": "no_material_powered_excitation", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00089": {"venue": "outdoor", "scene": "PNG_free_flight_first", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00090": {"venue": "outdoor", "scene": "PNG_free_flight_second_host_tail_missing", "host_pair": "partial", "physical_class": "dynamic_flight", "release_evidence_class": "supplemental_only", "source": "doc/BETAFLIGHT_20260903_FLIGHT_AND_RIG_REANALYSIS.md"},
+    "LOG00094": {"venue": "outdoor", "scene": "host_reported_manual_flight_blackbox_no_excitation", "host_pair": "unique", "physical_class": "no_material_powered_excitation", "release_evidence_class": "not_usable", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md", "note": "Internal throttle stayed at 1000, so this Blackbox cannot support a thrust audit."},
+    "LOG00095": {"venue": "outdoor", "scene": "supervised_run_aux_disabled_arm_1", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00096": {"venue": "outdoor", "scene": "supervised_run_aux_disabled_arm_2", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00097": {"venue": "outdoor", "scene": "unpaired_short_flight", "host_pair": "none", "physical_class": "dynamic_flight", "release_evidence_class": "supplemental_only", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00098": {"venue": "outdoor", "scene": "supervised_active_flight", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00099": {"venue": "outdoor", "scene": "supervised_active_flight_two_pulses", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00100": {"venue": "outdoor", "scene": "supervised_active_moving_target", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00101": {"venue": "outdoor", "scene": "supervised_active_moving_target", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00102": {"venue": "outdoor", "scene": "supervised_active_target_loss", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00103": {"venue": "outdoor", "scene": "supervised_active_short_pulse", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00104": {"venue": "outdoor", "scene": "supervised_active_short_pulse_high_vision_age", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00105": {"venue": "outdoor", "scene": "supervised_active_short_pulse", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md"},
+    "LOG00106": {"venue": "outdoor", "scene": "supervised_active_static_target_contact", "host_pair": "unique", "physical_class": "dynamic_flight", "release_evidence_class": "paired_primary_candidate", "source": "doc/BETAFLIGHT_OUTDOOR_FIELD_TEST_ARCHIVE_20260904.md", "note": "Only pre-contact samples may be used for thrust analysis."}
+  },
+  "sources": [
+    {
+      "id": "LOG00062",
+      "blackbox_bfl": "logs/blackbox_import/LOG00062.BFL",
+      "host_csv": "logs/thrust_envelope/extracted_164023/logs/flight_20260901/THRUST_ENVELOPE_20260901_164023_20260901_164025.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00063",
+      "blackbox_bfl": "logs/blackbox_import/LOG00063.BFL",
+      "host_csv": "logs/flight_20260902/HOVER_THROTTLE_CONFIRM_01_20260902_113900_20260902_113903.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00065",
+      "blackbox_bfl": "logs/blackbox_import/LOG00065.BFL",
+      "host_csv": "logs/flight_20260902/ACRO_RATE_MAP_01_20260902_114542_20260902_114544.csv",
+      "host_arm_interval_index": 1
+    },
+    {
+      "id": "LOG00089",
+      "blackbox_bfl": "logs/blackbox_import/LOG00089.BFL",
+      "host_csv": "logs/flight_active_09/FLIGHT_ACTIVE09_20260903_183501_20260903_183502.csv",
+      "host_arm_interval_index": 2
+    },
+    {
+      "id": "LOG00095",
+      "blackbox_bfl": "logs/blackbox_import/LOG00095.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180552_20260904_180553.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00096",
+      "blackbox_bfl": "logs/blackbox_import/LOG00096.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180552_20260904_180553.csv",
+      "host_arm_interval_index": 1
+    },
+    {
+      "id": "LOG00098",
+      "blackbox_bfl": "logs/blackbox_import/LOG00098.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180918_20260904_180919.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00099",
+      "blackbox_bfl": "logs/blackbox_import/LOG00099.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00100",
+      "blackbox_bfl": "logs/blackbox_import/LOG00100.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181433_20260904_181434.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00101",
+      "blackbox_bfl": "logs/blackbox_import/LOG00101.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181616_20260904_181617.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00102",
+      "blackbox_bfl": "logs/blackbox_import/LOG00102.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181801_20260904_181802.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00103",
+      "blackbox_bfl": "logs/blackbox_import/LOG00103.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181911_20260904_181913.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00104",
+      "blackbox_bfl": "logs/blackbox_import/LOG00104.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_182055_20260904_182057.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00105",
+      "blackbox_bfl": "logs/blackbox_import/LOG00105.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183459_20260904_183502.csv",
+      "host_arm_interval_index": 0
+    },
+    {
+      "id": "LOG00106_PRECONTACT",
+      "blackbox_bfl": "logs/blackbox_import/LOG00106.BFL",
+      "host_csv": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv",
+      "host_arm_interval_index": 0,
+      "max_blackbox_time_s": 20.673876
+    },
+    {
+      "id": "LOG00086",
+      "include": false,
+      "reason": "manual-flight baseline has no uniquely paired host CSV for the required host-throttle provenance"
+    },
+    {
+      "id": "LOG00090",
+      "include": false,
+      "reason": "host CSV does not cover this second Blackbox flight"
+    },
+    {
+      "id": "LOG00094",
+      "include": false,
+      "reason": "Blackbox rcCommand throttle remains at 1000 and provides no 1200-1500 us excitation"
+    },
+    {
+      "id": "LOG00097",
+      "include": false,
+      "reason": "no uniquely paired host CSV"
+    }
+  ]
+}

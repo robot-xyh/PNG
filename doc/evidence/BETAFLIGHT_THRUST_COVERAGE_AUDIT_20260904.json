@@ -1,0 +1,784 @@
+{
+  "coverage": {
+    "blockers": [
+      "voltage_min_reached",
+      "voltage_max_reached",
+      "two_dimensional_coverage_has_empty_cells"
+    ],
+    "checks": {
+      "effective_sample_count": true,
+      "potential_holdout_sample_count": true,
+      "throttle_max_reached": true,
+      "throttle_min_reached": true,
+      "voltage_max_reached": false,
+      "voltage_min_reached": false
+    },
+    "effective_sample_count": 7567,
+    "fit_error_evaluation": "not_run_until_coverage_is_complete",
+    "force_rejected_sample_count": 19,
+    "observed_specific_force_coverage_g": [
+      0.3318850924866439,
+      2.867948550634035
+    ],
+    "observed_throttle_coverage_us": [
+      1200.0,
+      1500.0
+    ],
+    "observed_voltage_coverage_v": [
+      22.25,
+      25.11
+    ],
+    "passed": false,
+    "potential_every_fifth_holdout_sample_count": 1514,
+    "throttle_bin_edges_us": [
+      1200.0,
+      1250.0,
+      1300.0,
+      1350.0,
+      1400.0,
+      1450.0,
+      1500.000001
+    ],
+    "throttle_bin_sample_counts": [
+      173,
+      6365,
+      1011,
+      8,
+      2,
+      8
+    ],
+    "two_dimensional_empty_cell_count": 21,
+    "two_dimensional_sample_counts": [
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ],
+      [
+        0,
+        66,
+        107,
+        1,
+        2,
+        0
+      ],
+      [
+        45,
+        3044,
+        700,
+        4,
+        0,
+        0
+      ],
+      [
+        115,
+        3224,
+        204,
+        3,
+        0,
+        8
+      ],
+      [
+        13,
+        31,
+        0,
+        0,
+        0,
+        0
+      ]
+    ],
+    "voltage_bin_edges_v": [
+      20.0,
+      21.0,
+      22.0,
+      23.0,
+      24.0,
+      25.0,
+      25.200001
+    ],
+    "voltage_bin_sample_counts": [
+      0,
+      0,
+      176,
+      3793,
+      3554,
+      44
+    ]
+  },
+  "decoder": {
+    "bytes": 299768,
+    "commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "path": "/tmp/betaflight-blackbox-tools/obj/blackbox_decode",
+    "sha256": "fae150a8abcb56c1c63a8d755a2d4f5a44c4b1430853fc31622b844bc035dd07"
+  },
+  "excluded_sources": [
+    {
+      "id": "LOG00086",
+      "include": false,
+      "reason": "manual-flight baseline has no uniquely paired host CSV for the required host-throttle provenance"
+    },
+    {
+      "id": "LOG00090",
+      "include": false,
+      "reason": "host CSV does not cover this second Blackbox flight"
+    },
+    {
+      "id": "LOG00094",
+      "include": false,
+      "reason": "Blackbox rcCommand throttle remains at 1000 and provides no 1200-1500 us excitation"
+    },
+    {
+      "id": "LOG00097",
+      "include": false,
+      "reason": "no uniquely paired host CSV"
+    }
+  ],
+  "interpretation": [
+    "Only hashable host/Blackbox pairs selected in the manifest contribute.",
+    "LOG00106 is truncated before the first interceptor motor-boundary contact response.",
+    "This audit does not create a LUT and cannot satisfy active-flight authorization."
+  ],
+  "manifest": {
+    "bytes": 14292,
+    "path": "config/betaflight.thrust_coverage_sources.20260904.json",
+    "sha256": "b96f99fb371b897463e8fcef86953d6fc2d8458e950f185536889c11b635c96a"
+  },
+  "purpose": "coverage_audit_only_not_a_release_thrust_lut",
+  "requirements": {
+    "maximum_median_relative_error": 0.1,
+    "maximum_p95_relative_error": 0.2,
+    "minimum_effective_samples": 500,
+    "minimum_holdout_samples": 100,
+    "specific_force_g": [
+      0.3,
+      3.0
+    ],
+    "throttle_us": [
+      1200.0,
+      1500.0
+    ],
+    "voltage_v": [
+      20.0,
+      25.2
+    ]
+  },
+  "sampling": {
+    "method": "per-flight fixed-width time buckets with per-field medians",
+    "raw_blackbox_rows_are_not_counted_as_independent_samples": true,
+    "resample_hz": 10.0
+  },
+  "schema_version": 1,
+  "sources": [
+    {
+      "alignment": {
+        "correlation": 0.9992789739330686,
+        "host_minus_blackbox_s": 50.41106999999823,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 4.601118264429351,
+        "sample_count": 8845.0
+      },
+      "blackbox_bfl": {
+        "bytes": 4748482,
+        "path": "logs/blackbox_import/LOG00062.BFL",
+        "sha256": "601a50923a7424117158024d1012cf5cb14de8b2c572790e6e33856d5cfec46a"
+      },
+      "coverage_box_sample_count": 787,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        50.65307,
+        229.113196
+      ],
+      "host_csv": {
+        "bytes": 29327240,
+        "path": "logs/thrust_envelope/extracted_164023/logs/flight_20260901/THRUST_ENVELOPE_20260901_164023_20260901_164025.csv",
+        "sha256": "d4b847690e4c50636dcddd68171b58b99a73f96b2567ffead10abb786b73b864"
+      },
+      "id": "LOG00062",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.15785914572078272,
+        2.4494509062183463
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1500.0
+      ],
+      "observed_voltage_v": [
+        24.18,
+        25.27
+      ],
+      "resampled_sample_count": 1785
+    },
+    {
+      "alignment": {
+        "correlation": 0.9907721599269032,
+        "host_minus_blackbox_s": 126.53128500000506,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 6.163105114773996,
+        "sample_count": 2773.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1527926,
+        "path": "logs/blackbox_import/LOG00063.BFL",
+        "sha256": "9aaa92ef10733af0d7f6fb93008cef11b7eaa069b0f2660cd9f682fba2a1a296"
+      },
+      "coverage_box_sample_count": 531,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        126.472285,
+        182.68874
+      ],
+      "host_csv": {
+        "bytes": 27006357,
+        "path": "logs/flight_20260902/HOVER_THROTTLE_CONFIRM_01_20260902_113900_20260902_113903.csv",
+        "sha256": "1071380bd82c2579ba0df7c53b9cb8f048e7c58aa1b6ce8acbf88c3e3689350d"
+      },
+      "id": "LOG00063",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.7724934359172302,
+        1.5041256502258942
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1294.0
+      ],
+      "observed_voltage_v": [
+        24.66,
+        25.22
+      ],
+      "resampled_sample_count": 559
+    },
+    {
+      "alignment": {
+        "correlation": 0.9965699429419894,
+        "host_minus_blackbox_s": 245.4005350000052,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 4.875381045767471,
+        "sample_count": 1497.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1531717,
+        "path": "logs/blackbox_import/LOG00065.BFL",
+        "sha256": "526a166be3f0963efbd7e9fda342fb41f235683d51b0f145d6a2b53de82a9e93"
+      },
+      "coverage_box_sample_count": 278,
+      "host_arm_interval_index": 1,
+      "host_arm_interval_s": [
+        245.312535,
+        275.555654
+      ],
+      "host_csv": {
+        "bytes": 29548544,
+        "path": "logs/flight_20260902/ACRO_RATE_MAP_01_20260902_114542_20260902_114544.csv",
+        "sha256": "ef48220a5e86139edbb288864708dc226b0cec11371152981ba296491f6d87e9"
+      },
+      "id": "LOG00065",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.8306915857886112,
+        1.2283836012127505
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1311.0
+      ],
+      "observed_voltage_v": [
+        24.59,
+        25.05
+      ],
+      "resampled_sample_count": 302
+    },
+    {
+      "alignment": {
+        "correlation": 0.9551373415403965,
+        "host_minus_blackbox_s": 21.414493000001297,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 10.709522583862947,
+        "sample_count": 3726.0
+      },
+      "blackbox_bfl": {
+        "bytes": 2579859,
+        "path": "logs/blackbox_import/LOG00089.BFL",
+        "sha256": "16bebdf98de63051e0be8a883835c4e126056b76cea1e393a3203a4964163127"
+      },
+      "coverage_box_sample_count": 728,
+      "host_arm_interval_index": 2,
+      "host_arm_interval_s": [
+        21.352493,
+        96.525156
+      ],
+      "host_csv": {
+        "bytes": 15425536,
+        "path": "logs/flight_active_09/FLIGHT_ACTIVE09_20260903_183501_20260903_183502.csv",
+        "sha256": "9e4073ac5f96761f26a7760349140dbb97e36b92ea87fe4cadca7c1cf99d654f"
+      },
+      "id": "LOG00089",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.1502891297125831,
+        2.3016684029742582
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1395.0
+      ],
+      "observed_voltage_v": [
+        23.82,
+        25.02
+      ],
+      "resampled_sample_count": 752
+    },
+    {
+      "alignment": {
+        "correlation": 0.9724409166195241,
+        "host_minus_blackbox_s": 38.11762399999719,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 13.755001994949625,
+        "sample_count": 4134.0
+      },
+      "blackbox_bfl": {
+        "bytes": 2244985,
+        "path": "logs/blackbox_import/LOG00095.BFL",
+        "sha256": "7277c52813fc2b15107e1daa9d852dc2a5b74b80cb7fb8b4eb2d5d9de04c7cd8"
+      },
+      "coverage_box_sample_count": 785,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        37.913624,
+        121.510983
+      ],
+      "host_csv": {
+        "bytes": 27329301,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180552_20260904_180553.csv",
+        "sha256": "4fa1bf5ba1d472374ee4b98844cf58bf76c47eed2528504c85cb56df936c202d"
+      },
+      "id": "LOG00095",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.5368125510654993,
+        2.5921815068196565
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1374.0
+      ],
+      "observed_voltage_v": [
+        23.04,
+        24.9
+      ],
+      "resampled_sample_count": 834
+    },
+    {
+      "alignment": {
+        "correlation": 0.9133751759741915,
+        "host_minus_blackbox_s": 125.15721600000576,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 20.341885386211555,
+        "sample_count": 1920.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1057188,
+        "path": "logs/blackbox_import/LOG00096.BFL",
+        "sha256": "1c5e425d4340aa3cc1c43d2ccaaf00d57ce10ab2db936366c8afeca5db8428a8"
+      },
+      "coverage_box_sample_count": 370,
+      "host_arm_interval_index": 1,
+      "host_arm_interval_s": [
+        124.952216,
+        163.916105
+      ],
+      "host_csv": {
+        "bytes": 27329301,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180552_20260904_180553.csv",
+        "sha256": "4fa1bf5ba1d472374ee4b98844cf58bf76c47eed2528504c85cb56df936c202d"
+      },
+      "id": "LOG00096",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.3763675811062702,
+        1.994326830323779
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1343.0
+      ],
+      "observed_voltage_v": [
+        23.35,
+        24.49
+      ],
+      "resampled_sample_count": 388
+    },
+    {
+      "alignment": {
+        "correlation": 0.8673701845436969,
+        "host_minus_blackbox_s": 21.677449000001417,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 17.408717193237102,
+        "sample_count": 3458.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1891293,
+        "path": "logs/blackbox_import/LOG00098.BFL",
+        "sha256": "4a3eecdd56cef345ff6c601d2fb11de9016e94c3c4339ee936a243d0fd852337"
+      },
+      "coverage_box_sample_count": 682,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        21.519449,
+        91.765039
+      ],
+      "host_csv": {
+        "bytes": 15704705,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_180918_20260904_180919.csv",
+        "sha256": "68525deb391b40abb5441de4a66aec80f7f3c509344a67b61a160f38464a33a2"
+      },
+      "id": "LOG00098",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.14150218508327939,
+        1.5708118231052386
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1318.0
+      ],
+      "observed_voltage_v": [
+        23.53,
+        24.46
+      ],
+      "resampled_sample_count": 700
+    },
+    {
+      "alignment": {
+        "correlation": 0.9533978029375614,
+        "host_minus_blackbox_s": 34.29701899999723,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 14.434013897953623,
+        "sample_count": 4122.0
+      },
+      "blackbox_bfl": {
+        "bytes": 2238990,
+        "path": "logs/blackbox_import/LOG00099.BFL",
+        "sha256": "9720a8887757e06995d72a3bd3c658dcfdb8fb8397e60a5b6c810d2b8db77928"
+      },
+      "coverage_box_sample_count": 796,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        34.108019,
+        117.420702
+      ],
+      "host_csv": {
+        "bytes": 19861175,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181142_20260904_181144.csv",
+        "sha256": "05d47b96773f6ebfe152f15414d839cb95f9a019f79d34b242db770b88f0d3d2"
+      },
+      "id": "LOG00099",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.18633715444771365,
+        2.867948550634035
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1550.0
+      ],
+      "observed_voltage_v": [
+        22.25,
+        24.29
+      ],
+      "resampled_sample_count": 832
+    },
+    {
+      "alignment": {
+        "correlation": 0.9652349394968909,
+        "host_minus_blackbox_s": 11.782027999999395,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 14.0882218259002,
+        "sample_count": 2214.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1207653,
+        "path": "logs/blackbox_import/LOG00100.BFL",
+        "sha256": "e07b90622400bacb74f1f23b225eee9c34e8b986b474970315434ec4ea5ce0f4"
+      },
+      "coverage_box_sample_count": 415,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        11.689028,
+        56.397217
+      ],
+      "host_csv": {
+        "bytes": 10292199,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181433_20260904_181434.csv",
+        "sha256": "90a53575776d3d634fae8c3ce4cf26a3e8a042e66a865b81b7690c1cf693f48c"
+      },
+      "id": "LOG00100",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.37563377924408625,
+        1.632083711912375
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1328.0
+      ],
+      "observed_voltage_v": [
+        23.04,
+        23.97
+      ],
+      "resampled_sample_count": 447
+    },
+    {
+      "alignment": {
+        "correlation": 0.9877970285150437,
+        "host_minus_blackbox_s": 11.370054999999327,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 7.3820253480946105,
+        "sample_count": 2169.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1185083,
+        "path": "logs/blackbox_import/LOG00101.BFL",
+        "sha256": "634f725f6bfddf84f46c5d358f0571416c53ef80055e301458555e94bfcc8699"
+      },
+      "coverage_box_sample_count": 417,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        11.156055,
+        55.165344
+      ],
+      "host_csv": {
+        "bytes": 10008489,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181616_20260904_181617.csv",
+        "sha256": "7acfdd29b4eb009df0b1995be4deda9c128efacff07860d0fea734324d5c793e"
+      },
+      "id": "LOG00101",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.7700432173255423,
+        1.3563014128148825
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1335.0
+      ],
+      "observed_voltage_v": [
+        23.15,
+        23.89
+      ],
+      "resampled_sample_count": 438
+    },
+    {
+      "alignment": {
+        "correlation": 0.9483443719232705,
+        "host_minus_blackbox_s": 8.79803300000037,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 16.557522119766897,
+        "sample_count": 1681.0
+      },
+      "blackbox_bfl": {
+        "bytes": 919835,
+        "path": "logs/blackbox_import/LOG00102.BFL",
+        "sha256": "134884fa48fe8aee369122ccb6224b8180d74e8478c5858a1117789b2559d97a"
+      },
+      "coverage_box_sample_count": 319,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        8.692033,
+        42.750588
+      ],
+      "host_csv": {
+        "bytes": 8112682,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181801_20260904_181802.csv",
+        "sha256": "93a0abf51d3a6c072587dfd76c97a74ff2554e3374ac9e90669a49dfcc9589c5"
+      },
+      "id": "LOG00102",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.6866529785653765,
+        1.6672808054844932
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1344.0
+      ],
+      "observed_voltage_v": [
+        22.93,
+        23.78
+      ],
+      "resampled_sample_count": 340
+    },
+    {
+      "alignment": {
+        "correlation": 0.9889967419235376,
+        "host_minus_blackbox_s": 26.77750500000137,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 6.99218995470194,
+        "sample_count": 1772.0
+      },
+      "blackbox_bfl": {
+        "bytes": 965647,
+        "path": "logs/blackbox_import/LOG00103.BFL",
+        "sha256": "f127e301f980e11968ff557a022c0d5783e72559ab4e1171d348d8a6370cbdc1"
+      },
+      "coverage_box_sample_count": 340,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        26.658505,
+        62.596981
+      ],
+      "host_csv": {
+        "bytes": 11006142,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_181911_20260904_181913.csv",
+        "sha256": "b3b518a282cc1192bb021e1bf125c5a0f8328431e698a707ada92bd32014d3c1"
+      },
+      "id": "LOG00103",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.7758967287718592,
+        1.4898239510495357
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1377.0
+      ],
+      "observed_voltage_v": [
+        22.99,
+        23.7
+      ],
+      "resampled_sample_count": 358
+    },
+    {
+      "alignment": {
+        "correlation": 0.9846856488451995,
+        "host_minus_blackbox_s": 11.745530999999415,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 6.727954287714393,
+        "sample_count": 2639.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1433911,
+        "path": "logs/blackbox_import/LOG00104.BFL",
+        "sha256": "eefc4f84c56c2732d9ac269bb6ad8137d287f9575b2ade3d7dda43ef3f4b2918"
+      },
+      "coverage_box_sample_count": 517,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        11.689531,
+        65.104825
+      ],
+      "host_csv": {
+        "bytes": 11835382,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_182055_20260904_182057.csv",
+        "sha256": "a64d04fb11d60821ff6a575833b50a39fa76cbbca0aca7582ee758150e3fcc4f"
+      },
+      "id": "LOG00104",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.8515833580892338,
+        1.2476393343185435
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1328.0
+      ],
+      "observed_voltage_v": [
+        22.97,
+        23.63
+      ],
+      "resampled_sample_count": 533
+    },
+    {
+      "alignment": {
+        "correlation": 0.9897795644430593,
+        "host_minus_blackbox_s": 32.70553500000133,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 6.44190214619866,
+        "sample_count": 2181.0
+      },
+      "blackbox_bfl": {
+        "bytes": 1185212,
+        "path": "logs/blackbox_import/LOG00105.BFL",
+        "sha256": "29e3dd7d7f29de4ff538a9b8dde6546314852aa5b965a5fb004482cea40d5345"
+      },
+      "coverage_box_sample_count": 422,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        32.615535,
+        76.783476
+      ],
+      "host_csv": {
+        "bytes": 13059239,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183459_20260904_183502.csv",
+        "sha256": "b4a8b83a5a19a097f02f494e1d4c48f12c597847054c7fbd52c382229a2125a7"
+      },
+      "id": "LOG00105",
+      "max_blackbox_time_s": null,
+      "observed_specific_force_g": [
+        0.8104083207067607,
+        1.1427330819903407
+      ],
+      "observed_throttle_us": [
+        989.0,
+        1322.0
+      ],
+      "observed_voltage_v": [
+        22.95,
+        23.61
+      ],
+      "resampled_sample_count": 441
+    },
+    {
+      "alignment": {
+        "correlation": 0.9701816884727121,
+        "host_minus_blackbox_s": 20.453841000001386,
+        "method": "throttle_grid_search",
+        "rmse_command_units": 21.635164107317316,
+        "sample_count": 1137.0
+      },
+      "blackbox_bfl": {
+        "bytes": 651894,
+        "path": "logs/blackbox_import/LOG00106.BFL",
+        "sha256": "fc58d049df776a6a771f312ec5ad71bbd96763b5db7ed60f1b00116f6ed748ec"
+      },
+      "coverage_box_sample_count": 180,
+      "host_arm_interval_index": 0,
+      "host_arm_interval_s": [
+        20.320841,
+        43.356463
+      ],
+      "host_csv": {
+        "bytes": 8060890,
+        "path": "logs/flight_active_supervised/FLIGHT_ACTIVE_05S_VIDEO_20260904_183721_20260904_183722.csv",
+        "sha256": "2f4cba58655be4d142237fc5e05c7ad16b0c3c9131a838d1413e9676cdc557a6"
+      },
+      "id": "LOG00106_PRECONTACT",
+      "max_blackbox_time_s": 20.673876,
+      "observed_specific_force_g": [
+        0.5809307552644754,
+        1.448567739102985
+      ],
+      "observed_throttle_us": [
+        1019.0,
+        1334.0
+      ],
+      "observed_voltage_v": [
+        22.68,
+        23.43
+      ],
+      "resampled_sample_count": 207
+    }
+  ]
+}
