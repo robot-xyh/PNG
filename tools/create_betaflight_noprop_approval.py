@@ -20,6 +20,7 @@ if str(ROOT) not in sys.path:
 
 from vision_guidance.geometry import camera_mount_diagnostics, validated_rotation_matrix  # noqa: E402
 from vision_guidance.betaflight_intercept_controller import (  # noqa: E402
+    FovPriorityConfig,
     VelocityEstablishingPngConfig,
 )
 from vision_guidance.betaflight_runtime import (  # noqa: E402
@@ -429,6 +430,9 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
                 "guidance.velocity_establishing_png.fixed_vm_m_s is required"
             )
         try:
+            fov_priority_raw = raw.get("fov_priority", {})
+            if not isinstance(fov_priority_raw, dict):
+                raise ValueError("fov_priority must be a mapping")
             controller = VelocityEstablishingPngConfig(
                 fixed_vm_m_s=float(raw["fixed_vm_m_s"]),
                 navigation_constant=float(raw.get("navigation_constant", 3.0)),
@@ -443,6 +447,9 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
                 vertical_speed_reference_limit_m_s=float(
                     raw.get("vertical_speed_reference_limit_m_s", 6.0)
                 ),
+                velocity_reference_slew_m_s2=float(
+                    raw.get("velocity_reference_slew_m_s2", 3.0)
+                ),
                 png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
                 acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
                 detection_timeout_s=float(raw.get("detection_timeout_s", 0.35)),
@@ -452,6 +459,40 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
                 fov_constraint_half_angle_deg=float(
                     raw.get("fov_constraint_half_angle_deg", 0.0)
                 ),
+                fov_priority=FovPriorityConfig(
+                    enabled=bool(fov_priority_raw.get("enabled", False)),
+                    start_ratio=float(fov_priority_raw.get("start_ratio", 0.70)),
+                    full_ratio=float(fov_priority_raw.get("full_ratio", 0.90)),
+                    horizontal_half_fov_deg=float(
+                        fov_priority_raw.get("horizontal_half_fov_deg", 0.0)
+                    ),
+                    vertical_half_fov_deg=float(
+                        fov_priority_raw.get("vertical_half_fov_deg", 0.0)
+                    ),
+                ),
+                engagement_policy=str(raw.get("engagement_policy", "noncollision")),
+                noncollision_bbox_abort_ratio=float(
+                    raw.get("noncollision_bbox_abort_ratio", 0.012)
+                ),
+                noncollision_ttc_abort_s=float(
+                    raw.get("noncollision_ttc_abort_s", 2.0)
+                ),
+                contact_bbox_terminal_ratio=float(
+                    raw.get("contact_bbox_terminal_ratio", 0.05)
+                ),
+                contact_ttc_terminal_s=float(
+                    raw.get("contact_ttc_terminal_s", 1.0)
+                ),
+                contact_bbox_complete_ratio=float(
+                    raw.get("contact_bbox_complete_ratio", 0.25)
+                ),
+                blind_hold_s=float(raw.get("blind_hold_s", 0.20)),
+                terminal_reacquire_frames=int(
+                    raw.get("terminal_reacquire_frames", 2)
+                ),
+                area_ttc_window_s=float(raw.get("area_ttc_window_s", 0.60)),
+                area_ttc_min_samples=int(raw.get("area_ttc_min_samples", 5)),
+                area_ttc_min_span_s=float(raw.get("area_ttc_min_span_s", 0.10)),
             )
         except (TypeError, ValueError) as exc:
             raise RuntimeError(

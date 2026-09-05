@@ -264,6 +264,18 @@ class BetaflightNoPropApprovalTest(unittest.TestCase):
         self.assertEqual(metadata["law"], "velocity_establishing_png")
         self.assertEqual(metadata["velocity_source"], "bench_zero_velocity")
         self.assertEqual(metadata["fixed_gain"], 30.0)
+        self.assertEqual(
+            metadata["velocity_establishing_png"]["engagement_policy"],
+            "contact",
+        )
+        self.assertEqual(
+            metadata["velocity_establishing_png"]["contact_bbox_terminal_ratio"],
+            0.05,
+        )
+        self.assertEqual(
+            metadata["velocity_establishing_png"]["blind_hold_s"],
+            0.2,
+        )
         self.assertEqual(config["msp_runtime"]["override_channels_mask"], 15)
         self.assertEqual(
             {
