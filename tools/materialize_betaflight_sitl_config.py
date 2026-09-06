@@ -11,6 +11,14 @@ from typing import Any
 
 SITL_SCOPE = "betaflight_sitl_loopback_v1"
 SITL_MSP_URL = "socket://127.0.0.1:5761"
+SITL_TAKEOVER_AFTER_S = {
+    "noncollision": 7.35,
+    "contact": 7.70,
+}
+SITL_TAKEOVER_DURATION_S = {
+    "noncollision": 0.7,
+    "contact": 0.9,
+}
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +88,7 @@ def materialize_sitl_config(
     }
     msp_runtime = dict(result.get("msp_runtime", {}))
     msp_runtime["motor_poll_hz"] = 20
+    msp_runtime["raw_imu_poll_hz"] = 20
     raw_imu = dict(msp_runtime.get("raw_imu_gyro", {}))
     raw_imu_axis_sign = list(raw_imu.get("axis_sign", []))
     if raw_imu_axis_sign != [1, -1, 1]:
@@ -103,7 +112,7 @@ def materialize_sitl_config(
         "projected_detection_latency_s": 0.04,
         "sitl_serial_update_rate_hz": 2000,
         "physics_step_s": 0.0003125,
-        "raw_imu_poll_hz": float(msp_runtime.get("raw_imu_poll_hz", 5.0)),
+        "raw_imu_poll_hz": float(msp_runtime["raw_imu_poll_hz"]),
         "raw_imu_axis_binding": {
             "axis_sign": raw_imu_axis_sign,
             "reason": "official_sitl_virtual_sensor_matches_flight_candidate_board_binding",
@@ -114,8 +123,8 @@ def materialize_sitl_config(
             "rate_hz": 100,
             "arm_after_s": 4.5,
             "throttle_after_arm_s": 4.7,
-            "takeover_after_s": 5.0,
-            "takeover_duration_s": 0.7,
+            "takeover_after_s": SITL_TAKEOVER_AFTER_S[policy],
+            "takeover_duration_s": SITL_TAKEOVER_DURATION_S[policy],
             "disarm_after_s": 11.5,
             "throttle_us": 1275,
         },

@@ -90,7 +90,29 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertEqual(
             generated["msp_runtime"]["raw_imu_gyro"]["axis_sign"], [1, -1, 1]
         )
+        self.assertEqual(generated["msp_runtime"]["raw_imu_poll_hz"], 20)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.35)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.7)
         self.assertEqual(validate_loopback_sitl_config(generated)["simulated_vbat_v"], 23.6)
+
+    def test_materialized_contact_config_uses_policy_specific_takeover_timing(self):
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "config"
+            / "betaflight.rk3588.velocity_png.flight_contact_supervised.json"
+        )
+        source_bytes = source_path.read_bytes()
+
+        generated = materializer.materialize_sitl_config(
+            json.loads(source_bytes),
+            policy="contact",
+            source_path=source_path,
+            source_sha256=hashlib.sha256(source_bytes).hexdigest(),
+            simulated_vbat_v=23.6,
+        )
+
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.70)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.9)
 
     def test_fdm_packet_matches_official_2025_12_2_layout(self):
         packet = BetaflightFdmPacket(
@@ -588,6 +610,30 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertGreater(float(metric["correlation"]), 0.99)
         self.assertLessEqual(float(metric["lag_s"]), 0.02)
 
+    def test_command_response_audit_uses_takeover_onset_not_pid_braking(self):
+        rows = []
+        for index in range(30):
+            command = float(index if index < 20 else 40 - index)
+            response = command if index < 20 else -command
+            rows.append(
+                {
+                    "elapsed_s": f"{index * 0.02:.2f}",
+                    "msp_publish_mode": "algorithm",
+                    "sp_roll_rate_deg_s": str(command),
+                    "gyro_roll_deg_s": str(response),
+                }
+            )
+
+        metric = audit_tool._best_delayed_correlation(
+            rows,
+            command_field="sp_roll_rate_deg_s",
+            response_field="gyro_roll_deg_s",
+            onset_window_s=0.30,
+        )
+
+        self.assertGreater(float(metric["correlation"]), 0.99)
+        self.assertLessEqual(float(metric["lag_s"]), 0.02)
+
     def test_ned_truth_audit_accounts_for_causal_filter_delay(self):
         rows = []
         delay_rows = 5
@@ -611,6 +657,170 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertAlmostEqual(float(metrics["n"]["lag_s"]), 0.1)
         self.assertEqual(metrics["n"]["sign_match_fraction"], 1.0)
         self.assertEqual(metrics["horizontal_axes_with_motion"], 2)
+
+    def test_ned_truth_policy_requires_both_axes_for_noncollision(self):
+        metrics = {
+            "n": {"sample_count": 40, "sign_match_fraction": 0.75},
+            "e": {"sample_count": 40, "sign_match_fraction": 1.0},
+        }
+
+        result = audit_tool.evaluate_ned_truth_policy(metrics, "noncollision")
+
+        self.assertFalse(result["passed"])
+        self.assertEqual(result["reason"], "horizontal_sign_invalid")
+
+    def test_ned_truth_policy_accepts_one_axis_for_short_contact_window(self):
+        metrics = {
+            "n": {"sample_count": 40, "sign_match_fraction": 0.75},
+            "e": {"sample_count": 40, "sign_match_fraction": 1.0},
+        }
+
+        result = audit_tool.evaluate_ned_truth_policy(metrics, "contact")
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["valid_axes"], ["e"])
+
+    def test_terminal_audit_rejects_policy_activity_after_takeover_release(self):
+        rows = [
+            {
+                "elapsed_s": "1.0",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "TRACKING",
+                "intercept_terminal_trigger": "",
+            },
+            {
+                "elapsed_s": "1.1",
+                "takeover_requested": "0",
+                "msp_publish_mode": "live_passthrough",
+                "intercept_phase": "TERMINAL_VISUAL",
+                "intercept_terminal_trigger": "contact_ttc_terminal",
+            },
+            {
+                "elapsed_s": "1.2",
+                "takeover_requested": "0",
+                "msp_publish_mode": "live_passthrough",
+                "intercept_phase": "COMPLETE",
+                "intercept_terminal_trigger": "contact_bbox_complete",
+            },
+        ]
+
+        metrics = audit_tool.evaluate_terminal_policy(rows, "contact")
+
+        self.assertFalse(metrics["passed"])
+        self.assertEqual(metrics["phases"], ["TRACKING"])
+
+    def test_terminal_audit_requires_contact_entry_during_takeover(self):
+        rows = [
+            {
+                "elapsed_s": "1.0",
+                "takeover_requested": "0",
+                "msp_publish_mode": "live_passthrough",
+                "intercept_phase": "TERMINAL_VISUAL",
+                "intercept_terminal_trigger": "contact_ttc_terminal",
+            },
+            {
+                "elapsed_s": "1.1",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "TERMINAL_VISUAL",
+                "intercept_terminal_trigger": "contact_ttc_terminal",
+            },
+            {
+                "elapsed_s": "1.2",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "COMPLETE",
+                "intercept_terminal_trigger": "contact_bbox_complete",
+            },
+        ]
+
+        metrics = audit_tool.evaluate_terminal_policy(rows, "contact")
+
+        self.assertFalse(metrics["passed"])
+
+    def test_terminal_audit_accepts_ordered_contact_transitions_during_takeover(self):
+        rows = [
+            {
+                "elapsed_s": "1.0",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "TRACKING",
+                "intercept_terminal_trigger": "",
+            },
+            {
+                "elapsed_s": "1.1",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "TERMINAL_VISUAL",
+                "intercept_terminal_trigger": "contact_ttc_terminal",
+            },
+            {
+                "elapsed_s": "1.2",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "COMPLETE",
+                "intercept_terminal_trigger": "contact_bbox_complete",
+            },
+        ]
+
+        metrics = audit_tool.evaluate_terminal_policy(rows, "contact")
+
+        self.assertTrue(metrics["passed"])
+
+    def test_terminal_audit_accepts_noncollision_abort_during_takeover(self):
+        rows = [
+            {
+                "elapsed_s": "1.0",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "TRACKING",
+                "intercept_terminal_trigger": "",
+            },
+            {
+                "elapsed_s": "1.1",
+                "takeover_requested": "1",
+                "msp_publish_mode": "algorithm",
+                "intercept_phase": "ABORT",
+                "intercept_terminal_trigger": "noncollision_bbox_abort",
+            },
+        ]
+
+        metrics = audit_tool.evaluate_terminal_policy(rows, "noncollision")
+
+        self.assertTrue(metrics["passed"])
+
+    def test_active_integrity_accepts_bounded_contact_blind_hold(self):
+        base = {
+            "sp_valid": "1",
+            "rc_active": "1",
+            "intercept_detection_age_s": "0.38",
+            "intercept_detection_update_age_s": "0.32",
+            "intercept_phase": "BLIND_HOLD",
+            "intercept_blind_age_s": "0.08",
+            "intercept_blind_scale": "0.6",
+            "sp_roll_rate_deg_s": "1.0",
+            "sp_pitch_rate_deg_s": "-1.0",
+            "map_requested_throttle_us": "1280",
+            "rc_sent_ch1": "1502",
+            "rc_sent_ch2": "1498",
+            "rc_sent_ch3": "1280",
+            "gyro_roll_deg_s": "0.5",
+            "gyro_pitch_deg_s": "-0.5",
+        }
+        guidance = {
+            "detection_result_age_limit_s": 0.2,
+            "detection_timeout_s": 0.25,
+            "blind_hold_s": 0.2,
+        }
+
+        invalid, nonfinite = audit_tool._active_command_integrity([base], guidance)
+
+        self.assertEqual(invalid, 0)
+        self.assertEqual(nonfinite, set())
+        expired = dict(base, intercept_blind_age_s="0.201")
+        invalid, _ = audit_tool._active_command_integrity([expired], guidance)
+        self.assertEqual(invalid, 1)
 
     @staticmethod
     def _pose(position, velocity=(0.0, 0.0, 0.0)):

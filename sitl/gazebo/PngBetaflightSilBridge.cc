@@ -361,9 +361,13 @@ class DeterministicTargetMotion final:
         std::max(0.0, elapsedS - this->verticalApproachStartS);
     const double horizontalScale = std::max(
         0.0, 1.0 - approachElapsedS / this->horizontalApproachDecayS);
+    const double cameraPlaneX =
+        horizontalScale * this->eastAmplitudeM * std::sin(phase);
+    const double cameraPlaneY =
+        horizontalScale * this->northAmplitudeM * std::sin(2.0 * phase);
     auto pose = this->basePose;
-    pose.Pos().X() += horizontalScale * this->eastAmplitudeM * std::sin(phase);
-    pose.Pos().Y() += horizontalScale * this->northAmplitudeM * std::sin(2.0 * phase);
+    pose.Pos().X() += cameraPlaneX;
+    pose.Pos().Y() += cameraPlaneY;
     pose.Pos().Z() -= std::min(
         this->maximumVerticalApproachM,
         approachElapsedS * this->verticalApproachSpeedMps);
@@ -373,13 +377,16 @@ class DeterministicTargetMotion final:
         0.0,
         1.0);
     if (alignmentBlend > 0.0)
-      this->AlignWithInterceptorCamera(_ecm, alignmentBlend, pose);
+      this->AlignWithInterceptorCamera(
+          _ecm, alignmentBlend, cameraPlaneX, cameraPlaneY, pose);
     this->model.SetWorldPoseCmd(_ecm, pose);
   }
 
   private: void AlignWithInterceptorCamera(
       const gz::sim::EntityComponentManager &_ecm,
       double _blend,
+      double _cameraPlaneX,
+      double _cameraPlaneY,
       gz::math::Pose3d &_targetPose)
   {
     if (this->interceptorEntity == gz::sim::kNullEntity)
@@ -410,11 +417,18 @@ class DeterministicTargetMotion final:
     const double rayDistance = std::max(
         0.1,
         (_targetPose.Pos().Z() - cameraOriginWorld.Z()) / opticalAxisWorld.Z());
-    const auto alignedPosition = cameraOriginWorld + rayDistance * opticalAxisWorld;
+    const auto cameraPlaneOffsetWorld = interceptorPose.Rot().RotateVector(
+        gz::math::Vector3d(_cameraPlaneX, _cameraPlaneY, 0.0));
+    const auto alignedPosition =
+        cameraOriginWorld + rayDistance * opticalAxisWorld + cameraPlaneOffsetWorld;
     _targetPose.Pos().X() =
         (1.0 - blend) * _targetPose.Pos().X() + blend * alignedPosition.X();
     _targetPose.Pos().Y() =
         (1.0 - blend) * _targetPose.Pos().Y() + blend * alignedPosition.Y();
+    // Keep the projected target extent stable before the deliberate closing
+    // maneuver. A world-fixed box otherwise changes apparent area as the
+    // interceptor tilts and can create a false area-TTC terminal event.
+    _targetPose.Rot() = interceptorPose.Rot();
   }
 
   private: gz::sim::Model model{gz::sim::kNullEntity};

@@ -126,6 +126,79 @@ def _transition_count(rows: list[dict[str, str]], field: str, active: str = "1")
     return count
 
 
+def evaluate_terminal_policy(
+    rows: list[dict[str, str]], policy: str
+) -> dict[str, Any]:
+    if policy not in {"noncollision", "contact"}:
+        raise ValueError(f"unsupported terminal policy: {policy}")
+
+    takeover_rows = [row for row in rows if row.get("takeover_requested") == "1"]
+    algorithm_rows = [
+        row for row in takeover_rows if row.get("msp_publish_mode") == "algorithm"
+    ]
+    phases = {row.get("intercept_phase", "") for row in algorithm_rows}
+    triggers = {
+        row.get("intercept_terminal_trigger", "")
+        for row in algorithm_rows
+        if row.get("intercept_terminal_trigger", "")
+    }
+    transitions: list[dict[str, Any]] = []
+    for index, row in enumerate(rows):
+        if (
+            row.get("takeover_requested") != "1"
+            or row.get("msp_publish_mode") != "algorithm"
+        ):
+            continue
+        phase = row.get("intercept_phase", "")
+        previous_phase = rows[index - 1].get("intercept_phase", "") if index else ""
+        if phase and phase != previous_phase:
+            transitions.append(
+                {
+                    "row_index": index,
+                    "elapsed_s": _float(row, "elapsed_s"),
+                    "from_phase": previous_phase,
+                    "to_phase": phase,
+                    "trigger": row.get("intercept_terminal_trigger", ""),
+                }
+            )
+
+    if policy == "noncollision":
+        terminal_transition_indexes = [
+            int(item["row_index"])
+            for item in transitions
+            if item["to_phase"] == "ABORT"
+            and str(item["trigger"]).startswith("noncollision_")
+        ]
+        passed = bool(terminal_transition_indexes)
+    else:
+        terminal_visual_indexes = [
+            int(item["row_index"])
+            for item in transitions
+            if item["to_phase"] == "TERMINAL_VISUAL"
+            and str(item["trigger"]).startswith("contact_")
+        ]
+        complete_indexes = [
+            int(item["row_index"])
+            for item in transitions
+            if item["to_phase"] == "COMPLETE"
+            and str(item["trigger"]).startswith("contact_")
+        ]
+        passed = any(
+            terminal_index < complete_index
+            for terminal_index in terminal_visual_indexes
+            for complete_index in complete_indexes
+        )
+
+    return {
+        "passed": passed,
+        "takeover_row_count": len(takeover_rows),
+        "takeover_algorithm_row_count": len(algorithm_rows),
+        "phases": sorted(phases),
+        "triggers": sorted(triggers),
+        "transitions": transitions,
+    }
+
+
 def _contiguous_segments(rows: list[dict[str, str]], field: str, value: str) -> list[list[dict[str, str]]]:
     segments: list[list[dict[str, str]]] = []
     current: list[dict[str, str]] = []
@@ -165,6 +238,7 @@ def _best_delayed_correlation(
     active_value: str = "algorithm",
     maximum_lag_s: float = 0.4,
     command_scale: float = 1.0,
+    onset_window_s: float | None = None,
 ) -> dict[str, float | int]:
     elapsed = [_float(row, "elapsed_s") for row in rows]
     periods = [
@@ -176,13 +250,31 @@ def _best_delayed_correlation(
     ]
     period_s = statistics.median(periods) if periods else 0.02
     maximum_lag_rows = max(0, int(math.ceil(maximum_lag_s / period_s)))
+    command_eligible: list[bool] = []
+    segment_started_s: float | None = None
+    for row in rows:
+        active = row.get(active_field) == active_value
+        elapsed_s = _float(row, "elapsed_s")
+        if active and segment_started_s is None:
+            segment_started_s = elapsed_s
+        within_onset = bool(
+            onset_window_s is None
+            or (
+                segment_started_s is not None
+                and math.isfinite(elapsed_s)
+                and elapsed_s - segment_started_s < onset_window_s
+            )
+        )
+        command_eligible.append(active and within_onset)
+        if not active:
+            segment_started_s = None
     best = {"correlation": math.nan, "lag_s": math.nan, "sample_count": 0}
     for lag in range(maximum_lag_rows + 1):
         commands: list[float] = []
         responses: list[float] = []
         limit = len(rows) - lag
         for index in range(max(0, limit)):
-            if rows[index].get(active_field) != active_value:
+            if not command_eligible[index]:
                 continue
             command = command_scale * _float(rows[index], command_field)
             response = _float(rows[index + lag], response_field)
@@ -200,6 +292,61 @@ def _best_delayed_correlation(
                 "sample_count": len(commands),
             }
     return best
+
+
+def _active_command_integrity(
+    rows: list[dict[str, str]], guidance_config: dict[str, Any]
+) -> tuple[int, set[str]]:
+    result_age_limit_s = float(
+        guidance_config.get("detection_result_age_limit_s", 0.2)
+    )
+    update_age_limit_s = float(guidance_config.get("detection_timeout_s", 0.15))
+    blind_hold_limit_s = float(guidance_config.get("blind_hold_s", 0.20))
+    invalid_rows = 0
+    nonfinite_fields: set[str] = set()
+    required_fields = (
+        "sp_roll_rate_deg_s",
+        "sp_pitch_rate_deg_s",
+        "map_requested_throttle_us",
+        "rc_sent_ch1",
+        "rc_sent_ch2",
+        "rc_sent_ch3",
+        "gyro_roll_deg_s",
+        "gyro_pitch_deg_s",
+    )
+    for row in rows:
+        detection_age = _float(row, "intercept_detection_age_s")
+        update_age = _float(row, "intercept_detection_update_age_s")
+        result_age_at_delivery = detection_age - update_age
+        blind_hold = row.get("intercept_phase") == "BLIND_HOLD"
+        blind_age = _float(row, "intercept_blind_age_s")
+        blind_scale = _float(row, "intercept_blind_scale")
+        freshness_invalid = (
+            not math.isfinite(detection_age)
+            or not math.isfinite(update_age)
+            or result_age_at_delivery < -1.0e-6
+            or result_age_at_delivery > result_age_limit_s
+        )
+        if blind_hold:
+            freshness_invalid = freshness_invalid or (
+                not math.isfinite(blind_age)
+                or not 0.0 <= blind_age <= blind_hold_limit_s + 1.0e-6
+                or not math.isfinite(blind_scale)
+                or not 0.0 <= blind_scale <= 1.0
+                or update_age > update_age_limit_s + blind_hold_limit_s + 0.03
+            )
+        else:
+            freshness_invalid = freshness_invalid or update_age > update_age_limit_s
+        if (
+            row.get("sp_valid") != "1"
+            or row.get("rc_active") != "1"
+            or freshness_invalid
+        ):
+            invalid_rows += 1
+        for field in required_fields:
+            if not math.isfinite(_float(row, field)):
+                nonfinite_fields.add(field)
+    return invalid_rows, nonfinite_fields
 
 
 def _motor_direction_metrics(
@@ -376,6 +523,35 @@ def _ned_truth_metrics(
             horizontal_axes_with_motion += 1
     results["horizontal_axes_with_motion"] = horizontal_axes_with_motion
     return results
+
+
+def evaluate_ned_truth_policy(
+    metrics: dict[str, Any], policy: str
+) -> dict[str, Any]:
+    required_axes = 2 if policy == "noncollision" else 1
+    moving_axes = [
+        axis
+        for axis in ("n", "e")
+        if int(dict(metrics.get(axis, {})).get("sample_count", 0)) >= 5
+    ]
+    valid_axes = [
+        axis
+        for axis in moving_axes
+        if float(dict(metrics.get(axis, {})).get("sign_match_fraction", math.nan))
+        >= 0.8
+    ]
+    reason = "ok"
+    if len(moving_axes) < required_axes:
+        reason = "horizontal_motion_missing"
+    elif len(valid_axes) < required_axes:
+        reason = "horizontal_sign_invalid"
+    return {
+        "passed": reason == "ok",
+        "reason": reason,
+        "required_axes": required_axes,
+        "moving_axes": moving_axes,
+        "valid_axes": valid_axes,
+    }
 
 
 def evaluate_msp_timing(final_row: dict[str, str]) -> tuple[dict[str, float | int], list[str]]:
@@ -576,39 +752,9 @@ def audit_sil_run(manifest_path: Path) -> dict[str, Any]:
     guidance_config = dict(
         dict(config.get("guidance", {})).get("velocity_establishing_png", {})
     )
-    result_age_limit_s = float(
-        guidance_config.get("detection_result_age_limit_s", 0.2)
+    invalid_active_rows, nonfinite_active_fields = _active_command_integrity(
+        active_rows, guidance_config
     )
-    update_age_limit_s = float(guidance_config.get("detection_timeout_s", 0.15))
-    invalid_active_rows = 0
-    nonfinite_active_fields: set[str] = set()
-    required_active_fields = (
-        "sp_roll_rate_deg_s",
-        "sp_pitch_rate_deg_s",
-        "map_requested_throttle_us",
-        "rc_sent_ch1",
-        "rc_sent_ch2",
-        "rc_sent_ch3",
-        "gyro_roll_deg_s",
-        "gyro_pitch_deg_s",
-    )
-    for row in active_rows:
-        detection_age = _float(row, "intercept_detection_age_s")
-        update_age = _float(row, "intercept_detection_update_age_s")
-        result_age_at_delivery = detection_age - update_age
-        if (
-            row.get("sp_valid") != "1"
-            or row.get("rc_active") != "1"
-            or not math.isfinite(detection_age)
-            or not math.isfinite(update_age)
-            or update_age > update_age_limit_s
-            or result_age_at_delivery < -1.0e-6
-            or result_age_at_delivery > result_age_limit_s
-        ):
-            invalid_active_rows += 1
-        for field in required_active_fields:
-            if not math.isfinite(_float(row, field)):
-                nonfinite_active_fields.add(field)
     if invalid_active_rows:
         violations.append(f"stale_or_invalid_active_rows:{invalid_active_rows}")
     if nonfinite_active_fields:
@@ -638,6 +784,7 @@ def audit_sil_run(manifest_path: Path) -> dict[str, Any]:
             command_field=f"sp_{axis}_rate_deg_s",
             response_field=f"gyro_{axis}_deg_s",
             command_scale=command_signs[axis],
+            onset_window_s=0.30,
         )
         for axis in ("roll", "pitch")
     }
@@ -660,31 +807,12 @@ def audit_sil_run(manifest_path: Path) -> dict[str, Any]:
             violations.append(f"motor_differential_direction_invalid:{axis}")
 
     ned_truth = _ned_truth_metrics(rows)
-    if int(ned_truth["horizontal_axes_with_motion"]) < 1:
-        violations.append("ned_truth_motion_missing")
-    for axis in ("n", "e"):
-        metric = ned_truth[axis]
-        if int(metric["sample_count"]) >= 5 and float(metric["sign_match_fraction"]) < 0.8:
-            violations.append(f"ned_truth_sign_invalid:{axis}")
+    ned_truth_policy = evaluate_ned_truth_policy(ned_truth, policy)
+    if not ned_truth_policy["passed"]:
+        violations.append(f"ned_truth_{ned_truth_policy['reason']}:{policy}")
 
-    phases = {row.get("intercept_phase", "") for row in rows}
-    terminal_triggers = {
-        row.get("intercept_terminal_trigger", "")
-        for row in rows
-        if row.get("intercept_terminal_trigger", "")
-    }
-    if policy == "noncollision":
-        terminal_passed = "ABORT" in phases and any(
-            trigger.startswith("noncollision_") for trigger in terminal_triggers
-        )
-    else:
-        terminal_passed = {
-            "TERMINAL_VISUAL",
-            "COMPLETE",
-        }.issubset(phases) and any(
-            trigger.startswith("contact_") for trigger in terminal_triggers
-        )
-    if not terminal_passed:
+    terminal = evaluate_terminal_policy(rows, policy)
+    if not terminal["passed"]:
         violations.append(f"terminal_policy_not_exercised:{policy}")
 
     rendered_detection_count = sum(
@@ -761,11 +889,8 @@ def audit_sil_run(manifest_path: Path) -> dict[str, Any]:
             "command_to_gyro": command_response,
             "motor_differential": motor_direction,
             "ned_truth": ned_truth,
-            "terminal": {
-                "passed": terminal_passed,
-                "phases": sorted(phases),
-                "triggers": sorted(terminal_triggers),
-            },
+            "ned_truth_policy": ned_truth_policy,
+            "terminal": terminal,
         },
     }
     return _json_safe(report)
