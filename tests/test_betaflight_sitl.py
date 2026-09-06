@@ -115,6 +115,7 @@ class BetaflightSitlTest(unittest.TestCase):
 
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.70)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.9)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_after_s"], 6.5)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_delta_us"], 50)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_axis"], "roll")
 
