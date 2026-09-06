@@ -1,5 +1,32 @@
 # 接触主动配置与 MC100 断点（2026-09-05）
 
+## 2026-09-06 schema v5 续跑
+
+本节覆盖下文的历史断点状态。schema v5 配置与批准逻辑提交后，已重新绑定当前运行配置并
+完成两套正式 MC100：
+
+- 非碰撞配置 SHA256：`450917fea6359fb75c72276c9e21b4c40bc3a356bdc4f4f17869ae9ade74c12d`
+- 接触配置 SHA256：`8ba8a4871eed7c328c9d223dbd8a3a7b6407c147221c39fa20f8fd35b6919def`
+- 非碰撞结果：`logs/betaflight_intercept_schema5_20260906/noncollision_short_mc100.json`
+  - `27,000` 行，`release_passed=true`
+  - 三个场景及时 ABORT 率均为 `100%`，误接触率均为 `0`
+  - 最小 ABORT 提前量为 `0.76 s`
+  - SHA256：`256cfe0cf73b9036c935207033edc2dd5997b6971eae4316ba00b2d60ad0f359`
+- 接触结果：`logs/betaflight_intercept_schema5_20260906/contact_short_mc100.json`
+  - `18,000` 行，`release_passed=true`
+  - 三个场景命中率为 `99.88%-99.96%`，FOV 命中率为 `99.77%-99.85%`
+  - 三个场景目标陈旧失败率均为 `0`
+  - SHA256：`75ae9de85550ef00a1e0522d858d415d60f1e7250167b63ccda8bfbbb81dfe9a`
+
+批准器的 MC 覆盖门槛已按策略区分：非碰撞需要基线、接触性能和非碰撞安全三组评估，
+最少 `27,000` 行；接触只需要基线和接触性能两组评估，最少 `18,000` 行。两者仍都要求
+每工况至少 `100` 次、至少 `30` 个镜像工况及三个规定电压/延迟场景。
+
+Betaflight Gazebo SIL 的 projected/rendered、contact/noncollision 四组均已通过，但任何代码
+提交都会使 SIL 的提交绑定失效。因此最终批准必须使用本节修正提交之后重新运行的四份干净
+SIL 证据。仍未完成的真机项目是：当前提交的无桨主动 50 Hz 时序、当天飞控快照，以及分别
+生成非碰撞和接触的 schema v5 批准文件。
+
 ## 当前状态
 
 本轮工作曾因外场飞行准备暂停，随后已恢复并完成配置、单元测试和两套正式 MC100。改动仍仅存在于本机工作树，尚未提交、推送或部署到 RK3588：
