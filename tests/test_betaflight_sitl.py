@@ -94,7 +94,7 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertEqual(generated["msp_runtime"]["raw_imu_poll_hz"], 20)
         self.assertIsNone(generated["sitl_profile"]["pilot_rc"]["motion_test_after_s"])
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.35)
-        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.7)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.9)
         self.assertEqual(validate_loopback_sitl_config(generated)["simulated_vbat_v"], 23.6)
 
     def test_materialized_contact_config_uses_policy_specific_takeover_timing(self):
@@ -141,6 +141,38 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertEqual(speed, 10.0)
         self.assertGreaterEqual(final_standoff, 0.8)
         self.assertLessEqual(final_standoff, 1.0)
+
+    def test_target_model_approach_is_materialized_per_policy(self):
+        source_path = (
+            Path(__file__).resolve().parents[1]
+            / "sitl"
+            / "gazebo"
+            / "models"
+            / "target_uav"
+            / "model.sdf"
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            noncollision = orchestrator.materialize_target_model(
+                source_path, root / "noncollision", "noncollision"
+            )
+            contact = orchestrator.materialize_target_model(
+                source_path, root / "contact", "contact"
+            )
+
+            def approach(path):
+                plugin = ET.parse(path).getroot().find(
+                    ".//plugin[@name='png::sitl::DeterministicTargetMotion']"
+                )
+                assert plugin is not None
+                return (
+                    float(plugin.findtext("verticalApproachStartS", "nan")),
+                    float(plugin.findtext("verticalApproachSpeedMps", "nan")),
+                    float(plugin.findtext("maximumVerticalApproachM", "nan")),
+                )
+
+            self.assertEqual(approach(noncollision), (7.1, 2.5, 6.2))
+            self.assertEqual(approach(contact), (7.5, 10.0, 5.95))
 
     def test_fdm_packet_matches_official_2025_12_2_layout(self):
         packet = BetaflightFdmPacket(

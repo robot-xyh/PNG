@@ -16,7 +16,7 @@ SITL_TAKEOVER_AFTER_S = {
     "contact": 7.70,
 }
 SITL_TAKEOVER_DURATION_S = {
-    "noncollision": 0.7,
+    "noncollision": 0.9,
     "contact": 0.9,
 }
 

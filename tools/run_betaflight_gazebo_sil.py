@@ -7,11 +7,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
 import time
 from typing import Any, Callable, Sequence
+import xml.etree.ElementTree as ET
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -35,6 +37,10 @@ SIL_PORTS = ((socket.SOCK_STREAM, 5761),) + tuple(
 )
 GAZEBO_WORLD_NAME = "png_betaflight_sitl"
 RUNNER_READY_MARKER = "MSP RAW_IMU gyro:"
+TARGET_APPROACH_BY_POLICY = {
+    "noncollision": (7.1, 2.5, 6.2),
+    "contact": (7.5, 10.0, 5.95),
+}
 
 
 @dataclass
@@ -91,6 +97,38 @@ def _artifact(path: Path) -> dict[str, Any]:
         "sha256": sha256_path(resolved),
         "bytes": resolved.stat().st_size,
     }
+
+
+def materialize_target_model(
+    source_path: Path, resource_root: Path, policy: str
+) -> Path:
+    try:
+        approach_start_s, approach_speed_m_s, maximum_approach_m = (
+            TARGET_APPROACH_BY_POLICY[policy]
+        )
+    except KeyError as exc:
+        raise ValueError(f"unsupported SIL engagement policy: {policy}") from exc
+    tree = ET.parse(source_path)
+    plugin = tree.getroot().find(
+        ".//plugin[@name='png::sitl::DeterministicTargetMotion']"
+    )
+    if plugin is None:
+        raise RuntimeError("target model is missing DeterministicTargetMotion")
+    start = plugin.find("verticalApproachStartS")
+    speed = plugin.find("verticalApproachSpeedMps")
+    maximum = plugin.find("maximumVerticalApproachM")
+    if start is None or speed is None or maximum is None:
+        raise RuntimeError("target model is missing vertical approach parameters")
+    start.text = str(approach_start_s)
+    speed.text = str(approach_speed_m_s)
+    maximum.text = str(maximum_approach_m)
+    output_path = resource_root / "target_uav" / "model.sdf"
+    output_path.parent.mkdir(parents=True, exist_ok=False)
+    tree.write(output_path, encoding="utf-8", xml_declaration=True)
+    shutil.copy2(
+        source_path.with_name("model.config"), output_path.with_name("model.config")
+    )
+    return output_path
 
 
 def _repository_state() -> dict[str, Any]:
@@ -405,6 +443,12 @@ def run_sil(args: argparse.Namespace) -> tuple[Path, Path]:
     )
 
     gazebo_source = ROOT / "sitl/gazebo"
+    gazebo_resource_root = run_dir / "gazebo_models"
+    target_model = materialize_target_model(
+        gazebo_source / "models/target_uav/model.sdf",
+        gazebo_resource_root,
+        args.policy,
+    )
     build_console = run_dir / "gazebo_build_console.log"
     with build_console.open("wb") as stream:
         configure_result = subprocess.run(
@@ -442,7 +486,11 @@ def run_sil(args: argparse.Namespace) -> tuple[Path, Path]:
     gazebo_env["GZ_SIM_RESOURCE_PATH"] = os.pathsep.join(
         filter(
             None,
-            (str(gazebo_source / "models"), gazebo_env.get("GZ_SIM_RESOURCE_PATH", "")),
+            (
+                str(gazebo_resource_root),
+                str(gazebo_source / "models"),
+                gazebo_env.get("GZ_SIM_RESOURCE_PATH", ""),
+            ),
         )
     )
     gazebo_command = ["gz", "sim", "-s", str(world_path)]
@@ -567,7 +615,8 @@ def run_sil(args: argparse.Namespace) -> tuple[Path, Path]:
             "gazebo_bridge_source": gazebo_source / "PngBetaflightSilBridge.cc",
             "gazebo_bridge_library": bridge_library,
             "interceptor_model": gazebo_source / "models/interceptor/model.sdf",
-            "target_model": gazebo_source / "models/target_uav/model.sdf",
+            "target_model": target_model,
+            "target_model_source": gazebo_source / "models/target_uav/model.sdf",
             "gazebo_build_console": build_console,
             "betaflight_configure_console": eeprom_dir / "betaflight_configure_console.log",
             "betaflight_console": run_dir / "betaflight_runtime_console.log",
