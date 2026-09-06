@@ -31,6 +31,11 @@ from vision_guidance.betaflight_intercept_controller import (  # noqa: E402
     VelocityEstablishingPngConfig,
 )
 from vision_guidance.betaflight_runtime import MspRuntimeConfig  # noqa: E402
+from vision_guidance.betaflight_sitl import (  # noqa: E402
+    SITL_OFFICIAL_BETAFLIGHT_COMMIT,
+    SITL_OFFICIAL_BETAFLIGHT_ELF_SHA256,
+    validate_sitl_audit_evidence,
+)
 from vision_guidance.flight_control import (  # noqa: E402
     AccelerationTiltRateConfig,
     RcMappingConfig,
@@ -38,11 +43,14 @@ from vision_guidance.flight_control import (  # noqa: E402
 from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E402
 
 
-SCOPE = "flight_noncollision_supervised_v2"
+NONCOLLISION_SCOPE = "flight_noncollision_short_supervised_v3"
+CONTACT_SCOPE = "flight_contact_short_supervised_v2"
+ACTIVE_SCOPES = frozenset({NONCOLLISION_SCOPE, CONTACT_SCOPE})
 OVERRIDE_CHANNELS_MASK = 15
 MAX_RATE_DEG_S = 60.0
 MAX_TILT_DEG = 35.0
 MAX_GUIDANCE_ACCEL_MPS2 = 7.0
+MAX_TAKEOVER_DURATION_S = 0.9
 THROTTLE_MIN_US = 1200
 THROTTLE_HOVER_US = 1275
 THROTTLE_MAX_US = 1500
@@ -99,12 +107,34 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--snapshot", required=True)
     parser.add_argument("--config", required=True)
     parser.add_argument("--release-evidence", required=True)
-    parser.add_argument("--rc-interlock-evidence", required=True)
+    parser.add_argument(
+        "--rc-interlock-evidence",
+        default="",
+        help="Optional legacy EdgeTX/ANGLE release evidence; not required by short-supervised scopes.",
+    )
     parser.add_argument("--finalized-run-evidence", required=True)
     parser.add_argument("--noprop-timing-evidence", required=True)
+    parser.add_argument(
+        "--sitl-evidence",
+        action="append",
+        required=True,
+        help=(
+            "Passing policy-specific Gazebo SIL audit. Pass once for projected and once "
+            "for rendered detector mode. SIL never grants hardware authorization."
+        ),
+    )
     parser.add_argument("--output", required=True)
     parser.add_argument("--operator", required=True)
     parser.add_argument("--acknowledge-supervised-flight", action="store_true")
+    parser.add_argument(
+        "--acknowledge-no-automatic-msp-fallback",
+        action="store_true",
+        help=(
+            "Acknowledge that Orange Pi/process/UART failure may hold the last MSP "
+            "frame until the pilot lowers RC7."
+        ),
+    )
+    parser.add_argument("--acknowledge-intentional-contact", action="store_true")
     return parser.parse_args()
 
 
@@ -112,21 +142,37 @@ def main() -> None:
     args = parse_args()
     if not args.acknowledge_supervised_flight:
         raise RuntimeError("--acknowledge-supervised-flight is required")
+    if not args.acknowledge_no_automatic_msp_fallback:
+        raise RuntimeError("--acknowledge-no-automatic-msp-fallback is required")
 
     snapshot_path = Path(args.snapshot).expanduser().resolve()
     config_path = Path(args.config).expanduser().resolve()
     release_evidence_path = Path(args.release_evidence).expanduser().resolve()
-    rc_interlock_path = Path(args.rc_interlock_evidence).expanduser().resolve()
+    rc_interlock_path = (
+        None
+        if not str(args.rc_interlock_evidence).strip()
+        else Path(args.rc_interlock_evidence).expanduser().resolve()
+    )
     finalized_run_path = Path(args.finalized_run_evidence).expanduser().resolve()
     noprop_timing_path = Path(args.noprop_timing_evidence).expanduser().resolve()
+    sitl_evidence_paths = [
+        Path(value).expanduser().resolve() for value in args.sitl_evidence
+    ]
     output_path = Path(args.output).expanduser().resolve()
     snapshot = _read_json(snapshot_path)
     config = _read_json(config_path)
     config_sha256 = _sha256(config_path)
-    rc_interlock_evidence = validate_rc_interlock_evidence(
-        _read_json(rc_interlock_path),
-        rc_interlock_path,
-        runtime_config_sha256=config_sha256,
+    scope = _configured_scope(config)
+    if scope == CONTACT_SCOPE and not args.acknowledge_intentional_contact:
+        raise RuntimeError("--acknowledge-intentional-contact is required")
+    rc_interlock_evidence = (
+        None
+        if rc_interlock_path is None
+        else validate_rc_interlock_evidence(
+            _read_json(rc_interlock_path),
+            rc_interlock_path,
+            runtime_config_sha256=config_sha256,
+        )
     )
     finalized_run_evidence = validate_finalized_run_evidence(
         _read_json(finalized_run_path),
@@ -148,6 +194,13 @@ def main() -> None:
         raise RuntimeError(
             "no-prop timing evidence commit does not match the approval build"
         )
+    expected_engagement_policy = "contact" if scope == CONTACT_SCOPE else "noncollision"
+    sitl_evidence = validate_sitl_evidence(
+        [(_read_json(path), path) for path in sitl_evidence_paths],
+        runtime_config_sha256=config_sha256,
+        expected_engagement_policy=expected_engagement_policy,
+        repository_commit=repository_commit,
+    )
     parsed_cli = _validate_snapshot(
         snapshot,
         snapshot_path,
@@ -167,18 +220,28 @@ def main() -> None:
         release_evidence_path,
         runtime_config_sha256=config_sha256,
         runtime_thrust_model=evidence["guidance_command"]["thrust_model"],
+        expected_engagement_policy=expected_engagement_policy,
     )
     approval = {
-        "schema_version": 4,
+        "schema_version": 5,
         "approved": True,
-        "scope": SCOPE,
+        "scope": scope,
         "created_unix_s": time.time(),
         "created_local": time.strftime("%Y-%m-%d %H:%M:%S %z"),
         "operator": str(args.operator),
         "operator_acknowledgement": (
-            "professional pilot, supervised non-collision flight, "
-            "immediate RC7 release on anomaly"
+            "professional pilot, short supervised flight, immediate RC7 release "
+            "on anomaly"
         ),
+        "manual_msp_loss_waiver": {
+            "acknowledged": True,
+            "scope": scope,
+            "parameters_sha256": config_sha256,
+            "risk": (
+                "Orange Pi, process, or UART failure may hold the last MSP frame "
+                "until the pilot lowers RC7"
+            ),
+        },
         "source_conflicts_resolved": True,
         "snapshot_manifest": str(snapshot_path),
         "snapshot_sha256": _sha256(snapshot_path),
@@ -186,16 +249,17 @@ def main() -> None:
         "parameters_path": str(config_path),
         "parameters_sha256": config_sha256,
         "release_evidence": release_evidence,
-        "rc_interlock_evidence": rc_interlock_evidence,
         "finalized_run_evidence": finalized_run_evidence,
         "noprop_timing_evidence": noprop_timing_evidence,
+        "sitl_evidence": sitl_evidence,
         "software_binding": {
             "repository_commit": repository_commit,
             "repository_dirty": False,
         },
         "limits": {
             "override_channels_mask": OVERRIDE_CHANNELS_MASK,
-            "actual_algorithm_publication_limit_s": 2.0,
+            "operator_target_takeover_duration_s": 0.5,
+            "actual_algorithm_publication_limit_s": MAX_TAKEOVER_DURATION_S,
             "duration_interlock_enabled": True,
             "max_takeovers_per_arm": 1,
             "roll_pitch_rate_deg_s": MAX_RATE_DEG_S,
@@ -211,10 +275,35 @@ def main() -> None:
         "thrust_model_evidence": evidence["guidance_command"]["thrust_model"],
         **evidence,
     }
+    if scope == CONTACT_SCOPE:
+        approval["intentional_contact_acknowledgement"] = {
+            "acknowledged": True,
+            "scope": scope,
+            "parameters_sha256": config_sha256,
+        }
+    if rc_interlock_evidence is not None:
+        approval["rc_interlock_evidence"] = rc_interlock_evidence
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(approval, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(output_path)
     print(f"approval_sha256={_sha256(output_path)}")
+
+
+def validate_sitl_evidence(
+    reports: list[tuple[dict[str, Any], Path]],
+    *,
+    runtime_config_sha256: str,
+    expected_engagement_policy: str,
+    repository_commit: str,
+) -> list[dict[str, Any]]:
+    return validate_sitl_audit_evidence(
+        reports,
+        runtime_config_sha256=runtime_config_sha256,
+        expected_engagement_policy=expected_engagement_policy,
+        repository_commit=repository_commit,
+        official_betaflight_commit=SITL_OFFICIAL_BETAFLIGHT_COMMIT,
+        official_betaflight_elf_sha256=SITL_OFFICIAL_BETAFLIGHT_ELF_SHA256,
+    )
 
 
 def validate_release_evidence(
@@ -223,7 +312,10 @@ def validate_release_evidence(
     *,
     runtime_config_sha256: str,
     runtime_thrust_model: dict[str, Any],
+    expected_engagement_policy: str = "noncollision",
 ) -> dict[str, Any]:
+    if expected_engagement_policy not in {"noncollision", "contact"}:
+        raise RuntimeError("unsupported release engagement policy")
     if report.get("schema_version") != 3:
         raise RuntimeError("release evidence schema_version must be 3")
     if report.get("purpose") != "stochastic interception release evaluation":
@@ -300,15 +392,23 @@ def validate_release_evidence(
     ]
     scenario_names = {summary.get("scenario_name") for summary in summaries}
     selected_evaluation = paired.get("selected_evaluation")
+    expected_noncollision_count = (
+        len(RELEASE_REQUIRED_SCENARIOS)
+        if expected_engagement_policy == "noncollision"
+        else 0
+    )
     if (
         len(summaries) != len(RELEASE_REQUIRED_SCENARIOS)
-        or len(noncollision_summaries) != len(RELEASE_REQUIRED_SCENARIOS)
+        or len(noncollision_summaries) != expected_noncollision_count
         or len(required_summaries) != required_summary_count
         or scenario_names != RELEASE_REQUIRED_SCENARIOS
-        or {
-            summary.get("scenario_name") for summary in noncollision_summaries
-        }
-        != RELEASE_REQUIRED_SCENARIOS
+        or (
+            expected_engagement_policy == "noncollision"
+            and {
+                summary.get("scenario_name") for summary in noncollision_summaries
+            }
+            != RELEASE_REQUIRED_SCENARIOS
+        )
         or not isinstance(selected_evaluation, str)
         or not selected_evaluation
         or any(
@@ -343,6 +443,7 @@ def validate_release_evidence(
     _validate_release_policy_results(
         report,
         selected_evaluation=selected_evaluation,
+        expected_engagement_policy=expected_engagement_policy,
     )
     return {
         "path": str(report_path),
@@ -433,12 +534,12 @@ def _validate_release_policy_results(
     report: dict[str, Any],
     *,
     selected_evaluation: str,
+    expected_engagement_policy: str,
 ) -> None:
     policy = _release_mapping(report.get("policy_results"), "policy_results")
     if (
         policy.get("passed") is not True
-        or policy.get("runtime_engagement_policy") != "noncollision"
-        or policy.get("contact_evidence_is_not_noncollision_flight_authority") is not True
+        or policy.get("runtime_engagement_policy") != expected_engagement_policy
     ):
         raise RuntimeError("release evidence policy separation did not pass")
     contact = _release_mapping(
@@ -452,6 +553,14 @@ def _validate_release_policy_results(
         or set(contact.get("scenario_names", [])) != RELEASE_REQUIRED_SCENARIOS
     ):
         raise RuntimeError("release contact-performance evidence is invalid")
+    if expected_engagement_policy == "contact":
+        if policy.get("contact_mc_is_performance_evidence_only") is not True:
+            raise RuntimeError("contact release must remain performance evidence only")
+        if policy.get("noncollision_safety") is not None:
+            raise RuntimeError("contact release must not reuse non-collision authority")
+        return
+    if policy.get("contact_evidence_is_not_noncollision_flight_authority") is not True:
+        raise RuntimeError("release evidence policy separation did not pass")
     noncollision = _release_mapping(
         policy.get("noncollision_safety"), "noncollision safety"
     )
@@ -825,6 +934,16 @@ def validate_snapshot_flight_state(
     }
 
 
+def _configured_scope(config: dict[str, Any]) -> str:
+    candidate_scope = str(dict(config.get("candidate_profile", {})).get("scope", ""))
+    flight_scope = str(dict(config.get("flight_profile", {})).get("scope", ""))
+    if candidate_scope != flight_scope or flight_scope not in ACTIVE_SCOPES:
+        raise RuntimeError(
+            "candidate_profile and flight_profile must use the same supported short-supervised scope"
+        )
+    return flight_scope
+
+
 def validate_flight_supervised_config(
     config: dict[str, Any],
     *,
@@ -839,9 +958,8 @@ def validate_flight_supervised_config(
     authorization = dict(config.get("control_authorization", {}))
     safety = dict(config.get("safety", {}))
     logging = dict(config.get("logging", {}))
+    scope = _configured_scope(config)
 
-    if candidate.get("scope") != SCOPE or profile.get("scope") != SCOPE:
-        raise RuntimeError(f"candidate_profile and flight_profile must use scope {SCOPE}")
     for key in ("propellers_installed", "professional_pilot_required", "acro_rate_mode_required"):
         if profile.get(key) is not True:
             raise RuntimeError(f"flight_profile.{key}=true is required")
@@ -852,21 +970,33 @@ def validate_flight_supervised_config(
     if int(profile.get("override_channels_mask", -1)) != OVERRIDE_CHANNELS_MASK:
         raise RuntimeError("supervised profile must use mask 15")
     if (
-        float(profile.get("max_takeover_duration_s", math.nan)) != 2.0
+        float(profile.get("operator_target_takeover_duration_s", math.nan)) != 0.5
+        or float(profile.get("max_takeover_duration_s", math.nan))
+        != MAX_TAKEOVER_DURATION_S
         or profile.get("takeover_time_basis") != "actual_algorithm_publication"
         or int(profile.get("max_takeovers_per_arm", 0)) != 1
         or float(profile.get("rc7_release_rearm_s", math.nan)) != 0.0
     ):
-        raise RuntimeError("non-collision profile must declare one 2 s takeover per ARM")
+        raise RuntimeError("short supervised profile must declare one 0.9 s takeover per ARM")
 
-    if policy.get("required_authorization_scope") != SCOPE:
+    if policy.get("required_authorization_scope") != scope:
         raise RuntimeError("runtime policy scope mismatch")
+    if policy.get("allowed_control_modes") != ["msp_raw_rc"]:
+        raise RuntimeError("active flight profile must reject LOG_ONLY startup")
     if policy.get("allow_control_flag_permitted") is not True:
         raise RuntimeError("runtime policy must permit --allow-control")
     if policy.get("msp_set_raw_rc_permitted") is not True:
         raise RuntimeError("runtime policy must permit MSP_SET_RAW_RC")
-    if authorization.get("enabled") is not True or authorization.get("required_scope") != SCOPE:
+    if authorization.get("enabled") is not True or authorization.get("required_scope") != scope:
         raise RuntimeError("control_authorization scope mismatch")
+    if int(authorization.get("minimum_approval_schema_version", 0)) < 5:
+        raise RuntimeError("control_authorization must require approval schema v5")
+    if authorization.get("manual_msp_loss_waiver_required") is not True:
+        raise RuntimeError("control_authorization must require manual MSP-loss waiver")
+    if authorization.get("rc_interlock_evidence_required") is True:
+        raise RuntimeError(
+            "short supervised scopes use manual RC7 return, not mandatory EdgeTX release interlock"
+        )
     if authorization.get("release_evidence_required") is not True:
         raise RuntimeError("control_authorization must require release evidence")
     if authorization.get("thrust_model_evidence_required") is not True:
@@ -875,6 +1005,8 @@ def validate_flight_supervised_config(
         raise RuntimeError("control_authorization must require finalized run evidence")
     if authorization.get("noprop_timing_evidence_required") is not True:
         raise RuntimeError("control_authorization must require no-prop timing evidence")
+    if authorization.get("sitl_evidence_required") is not True:
+        raise RuntimeError("control_authorization must require policy-bound SIL evidence")
     if authorization.get("software_binding_required") is not True:
         raise RuntimeError("control_authorization must require a clean software binding")
     configured_output = Path(str(authorization.get("approval_manifest", ""))).expanduser().resolve()
@@ -921,11 +1053,12 @@ def validate_flight_supervised_config(
     if (
         takeover.get("enabled") is not True
         or takeover.get("latch_until_disarm") is not True
-        or float(takeover.get("max_duration_s", math.nan)) != 2.0
+        or float(takeover.get("max_duration_s", math.nan))
+        != MAX_TAKEOVER_DURATION_S
         or int(takeover.get("max_takeovers_per_arm", 0)) != 1
         or float(takeover.get("rearm_release_s", math.nan)) != 0.0
     ):
-        raise RuntimeError("takeover interlock must enforce one 2 s pulse per ARM")
+        raise RuntimeError("takeover interlock must enforce one 0.9 s pulse per ARM")
     if safety.get("require_acro_rate_mode") is not True:
         raise RuntimeError("Acro/Rate mode is required")
     if float(safety.get("min_vbat_v", 0.0)) < MIN_VBAT_V:
@@ -976,7 +1109,7 @@ def validate_flight_supervised_config(
         raise RuntimeError("RC measured throttle mapping must be 1200/1275/1500 at 600 us/s")
     _validate_rate_profile(dict(config.get("rc_mapping", {})), parsed_cli)
 
-    guidance = _validate_guidance(config)
+    guidance = _validate_guidance(config, expected_scope=scope)
     command = _validate_guidance_command(config, config_path=config_path)
     kinematics = dict(config.get("kinematics", {}))
     if int(kinematics.get("minimum_satellites", 0)) < MIN_GPS_SATELLITES:
@@ -1002,7 +1135,20 @@ def validate_flight_supervised_config(
     if torch_runtime.get("allow_cpu_inference") is not False:
         raise RuntimeError("CPU detector fallback must remain disabled")
 
+    if scope == CONTACT_SCOPE:
+        contact_risk = dict(config.get("contact_risk_policy", {}))
+        if (
+            authorization.get("intentional_contact_acknowledgement_required") is not True
+            or contact_risk.get("intentional_contact") is not True
+            or contact_risk.get("explicit_risk_waiver_required") is not True
+            or contact_risk.get("bounded_takeover_required") is not True
+        ):
+            raise RuntimeError(
+                "contact scope requires bounded intentional-contact acknowledgement"
+            )
+
     return {
+        "scope": scope,
         "camera_extrinsic": _validate_camera_extrinsic(config),
         "guidance": guidance,
         "guidance_command": command,
@@ -1019,7 +1165,11 @@ def validate_flight_supervised_config(
     }
 
 
-def _validate_guidance(config: dict[str, Any]) -> dict[str, Any]:
+def _validate_guidance(
+    config: dict[str, Any],
+    *,
+    expected_scope: str,
+) -> dict[str, Any]:
     guidance = dict(config.get("guidance", {}))
     if guidance.get("law") != "velocity_establishing_png":
         raise RuntimeError("guidance.law must be velocity_establishing_png")
@@ -1035,6 +1185,15 @@ def _validate_guidance(config: dict[str, Any]) -> dict[str, Any]:
         value = VelocityEstablishingPngConfig(**raw)
     except (TypeError, ValueError) as exc:
         raise RuntimeError(f"invalid velocity-establishing PNG config: {exc}") from exc
+    expected_policy = "contact" if expected_scope == CONTACT_SCOPE else "noncollision"
+    if value.engagement_policy != expected_policy:
+        raise RuntimeError("guidance engagement policy does not match approval scope")
+    if value.acquire_consecutive_frames != 3:
+        raise RuntimeError("short supervised guidance requires three acquisition frames")
+    if not math.isclose(value.detection_result_age_limit_s, 0.20):
+        raise RuntimeError(
+            "short supervised guidance requires a 0.20 s detection result-age limit"
+        )
     if not math.isclose(value.fixed_vm_m_s, 10.0) or not math.isclose(
         value.navigation_constant, 3.0
     ):
@@ -1097,7 +1256,9 @@ def _validate_guidance_command(
     if (
         entry.get("enabled") is not True
         or entry.get("rate_source") != "gyro"
-        or float(entry.get("duration_s", 0.0)) < 0.8
+        or not math.isclose(
+            float(entry.get("duration_s", math.nan)), 0.8, abs_tol=1.0e-9
+        )
         or float(entry.get("gyro_max_age_s", math.inf)) > 0.25
     ):
         raise RuntimeError("gyro-based entry handoff must remain enabled and fresh")
@@ -1173,11 +1334,7 @@ def _validate_thrust_model(
         raise RuntimeError("thrust LUT filtering, coverage, or dynamics evidence is incomplete") from exc
     if (
         not math.isclose(effective_rate_hz, 10.0)
-        or not isinstance(coverage_counts, list)
-        or len(coverage_counts) != 3
-        or any(not isinstance(row, list) or len(row) != 5 for row in coverage_counts)
-        or minimum_cell_samples < 5
-        or any(int(value) < minimum_cell_samples for row in coverage_counts for value in row)
+        or not _is_three_by_five_matrix(coverage_counts)
         or not isinstance(filter_counts, dict)
         or not {
             "armed_edge_takeoff_landing_trim",
@@ -1188,7 +1345,101 @@ def _validate_thrust_model(
         or not 0.0 < time_constant_s <= 0.5
         or dynamics_sample_count < 500
     ):
-        raise RuntimeError("thrust LUT does not satisfy filtered 3x5 coverage and dynamics gates")
+        raise RuntimeError("thrust LUT does not satisfy filtering and dynamics gates")
+
+    coverage_policy = str(
+        model.validation.get("coverage_policy", "full_three_by_five_grid_v1")
+    )
+    if coverage_policy == "bounded_physics_constrained_sparse_surface_v1":
+        try:
+            voltage_extrapolation_v = [
+                float(value) for value in model.validation["voltage_extrapolation_v"]
+            ]
+            maximum_voltage_extrapolation_v = float(
+                model.validation["maximum_voltage_extrapolation_v"]
+            )
+            throttle_band_counts = [
+                int(value)
+                for value in model.validation["throttle_band_sample_counts"]
+            ]
+            high_throttle_sample_count = int(
+                model.validation["high_throttle_sample_count"]
+            )
+            minimum_high_throttle_samples = int(
+                model.validation["minimum_high_throttle_samples"]
+            )
+            maximum_high_throttle_p95_error = float(
+                model.validation["maximum_high_throttle_p95_relative_error"]
+            )
+            high_throttle_median_error = float(
+                model.validation[
+                    "high_throttle_support_median_relative_error"
+                ]
+            )
+            high_throttle_p95_error = float(
+                model.validation["high_throttle_support_p95_relative_error"]
+            )
+            high_throttle_holdout_sample_count = int(
+                model.validation["high_throttle_holdout_sample_count"]
+            )
+            high_throttle_holdout_p95_error = float(
+                model.validation["high_throttle_holdout_p95_relative_error"]
+            )
+            holdout_counts = model.validation[
+                "holdout_three_by_five_sample_counts"
+            ]
+        except (KeyError, TypeError, ValueError) as exc:
+            raise RuntimeError(
+                "physics-constrained thrust LUT evidence is incomplete"
+            ) from exc
+        if (
+            model.fit.get("method")
+            != "voltage_scaled_effective_input_quadratic_v1"
+            or model.fit.get("effective_input")
+            != "voltage_v * (throttle_us - effective_zero_throttle_us)"
+            or len(voltage_extrapolation_v) != 2
+            or any(
+                not math.isfinite(value) or value < 0.0
+                for value in voltage_extrapolation_v
+            )
+            or not math.isfinite(maximum_voltage_extrapolation_v)
+            or maximum_voltage_extrapolation_v < 0.0
+            or maximum_voltage_extrapolation_v > 0.30
+            or max(voltage_extrapolation_v) > maximum_voltage_extrapolation_v
+            or len(throttle_band_counts) != 5
+            or any(value <= 0 for value in throttle_band_counts)
+            or minimum_high_throttle_samples < 5
+            or high_throttle_sample_count < minimum_high_throttle_samples
+            or not math.isfinite(maximum_high_throttle_p95_error)
+            or maximum_high_throttle_p95_error < 0.0
+            or maximum_high_throttle_p95_error > 0.25
+            or not math.isfinite(high_throttle_median_error)
+            or not math.isfinite(high_throttle_p95_error)
+            or high_throttle_median_error > 0.10
+            or high_throttle_p95_error > maximum_high_throttle_p95_error
+            or high_throttle_holdout_sample_count < 1
+            or not math.isfinite(high_throttle_holdout_p95_error)
+            or high_throttle_holdout_p95_error
+            > maximum_high_throttle_p95_error
+            or not _is_three_by_five_matrix(holdout_counts)
+        ):
+            raise RuntimeError(
+                "thrust LUT does not satisfy bounded physics-constrained coverage gates"
+            )
+    elif coverage_policy == "full_three_by_five_grid_v1":
+        if (
+            minimum_cell_samples < 5
+            or any(
+                int(value) < minimum_cell_samples
+                for row in coverage_counts
+                for value in row
+            )
+        ):
+            raise RuntimeError(
+                "thrust LUT does not satisfy filtered 3x5 coverage gates"
+            )
+    else:
+        raise RuntimeError(f"unsupported thrust LUT coverage policy: {coverage_policy}")
     return {
         "path": str(model_path),
         "sha256": model.source_sha256,
@@ -1204,11 +1455,20 @@ def _validate_thrust_model(
             "median_relative_error": median_error,
             "p95_relative_error": p95_error,
             "effective_sample_rate_hz": effective_rate_hz,
+            "coverage_policy": coverage_policy,
             "three_by_five_sample_counts": coverage_counts,
             "minimum_cell_samples": minimum_cell_samples,
         },
         "dynamics": dict(model.dynamics),
     }
+
+
+def _is_three_by_five_matrix(value: object) -> bool:
+    return bool(
+        isinstance(value, list)
+        and len(value) == 3
+        and all(isinstance(row, list) and len(row) == 5 for row in value)
+    )
 
 
 def _repository_state() -> tuple[str, bool]:

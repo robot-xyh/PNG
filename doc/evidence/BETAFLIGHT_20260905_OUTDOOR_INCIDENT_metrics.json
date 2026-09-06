@@ -1,0 +1,1486 @@
+{
+  "schema_version": 1,
+  "scope": "All imported Betaflight LOG00127..LOG00135 plus locally available Orange Pi logs for 2026-09-05.",
+  "generated_note": "Values are derived from decoded Blackbox CSVs with gyro rotation units kept raw; for this firmware raw gyro values equal deg/s. Euler attitude reconstruction uses the firmware's int16 quaternion scale of 32767 and reconstructs positive w from logged x/y/z.",
+  "decoder": {
+    "commit": "f832acf9cd9dbe5ad8220de1a5f4eb4021523d72",
+    "zero_failed_frames": true,
+    "mode_text_labels_trusted": false
+  },
+  "flights": {
+    "LOG00127": {
+      "start_utc": "2026-09-05T10:33:58.925000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:33:58.925000+08:00",
+      "duration_s": 0.427511,
+      "rows": 348,
+      "median_sample_rate_hz": 791.7656373713379,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00127.BFL",
+        "bytes": 18161,
+        "sha256": "1c333bb22ee5f5a0cb458d8f740c4d40ac8e59443a45b569f522c1ca5ba39f4b"
+      },
+      "gps_satellites_max": 21,
+      "gps_speed_max_m_s": 0.06,
+      "vbat_min_v": 25.06,
+      "current_max_a": {
+        "value": 2.03,
+        "time_s": 0.083355
+      },
+      "specific_force_max_g": {
+        "value": 1.0031317309572658,
+        "time_s": 0.287954
+      },
+      "specific_force_p99_g": 1.0014931012957002,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 1.0,
+          "time_s": 0.022733
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -0.42,
+          "max": -0.41
+        },
+        {
+          "min": 1.53,
+          "max": 1.55
+        },
+        {
+          "min": -19.07,
+          "max": -18.85
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1000.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 168.0,
+        "time_s": 0.113035
+      },
+      "motor_spread_raw_max": {
+        "value": 10.0,
+        "time_s": 0.113035
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": null,
+      "first_specific_force_over_3g_s": null,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000318,
+      "rx_channels_invalid_duration_s": 0.000318,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00128": {
+      "start_utc": "2026-09-05T10:34:00.298000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:34:00.298000+08:00",
+      "duration_s": 141.480806,
+      "rows": 115261,
+      "median_sample_rate_hz": 791.7656373748092,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00128.BFL",
+        "bytes": 3855667,
+        "sha256": "2782fe40f9de4b6ea88bb2cc4af87a64447806e77dd516d987df4b0e943577ca"
+      },
+      "gps_satellites_max": 25,
+      "gps_speed_max_m_s": 4.41,
+      "vbat_min_v": 19.89,
+      "current_max_a": {
+        "value": 76.96,
+        "time_s": 140.706832
+      },
+      "specific_force_max_g": {
+        "value": 14.815248081551859,
+        "time_s": 141.477649
+      },
+      "specific_force_p99_g": 1.1272860083277174,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 935.0,
+          "time_s": 140.792689
+        },
+        {
+          "value": 1005.0,
+          "time_s": 141.01175
+        },
+        {
+          "value": 972.0,
+          "time_s": 141.480806
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 667.0,
+          "time_s": 140.674004
+        },
+        {
+          "value": 1062.0,
+          "time_s": 140.969453
+        },
+        {
+          "value": 667.0,
+          "time_s": 140.674004
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -176.82,
+          "max": 174.45
+        },
+        {
+          "min": -64.38,
+          "max": 45.99
+        },
+        {
+          "min": -179.09,
+          "max": 179.17
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -500.0,
+          "max": 85.0
+        },
+        {
+          "min": -500.0,
+          "max": 118.0
+        },
+        {
+          "min": -33.0,
+          "max": 500.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1282.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 2047.0,
+        "time_s": 140.662641
+      },
+      "motor_spread_raw_max": {
+        "value": 1889.0,
+        "time_s": 140.662641
+      },
+      "first_rc_axis_extreme_s": 140.661378,
+      "first_motor_saturation_s": 140.662641,
+      "first_gyro_over_200_s": 140.706201,
+      "first_specific_force_over_2g_s": 140.703676,
+      "first_specific_force_over_3g_s": 140.728296,
+      "first_current_over_30a_s": 140.667692,
+      "rx_signal_invalid_duration_s": 0.000316,
+      "rx_channels_invalid_duration_s": 0.000316,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 140.964403,
+          "from": "ANGLE_MODE",
+          "to": "ANGLE_MODE|HORIZON_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00129": {
+      "start_utc": "2026-09-05T10:44:23.517000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:44:23.517000+08:00",
+      "duration_s": 0.419985,
+      "rows": 331,
+      "median_sample_rate_hz": 791.7656373713379,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00129.BFL",
+        "bytes": 17563,
+        "sha256": "16dc9c57269812bc6c42cdf062ed2fe6576ecb90ccc1f0746247e739ce9d6906"
+      },
+      "gps_satellites_max": 24,
+      "gps_speed_max_m_s": 0.08,
+      "vbat_min_v": 24.58,
+      "current_max_a": {
+        "value": 1.21,
+        "time_s": 0.266518
+      },
+      "specific_force_max_g": {
+        "value": 1.007936573523219,
+        "time_s": 0.2962
+      },
+      "specific_force_p99_g": 1.0020745755807086,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 1.0,
+          "time_s": 0.023999
+        },
+        {
+          "value": 1.0,
+          "time_s": 0.066945
+        },
+        {
+          "value": 1.0,
+          "time_s": 0.010106
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        },
+        {
+          "value": 0.0,
+          "time_s": 0.0
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -0.37,
+          "max": -0.35
+        },
+        {
+          "min": 1.35,
+          "max": 1.39
+        },
+        {
+          "min": -14.29,
+          "max": -14.21
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 0.0,
+          "max": 0.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1000.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 193.0,
+        "time_s": 0.364408
+      },
+      "motor_spread_raw_max": {
+        "value": 35.0,
+        "time_s": 0.364408
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": null,
+      "first_specific_force_over_3g_s": null,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000317,
+      "rx_channels_invalid_duration_s": 0.000317,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 0.418721,
+          "from": "ANGLE_MODE",
+          "to": "0"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00130": {
+      "start_utc": "2026-09-05T10:44:25.924000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:44:25.924000+08:00",
+      "duration_s": 46.444201,
+      "rows": 37824,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00130.BFL",
+        "bytes": 1286812,
+        "sha256": "6e082c2289a714b41f74a09e342c49ffedf0bfe4f2cb655b33ccf500ebf8409b"
+      },
+      "gps_satellites_max": 26,
+      "gps_speed_max_m_s": 3.99,
+      "vbat_min_v": 22.37,
+      "current_max_a": {
+        "value": 32.98,
+        "time_s": 46.335606
+      },
+      "specific_force_max_g": {
+        "value": 5.168703841495712,
+        "time_s": 46.334343
+      },
+      "specific_force_p99_g": 1.2050748882335052,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 93.0,
+          "time_s": 46.328031
+        },
+        {
+          "value": 179.0,
+          "time_s": 46.316666
+        },
+        {
+          "value": 36.0,
+          "time_s": 46.336869
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 43.0,
+          "time_s": 8.997337
+        },
+        {
+          "value": 48.0,
+          "time_s": 8.060811
+        },
+        {
+          "value": 31.0,
+          "time_s": 5.941457
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -11.14,
+          "max": 7.24
+        },
+        {
+          "min": -12.51,
+          "max": 12.69
+        },
+        {
+          "min": -15.35,
+          "max": 22.47
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -78.0,
+          "max": 93.0
+        },
+        {
+          "min": -217.0,
+          "max": 156.0
+        },
+        {
+          "min": 0.0,
+          "max": 70.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1292.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 2047.0,
+        "time_s": 46.311614
+      },
+      "motor_spread_raw_max": {
+        "value": 1889.0,
+        "time_s": 46.311614
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": 46.311614,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": 46.312877,
+      "first_specific_force_over_3g_s": 46.315402,
+      "first_current_over_30a_s": 46.335606,
+      "rx_signal_invalid_duration_s": 0.000317,
+      "rx_channels_invalid_duration_s": 0.000317,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 28.72723,
+          "from": "ANGLE_MODE",
+          "to": "ANGLE_MODE|HORIZON_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00131": {
+      "start_utc": "2026-09-05T10:46:05.630000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:46:05.630000+08:00",
+      "duration_s": 32.204213,
+      "rows": 26200,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00131.BFL",
+        "bytes": 894213,
+        "sha256": "2984c2aeeeacb35cd40fa67d00a429c66e75c21da29f5544f41d66a883ddf6a2"
+      },
+      "gps_satellites_max": 27,
+      "gps_speed_max_m_s": 3.75,
+      "vbat_min_v": 23.4,
+      "current_max_a": {
+        "value": 21.11,
+        "time_s": 32.099403
+      },
+      "specific_force_max_g": {
+        "value": 3.20431816394416,
+        "time_s": 31.952922
+      },
+      "specific_force_p99_g": 1.1578282508292006,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 61.0,
+          "time_s": 18.243864
+        },
+        {
+          "value": 57.0,
+          "time_s": 31.973126
+        },
+        {
+          "value": 66.0,
+          "time_s": 31.977546
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 52.0,
+          "time_s": 18.212924
+        },
+        {
+          "value": 33.0,
+          "time_s": 18.865811
+        },
+        {
+          "value": 34.0,
+          "time_s": 3.01402
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -9.06,
+          "max": 11.08
+        },
+        {
+          "min": -11.01,
+          "max": 6.49
+        },
+        {
+          "min": -0.69,
+          "max": 27.33
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -88.0,
+          "max": 211.0
+        },
+        {
+          "min": -221.0,
+          "max": 146.0
+        },
+        {
+          "min": 0.0,
+          "max": 75.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1277.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 1234.0,
+        "time_s": 31.981335
+      },
+      "motor_spread_raw_max": {
+        "value": 1076.0,
+        "time_s": 31.981335
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": 31.940927,
+      "first_specific_force_over_3g_s": 31.949133,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000313,
+      "rx_channels_invalid_duration_s": 0.000313,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001259,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 15.522402,
+          "from": "ANGLE_MODE",
+          "to": "ANGLE_MODE|HORIZON_MODE"
+        },
+        {
+          "time_s": 32.20295,
+          "from": "ANGLE_MODE|HORIZON_MODE",
+          "to": "HORIZON_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00132": {
+      "start_utc": "2026-09-05T10:47:48.442000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:47:48.442000+08:00",
+      "duration_s": 32.181084,
+      "rows": 26197,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00132.BFL",
+        "bytes": 890361,
+        "sha256": "f7df802d1bf52a6e858173899b1c53e5470e3ab2906b4c6689784b705fd51d6a"
+      },
+      "gps_satellites_max": 28,
+      "gps_speed_max_m_s": 2.55,
+      "vbat_min_v": 23.72,
+      "current_max_a": {
+        "value": 17.78,
+        "time_s": 27.996014
+      },
+      "specific_force_max_g": {
+        "value": 1.8509018761682767,
+        "time_s": 31.997974
+      },
+      "specific_force_p99_g": 1.1850512858631368,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 61.0,
+          "time_s": 9.762202
+        },
+        {
+          "value": 64.0,
+          "time_s": 27.403099
+        },
+        {
+          "value": 34.0,
+          "time_s": 5.95626
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 51.0,
+          "time_s": 8.901497
+        },
+        {
+          "value": 56.0,
+          "time_s": 27.384156
+        },
+        {
+          "value": 32.0,
+          "time_s": 5.928475
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -10.62,
+          "max": 11.03
+        },
+        {
+          "min": -8.49,
+          "max": 10.6
+        },
+        {
+          "min": 3.48,
+          "max": 27.68
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -108.0,
+          "max": 231.0
+        },
+        {
+          "min": -190.0,
+          "max": 219.0
+        },
+        {
+          "min": -12.0,
+          "max": 72.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1312.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 864.0,
+        "time_s": 5.293199
+      },
+      "motor_spread_raw_max": {
+        "value": 493.0,
+        "time_s": 31.9784
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": null,
+      "first_specific_force_over_3g_s": null,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000318,
+      "rx_channels_invalid_duration_s": 0.000318,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 17.390936,
+          "from": "ANGLE_MODE",
+          "to": "ANGLE_MODE|HORIZON_MODE"
+        },
+        {
+          "time_s": 32.172243,
+          "from": "ANGLE_MODE|HORIZON_MODE",
+          "to": "HORIZON_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00133": {
+      "start_utc": "2026-09-05T10:48:47.092000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:48:47.092000+08:00",
+      "duration_s": 29.280499,
+      "rows": 23831,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00133.BFL",
+        "bytes": 811564,
+        "sha256": "836859e8c43635f70b14cab9828157acdacfe7c6b5686a8769d05d1f40dd2301"
+      },
+      "gps_satellites_max": 28,
+      "gps_speed_max_m_s": 2.13,
+      "vbat_min_v": 22.32,
+      "current_max_a": {
+        "value": 20.47,
+        "time_s": 29.146639
+      },
+      "specific_force_max_g": {
+        "value": 4.169994201747604,
+        "time_s": 29.174423
+      },
+      "specific_force_p99_g": 1.2606244982217918,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 79.0,
+          "time_s": 29.154217
+        },
+        {
+          "value": 76.0,
+          "time_s": 4.88437
+        },
+        {
+          "value": 18.0,
+          "time_s": 4.252284
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 53.0,
+          "time_s": 2.783514
+        },
+        {
+          "value": 59.0,
+          "time_s": 4.871742
+        },
+        {
+          "value": 17.0,
+          "time_s": 4.562329
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -8.87,
+          "max": 14.08
+        },
+        {
+          "min": -9.22,
+          "max": 9.86
+        },
+        {
+          "min": 17.03,
+          "max": 27.82
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -88.0,
+          "max": 143.0
+        },
+        {
+          "min": -197.0,
+          "max": 178.0
+        },
+        {
+          "min": -40.0,
+          "max": 38.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1307.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 2047.0,
+        "time_s": 29.159269
+      },
+      "motor_spread_raw_max": {
+        "value": 1889.0,
+        "time_s": 29.159269
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": 29.159269,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": 29.161793,
+      "first_specific_force_over_3g_s": 29.165582,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000315,
+      "rx_channels_invalid_duration_s": 0.000315,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001263,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        },
+        {
+          "time_s": 17.390183,
+          "from": "ANGLE_MODE",
+          "to": "ANGLE_MODE|HORIZON_MODE"
+        },
+        {
+          "time_s": 29.27292,
+          "from": "ANGLE_MODE|HORIZON_MODE",
+          "to": "HORIZON_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00134": {
+      "start_utc": "2026-09-05T10:51:45.409000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:51:45.409000+08:00",
+      "duration_s": 30.315251,
+      "rows": 24688,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00134.BFL",
+        "bytes": 834857,
+        "sha256": "f0e1a58007d7315352400baffc3f17f7803332814ac01969e31a3f95dd0f3d5e"
+      },
+      "gps_satellites_max": 27,
+      "gps_speed_max_m_s": 3.04,
+      "vbat_min_v": 23.46,
+      "current_max_a": {
+        "value": 16.56,
+        "time_s": 5.967808
+      },
+      "specific_force_max_g": {
+        "value": 1.969166666171601,
+        "time_s": 30.150441
+      },
+      "specific_force_p99_g": 1.1778091766153258,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 77.0,
+          "time_s": 30.127075
+        },
+        {
+          "value": 108.0,
+          "time_s": 9.161612
+        },
+        {
+          "value": 25.0,
+          "time_s": 5.221929
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 47.0,
+          "time_s": 6.409906
+        },
+        {
+          "value": 93.0,
+          "time_s": 9.147086
+        },
+        {
+          "value": 25.0,
+          "time_s": 5.220665
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -11.25,
+          "max": 7.76
+        },
+        {
+          "min": -13.38,
+          "max": 15.77
+        },
+        {
+          "min": -6.83,
+          "max": 21.81
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -98.0,
+          "max": 101.0
+        },
+        {
+          "min": -175.0,
+          "max": 141.0
+        },
+        {
+          "min": 0.0,
+          "max": 57.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1287.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 1292.0,
+        "time_s": 30.127075
+      },
+      "motor_spread_raw_max": {
+        "value": 1134.0,
+        "time_s": 30.127075
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": null,
+      "first_specific_force_over_3g_s": null,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000317,
+      "rx_channels_invalid_duration_s": 0.000317,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001264,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    },
+    "LOG00135": {
+      "start_utc": "2026-09-05T10:55:52.918000+00:00",
+      "start_local_utc_plus_8": "2026-09-05T18:55:52.918000+08:00",
+      "duration_s": 31.415334,
+      "rows": 25576,
+      "median_sample_rate_hz": 791.7656373714684,
+      "clean_end": true,
+      "bfl": {
+        "path": "logs/blackbox_import/LOG00135.BFL",
+        "bytes": 871128,
+        "sha256": "68262ae99ded9b6c5927623c4a6fd813e8890affa375e352bd50174059747cbf"
+      },
+      "gps_satellites_max": 28,
+      "gps_speed_max_m_s": 4.23,
+      "vbat_min_v": 23.34,
+      "current_max_a": {
+        "value": 16.34,
+        "time_s": 5.625053
+      },
+      "specific_force_max_g": {
+        "value": 2.44725266778169,
+        "time_s": 31.271995
+      },
+      "specific_force_p99_g": 1.356177121952043,
+      "gyro_abs_max_deg_s": [
+        {
+          "value": 44.0,
+          "time_s": 25.949425
+        },
+        {
+          "value": 64.0,
+          "time_s": 18.799727
+        },
+        {
+          "value": 10.0,
+          "time_s": 6.062111
+        }
+      ],
+      "setpoint_abs_max_deg_s": [
+        {
+          "value": 35.0,
+          "time_s": 5.085046
+        },
+        {
+          "value": 57.0,
+          "time_s": 18.778256
+        },
+        {
+          "value": 8.0,
+          "time_s": 6.041269
+        }
+      ],
+      "attitude_range_deg": [
+        {
+          "min": -7.29,
+          "max": 6.16
+        },
+        {
+          "min": -29.62,
+          "max": 12.67
+        },
+        {
+          "min": 7.91,
+          "max": 21.7
+        }
+      ],
+      "rc_command_range": [
+        {
+          "min": -78.0,
+          "max": 75.0
+        },
+        {
+          "min": -118.0,
+          "max": 101.0
+        },
+        {
+          "min": 0.0,
+          "max": 20.0
+        },
+        {
+          "min": 1000.0,
+          "max": 1341.0
+        }
+      ],
+      "motor_raw_max": {
+        "value": 1043.0,
+        "time_s": 31.268206
+      },
+      "motor_spread_raw_max": {
+        "value": 885.0,
+        "time_s": 31.268206
+      },
+      "first_rc_axis_extreme_s": null,
+      "first_motor_saturation_s": null,
+      "first_gyro_over_200_s": null,
+      "first_specific_force_over_2g_s": 31.264417,
+      "first_specific_force_over_3g_s": null,
+      "first_current_over_30a_s": null,
+      "rx_signal_invalid_duration_s": 0.000316,
+      "rx_channels_invalid_duration_s": 0.000316,
+      "decoder_mode_label_transitions": [
+        {
+          "time_s": 0.001262,
+          "from": "0",
+          "to": "ANGLE_MODE"
+        }
+      ],
+      "failsafe_phase_values": [
+        "IDLE"
+      ]
+    }
+  },
+  "primary_incident": {
+    "log": "LOG00128",
+    "last_normal_s": 140.660116,
+    "rc_extreme_s": 140.661378,
+    "rc_extreme_values": [
+      -500.0,
+      -500.0,
+      500.0,
+      1226.0
+    ],
+    "setpoint_at_rc_extreme_deg_s": [
+      -39.0,
+      -39.0,
+      39.0
+    ],
+    "motor_saturation_s": 140.662641,
+    "current_over_30a_s": 140.667692,
+    "specific_force_over_2g_s": 140.703676,
+    "gyro_over_200_s": 140.706201,
+    "specific_force_over_3g_s": 140.728296,
+    "mode_text_transition_s": 140.964403,
+    "mode_text_transition_note": "Decoder labels are non-authoritative for this custom firmware.",
+    "delays_from_rc_extreme_ms": {
+      "motor_saturation": 1.262999999994463,
+      "current_over_30a": 6.31399999997484,
+      "specific_force_over_2g": 42.29799999998818,
+      "gyro_over_200": 44.82299999997963,
+      "specific_force_over_3g": 66.91799999998693
+    },
+    "peak_current": {
+      "value": 76.96,
+      "time_s": 140.706832
+    },
+    "peak_specific_force": {
+      "value": 14.815248081551859,
+      "time_s": 141.477649
+    },
+    "peak_gyro_abs": [
+      {
+        "value": 935.0,
+        "time_s": 140.792689
+      },
+      {
+        "value": 1005.0,
+        "time_s": 141.01175
+      },
+      {
+        "value": 972.0,
+        "time_s": 141.480806
+      }
+    ],
+    "peak_motor_raw": {
+      "value": 2047.0,
+      "time_s": 140.662641
+    },
+    "rx_signal_received_at_event": 1,
+    "rx_channels_valid_at_event": 1,
+    "failsafe_phase_at_event": "IDLE",
+    "attitude_before_deg": [
+      0.7,
+      -2.56,
+      22.42
+    ]
+  },
+  "contact_log_only_baseline_host": {
+    "host_csv": {
+      "path": "logs/contact_log_only/CONTACT_LOG_ONLY_20260905_183304_20260905_183305.csv",
+      "bytes": 19713622,
+      "sha256": "3a391d2837a977ccad6c5223ed574cb1c0218aeafa0b2a6962fdb3839baaf473"
+    },
+    "host_meta": {
+      "path": "logs/contact_log_only/CONTACT_LOG_ONLY_20260905_183304_20260905_183305_meta.json",
+      "bytes": 51220,
+      "sha256": "78f04e28cd2497a9f859b0eee89afff6d3e5019750bffc20abdf1e3c36cc61c3"
+    },
+    "allow_control": false,
+    "control_mode": "log_only",
+    "publish_modes": [
+      "disabled"
+    ],
+    "set_raw_rc_attempt_count_max": 0,
+    "set_raw_rc_success_count_max": 0,
+    "run_duration_s": 120.056699,
+    "rows_written": 5819,
+    "new_perception_results": 3212,
+    "confirmed_main_loop_row_ratio": 0.32600103110500084,
+    "confirmed_new_result_ratio": 0.4190535491905355,
+    "result_age_ms": {
+      "p50": 42.445,
+      "p95": 77.37325,
+      "max": 144.1
+    },
+    "tracker_switch_count_max": 9,
+    "tracker_fragment_count_max": 4,
+    "completion": {
+      "complete": true,
+      "stop_reason": "duration_complete",
+      "post_disarm_tail_completed": false
+    }
+  },
+  "contact_log_only_host": {
+    "host_csv": {
+      "path": "logs/contact_log_only/CONTACT_LOG_ONLY_RETEST_20260905_183540_20260905_183540.csv",
+      "bytes": 8806261,
+      "sha256": "e49fc8c55c44fdc8c39489eb3c727ef9de6be59c79c18aece9f5022e676d626a"
+    },
+    "host_meta": {
+      "path": "logs/contact_log_only/CONTACT_LOG_ONLY_RETEST_20260905_183540_20260905_183540_meta.json",
+      "bytes": 51285,
+      "sha256": "7f8b2a8b2f20ef3585e43d04f499c69bc820c9ae06e3684cad9c6122530898d1"
+    },
+    "config_path": "config/betaflight.rk3588.velocity_png.flight_contact_supervised.json",
+    "config_sha256": "c89185193db246d8ca8db9950d5733720a9a62b8fbeb61d10dc106d2b3c23b47",
+    "repository_commit": "69ff8cfd617a30d849606e4c9fc8b5a81c8e750c",
+    "repository_dirty": true,
+    "allow_control": false,
+    "control_mode": "log_only",
+    "publish_modes": [
+      "disabled"
+    ],
+    "set_raw_rc_attempt_count_max": 0,
+    "set_raw_rc_success_count_max": 0,
+    "run_duration_s": 51.523145,
+    "armed_interval_s": [
+      1.262203,
+      41.491893
+    ],
+    "new_perception_results": 1305,
+    "confirmed_new_result_ratio": 0.6099616858237548,
+    "result_age_ms": {
+      "p50": 46.108,
+      "p95": 80.8918,
+      "max": 104.654
+    },
+    "tracker_switch_count_max": 8,
+    "tracker_fragment_count_max": 1,
+    "first_effective_rc_885_host_elapsed_s": 40.53926,
+    "first_effective_rc_885_blackbox_s": 140.661378,
+    "event_anchor_blackbox_minus_host_s": 100.12211800000001,
+    "aux_enabled_at_first_885": 1,
+    "override_observed_elapsed_s": 40.659631,
+    "target_lost_elapsed_s": 40.599443,
+    "abort_elapsed_s": 40.779924,
+    "disarm_elapsed_s": 41.511962,
+    "candidate_pre_event": {
+      "roll_rate_range_deg_s": [
+        49.952938,
+        60.0
+      ],
+      "pitch_rate_range_deg_s": [
+        60.0,
+        60.0
+      ],
+      "throttle_target_range_us": [
+        1358.839,
+        1368.414
+      ],
+      "sent": false
+    },
+    "completion": {
+      "armed_seen": true,
+      "complete": true,
+      "elapsed_s": 51.604984960000024,
+      "exception": "",
+      "operator_marker_count": 0,
+      "post_disarm_tail_completed": true,
+      "post_disarm_tail_s": 10.0,
+      "post_disarm_tail_started_monotonic_s": 519.72451793,
+      "rows_written": 2490,
+      "stop_reason": "post_disarm_tail_complete"
+    },
+    "confirmed_main_loop_row_ratio": 0.44096385542168676
+  },
+  "paired_legacy_active": {
+    "host_csv": {
+      "path": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST_20260905_184559_20260905_184559.csv",
+      "bytes": 8230543,
+      "sha256": "5dae0d65dba7a141acea5410a07bd19d109ecfd3fa128dbcba1f56d12b0ab217"
+    },
+    "host_meta": {
+      "path": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST_20260905_184559_20260905_184559_meta.json",
+      "bytes": 45650,
+      "sha256": "ad6791a300997ebcf7830f3204bb3aaf6c8148feb32e20415ca3842a0e04e452"
+    },
+    "config_sha256": "fb3ca26bfaa5ff59629368491c5a9b5e95d6ab534bc563f81d3e703349eb582c",
+    "repository_commit": "",
+    "blackbox": "LOG00131",
+    "host_minus_blackbox_offset_s": 5.904001,
+    "throttle_alignment_correlation": 0.993973582,
+    "algorithm_window_host_s": [
+      20.618929,
+      21.388681
+    ],
+    "algorithm_window_blackbox_s": [
+      14.714928,
+      15.484679999999997
+    ],
+    "algorithm_rows": 39,
+    "algorithm_span_s": 0.7697519999999969,
+    "exit_safety_reason": "aux_disabled",
+    "expected_rate_ranges_deg_s": {
+      "roll": [
+        -1.747786,
+        2.52859
+      ],
+      "pitch": [
+        -3.0,
+        -0.706454
+      ]
+    },
+    "sent_ranges_us": {
+      "rc_sent_ch1": [
+        1496.0,
+        1506.0
+      ],
+      "rc_sent_ch2": [
+        1493.0,
+        1498.0
+      ],
+      "rc_sent_ch3": [
+        1275.0,
+        1287.0
+      ],
+      "rc_sent_ch4": [
+        1500.0,
+        1500.0
+      ]
+    },
+    "blackbox_setpoint_ranges_deg_s": {
+      "roll": [
+        -2.0,
+        2.0
+      ],
+      "pitch": [
+        -3.0,
+        -1.0
+      ],
+      "yaw": [
+        0.0,
+        0.0
+      ]
+    },
+    "blackbox_gyro_ranges_deg_s": {
+      "roll": [
+        -10.0,
+        8.0
+      ],
+      "pitch": [
+        -8.0,
+        3.0
+      ],
+      "yaw": [
+        -2.0,
+        2.0
+      ]
+    },
+    "attitude_start_end_deg": {
+      "start": [
+        1.5,
+        3.72,
+        24.42
+      ],
+      "end": [
+        1.19,
+        2.34,
+        24.4
+      ]
+    },
+    "motor_raw_range": [
+      486.0,
+      745.0
+    ],
+    "motor_spread_max_raw": 259.0,
+    "motor_saturation_samples": 0,
+    "set_raw_rc_success_count_end": 2329,
+    "tracker_confirmed_ratio": 0.8717948717948718,
+    "guidance_valid_ratio": 1.0,
+    "kinematics_valid_ratio": 1.0,
+    "perception_result_age_ms": {
+      "p50": 80.0,
+      "p95": 141.0477999999999,
+      "max": 175.029
+    },
+    "msp_send_interval_ms": {
+      "mean": 20.077820512820516,
+      "p95": 22.226000000000003,
+      "p99_9": 22.707682,
+      "max": 22.71
+    },
+    "msp_send_rate_hz": 49.80620278787027,
+    "msp_send_error_count_max": 0
+  },
+  "paired_legacy_runs": [
+    {
+      "blackbox": "LOG00130",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_BASELINE_20260905_184318_20260905_184318.csv",
+      "host_csv_sha256": "42ddea79577f665d52263231ac05f538e546edfa10d33020563f039764547540",
+      "host_minus_blackbox_s": 67.187832,
+      "throttle_alignment_correlation": 0.996284961,
+      "duration_match_error_s": 0.171981,
+      "algorithm_publish_duration_s": 0.0,
+      "takeover_result": "rejected_before_algorithm",
+      "exit_reason": "watchdog_expired"
+    },
+    {
+      "blackbox": "LOG00131",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST_20260905_184559_20260905_184559.csv",
+      "host_csv_sha256": "5dae0d65dba7a141acea5410a07bd19d109ecfd3fa128dbcba1f56d12b0ab217",
+      "host_minus_blackbox_s": 5.904001,
+      "throttle_alignment_correlation": 0.993973582,
+      "duration_match_error_s": 0.183552,
+      "algorithm_publish_duration_s": 0.769752,
+      "takeover_result": "algorithm_published",
+      "exit_reason": "aux_disabled",
+      "perception_result_age_p95_ms": 141.0478,
+      "motor_saturation_samples": 0
+    },
+    {
+      "blackbox": "LOG00132",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST2_20260905_184740_20260905_184741.csv",
+      "host_csv_sha256": "ee146681c63d50e1c5abd22a2461820bc63e993afbfde06858fad314b45e1ff1",
+      "host_minus_blackbox_s": 7.274476,
+      "throttle_alignment_correlation": 0.9945087,
+      "duration_match_error_s": 0.288026,
+      "algorithm_publish_duration_s": 0.122053,
+      "takeover_result": "algorithm_published_too_short_and_mode_contaminated",
+      "exit_reason": "aux_disabled",
+      "perception_result_age_p95_ms": 124.27425,
+      "motor_saturation_samples": 0
+    },
+    {
+      "blackbox": "LOG00133",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST3_20260905_184842_20260905_184843.csv",
+      "host_csv_sha256": "fedcfd3e94c45e766ab62f7bf66b355311ade44ff1b7a1d0cd02addc619f8630",
+      "host_minus_blackbox_s": 3.983654,
+      "throttle_alignment_correlation": 0.994076251,
+      "duration_match_error_s": 0.230263,
+      "algorithm_publish_duration_s": 0.08434,
+      "takeover_result": "algorithm_published_too_short_and_mode_contaminated",
+      "exit_reason": "aux_disabled",
+      "perception_result_age_p95_ms": 266.0624,
+      "motor_saturation_samples": 0,
+      "host_final_summary_present": false,
+      "runtime_manifest_present": false
+    },
+    {
+      "blackbox": "LOG00134",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_RETEST4_20260905_185134_20260905_185135.csv",
+      "host_csv_sha256": "174a8baa228c45f06afc54489dcf19de7c1428205373a7f0cbb2af5e66316819",
+      "host_minus_blackbox_s": 10.074967,
+      "throttle_alignment_correlation": 0.997755331,
+      "duration_match_error_s": 0.16648,
+      "algorithm_publish_duration_s": 0.909219,
+      "takeover_result": "algorithm_published",
+      "exit_reason": "takeover_duration_interlock",
+      "perception_result_age_p95_ms": 154.8853,
+      "sent_ranges_us": {
+        "roll": [1498.0, 1507.0],
+        "pitch": [1502.0, 1507.0],
+        "throttle": [1275.0, 1288.0],
+        "yaw": [1500.0, 1500.0]
+      },
+      "blackbox_setpoint_ranges_deg_s": {
+        "roll": [-1.0, 3.0],
+        "pitch": [1.0, 3.0]
+      },
+      "blackbox_gyro_ranges_deg_s": {
+        "roll": [-10.0, 10.0],
+        "pitch": [-4.0, 8.0]
+      },
+      "motor_raw_range": [478.0, 794.0],
+      "motor_saturation_samples": 0
+    },
+    {
+      "blackbox": "LOG00135",
+      "host_csv": "logs/flight_active_legacy_retest/OUTDOOR_ACTIVE_1S_REPEAT_20260905_185527_20260905_185528.csv",
+      "host_csv_sha256": "259621b275b033d9c3e54ae6e25225f310c099c397f2fb66219691281ce5528d",
+      "host_minus_blackbox_s": 24.585741,
+      "throttle_alignment_correlation": 0.997163546,
+      "duration_match_error_s": 0.243428,
+      "algorithm_publish_duration_s": 0.0,
+      "takeover_result": "rejected_before_algorithm",
+      "exit_reason": "watchdog_expired"
+    }
+  ],
+  "secondary_log00135_pitch_event": {
+    "log": "LOG00135",
+    "pitch_min_deg": -29.62,
+    "pitch_min_time_s": 19.232941,
+    "setpoint_pitch_at_min_deg_s": 0.0,
+    "gyro_pitch_at_min_deg_s": -1.0,
+    "rc_pitch_command_at_min": 0.0,
+    "max_specific_force_g": {
+      "value": 2.44725266778169,
+      "time_s": 31.271995
+    },
+    "max_current_a": {
+      "value": 16.34,
+      "time_s": 5.625053
+    },
+    "motor_saturation_samples": 0,
+    "attribution": "The large pitch excursion was caused by physical pilot Pitch input while AUX and MSP override were inactive. The host was in live_passthrough/manual and both PNG rate commands were zero. It is outside the legacy PNG +/-3 deg/s algorithm limit, recovered, and did not coincide with terminal impact.",
+    "event_window_s": [
+      18.3,
+      19.3
+    ],
+    "pitch_start_deg": 0.06,
+    "pitch_delta_to_min_deg": -29.68,
+    "minimum_pitch_setpoint_deg_s": -57.0,
+    "minimum_pitch_setpoint_time_s": 18.778256,
+    "minimum_pitch_gyro_deg_s": -64.0,
+    "minimum_pitch_gyro_time_s": 18.799727,
+    "rc_pitch_command_at_setpoint_min": -118.0,
+    "host_minus_blackbox_s": 24.585741,
+    "host_elapsed_at_setpoint_min_s": 43.363997,
+    "host_state_at_setpoint_min": {
+      "aux_enabled": false,
+      "msp_override_active": false,
+      "publish_mode": "live_passthrough",
+      "publish_reason": "manual",
+      "physical_pitch_us": 1387,
+      "sent_pitch_us": 1387,
+      "algorithm_roll_rate_deg_s": 0.0,
+      "algorithm_pitch_rate_deg_s": 0.0
+    }
+  },
+  "evidence_limits": [
+    "All principal 2026-09-05 interceptor Blackbox flights now have local Orange Pi host logs; LOG00133 lacks a final completion record and runtime manifest.",
+    "No 2026-09-05 target-aircraft ULog is available."
+  ]
+}

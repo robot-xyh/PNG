@@ -1,13 +1,13 @@
 {
   "schema_version": 2,
   "candidate_profile": {
-    "id": "velocity_png_flight_noncollision_short_supervised_v3",
-    "scope": "flight_noncollision_short_supervised_v3",
+    "id": "velocity_png_flight_contact_short_supervised_v2",
+    "scope": "flight_contact_short_supervised_v2",
     "runnable_as_log_only": false,
     "active_control_runnable_after_fresh_approval": true,
     "control_authorized_without_manifest": false,
     "propellers_installed": true,
-    "purpose": "Finite-duration, single-takeover, non-collision four-channel PNG validation."
+    "purpose": "Approval-gated four-channel PNG contact-terminal candidate with a hash-bound 6S thrust model."
   },
   "runtime_policy": {
     "allowed_control_modes": [
@@ -15,10 +15,10 @@
     ],
     "allow_control_flag_permitted": true,
     "msp_set_raw_rc_permitted": true,
-    "required_authorization_scope": "flight_noncollision_short_supervised_v3"
+    "required_authorization_scope": "flight_contact_short_supervised_v2"
   },
   "flight_profile": {
-    "scope": "flight_noncollision_short_supervised_v3",
+    "scope": "flight_contact_short_supervised_v2",
     "propellers_installed": true,
     "professional_pilot_required": true,
     "acro_rate_mode_required": true,
@@ -133,8 +133,8 @@
   },
   "control_authorization": {
     "enabled": true,
-    "required_scope": "flight_noncollision_short_supervised_v3",
-    "approval_manifest": "logs/betaflight_velocity_png_flight_noncollision_v3_approval.json",
+    "required_scope": "flight_contact_short_supervised_v2",
+    "approval_manifest": "logs/betaflight_velocity_png_flight_contact_v2_approval.json",
     "minimum_approval_schema_version": 5,
     "release_evidence_required": true,
     "thrust_model_evidence_required": true,
@@ -142,7 +142,8 @@
     "software_binding_required": true,
     "noprop_timing_evidence_required": true,
     "sitl_evidence_required": true,
-    "manual_msp_loss_waiver_required": true
+    "manual_msp_loss_waiver_required": true,
+    "intentional_contact_acknowledgement_required": true
   },
   "camera": {
     "device": "/dev/v4l/by-id/usb-DHZJ_260325_XH_DHZJ_Camera_01.00.00-video-index0",
@@ -254,13 +255,13 @@
       "vertical_speed_reference_limit_m_s": 6,
       "velocity_reference_slew_m_s2": 3,
       "acquire_consecutive_frames": 3,
-      "detection_timeout_s": 0.15,
+      "detection_timeout_s": 0.25,
       "detection_result_age_limit_s": 0.2,
       "velocity_timeout_s": 0.5,
       "los_prediction_max_s": 0.15,
       "gravity_m_s2": 9.80665,
       "fov_constraint_half_angle_deg": 0,
-      "engagement_policy": "noncollision",
+      "engagement_policy": "contact",
       "noncollision_bbox_abort_ratio": 0.012,
       "noncollision_ttc_abort_s": 2,
       "contact_bbox_terminal_ratio": 0.05,
@@ -402,6 +403,13 @@
     "send_neutral_when_inactive": false,
     "require_acro_rate_mode": true
   },
+  "contact_risk_policy": {
+    "active_control_permitted_after_fresh_approval": true,
+    "intentional_contact": true,
+    "explicit_risk_waiver_required": true,
+    "bounded_takeover_required": true,
+    "note": "MC100 is performance evidence only. Active output requires a separately scoped intentional-contact approval and remains limited to one 0.9 second takeover per ARM cycle."
+  },
   "kinematics": {
     "gps_timeout_s": 0.5,
     "altitude_timeout_s": 0.5,
@@ -423,6 +431,6 @@
       "maximum_interval_ms": 60,
       "maximum_ack_age_ms": 250
     },
-    "note": "The short supervised non-collision profile permits one software-limited takeover of at most 0.9 seconds per ARM cycle; the pilot must lower RC7 because MSP loss has no independent automatic fallback."
+    "note": "The contact candidate uses one software-limited 0.9 second takeover per ARM cycle; the pilot must lower RC7 because MSP loss has no independent automatic fallback."
   }
 }

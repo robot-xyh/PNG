@@ -44,6 +44,9 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.contact_candidate = _read(
             "betaflight.rk3588.velocity_png.flight_contact_candidate.json"
         )
+        self.contact_supervised = _read(
+            "betaflight.rk3588.velocity_png.flight_contact_supervised.json"
+        )
 
     def test_final_vm_log_only_contract(self):
         config = self.log_only
@@ -56,6 +59,9 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(config["rc_mapping"]["throttle_hover_us"], 1275)
         self.assertFalse(config["control_authorization"]["enabled"])
         self.assertFalse(config["runtime_policy"]["msp_set_raw_rc_permitted"])
+        self.assertEqual(config["bench_profile"]["scope"], "noprop_log_only")
+        self.assertTrue(config["bench_profile"]["all_propellers_removed_required"])
+        self.assertEqual(config["msp_runtime"]["override_channels_mask"], 0)
         self.assertEqual(
             config["runtime_policy"]["allowed_control_modes"],
             ["log_only"],
@@ -68,24 +74,20 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(mapping.thrust_feedforward.model, "voltage_throttle_lut")
         self.assertEqual(
             mapping.thrust_feedforward.calibration_id,
-            "PENDING_FULL_6S_THRUST_LUT",
+            "6S_2412KG_3115_900KV_1050R_HIST15_PHYSICS_V1_20260905",
         )
-        self.assertEqual(mapping.thrust_feedforward.model_sha256, "0" * 64)
+        self.assertEqual(
+            mapping.thrust_feedforward.model_sha256,
+            "c89babfd2458626e4e26e3ec82a11ae05ae799490e9797b67c9a1e46dc6579be",
+        )
 
         model, status = runner._load_voltage_thrust_model(
             self.flight_supervised,
             config_path=CONFIG_DIR / "betaflight.rk3588.velocity_png.flight_supervised.json",
             required=False,
         )
-        self.assertIsNone(model)
-        self.assertFalse(status["ready"])
-        with self.assertRaisesRegex(RuntimeError, "before hardware initialization"):
-            runner._load_voltage_thrust_model(
-                self.flight_supervised,
-                config_path=CONFIG_DIR
-                / "betaflight.rk3588.velocity_png.flight_supervised.json",
-                required=True,
-            )
+        self.assertIsNotNone(model)
+        self.assertTrue(status["ready"])
 
     def test_noprop_fault_contract(self):
         config = self.noprop
@@ -231,6 +233,7 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             self.limited,
             self.flight_supervised,
             self.contact_candidate,
+            self.contact_supervised,
         ):
             with self.subTest(profile=config["candidate_profile"]["id"]):
                 _, metadata = runner._guidance_evaluator(config)
@@ -263,10 +266,19 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertTrue(config["contact_risk_policy"]["explicit_risk_waiver_required"])
 
     def test_final_candidates_use_reduced_detection_and_fusion_waits(self):
-        for config in (self.log_only, self.flight_supervised, self.contact_candidate):
+        for config in (
+            self.log_only,
+            self.flight_supervised,
+            self.contact_candidate,
+            self.contact_supervised,
+        ):
             with self.subTest(profile=config["candidate_profile"]["id"]):
                 controller = config["guidance"]["velocity_establishing_png"]
-                self.assertEqual(controller["detection_timeout_s"], 0.15)
+                self.assertEqual(
+                    controller["detection_timeout_s"],
+                    0.25 if config is self.contact_supervised else 0.15,
+                )
+                self.assertEqual(controller["detection_result_age_limit_s"], 0.20)
                 self.assertEqual(controller["velocity_reference_slew_m_s2"], 3)
                 self.assertEqual(config["attitude_fusion"]["max_wait_s"], 0.06)
 
@@ -284,7 +296,7 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         config = self.flight_supervised
         self.assertEqual(
             config["candidate_profile"]["scope"],
-            "flight_noncollision_supervised_v2",
+            "flight_noncollision_short_supervised_v3",
         )
         self.assertEqual(config["msp_runtime"]["override_channels_mask"], 15)
         self.assertEqual(config["msp_runtime"]["throttle_relative_limit_us"], 0)
@@ -314,6 +326,7 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         self.assertEqual(config["rc_mapping"]["throttle_max_us"], 1500)
         self.assertEqual(config["safety"]["min_vbat_v"], 22)
         self.assertEqual(config["safety"]["max_vbat_v"], 25.2)
+        self.assertTrue(config["control_authorization"]["sitl_evidence_required"])
         self.assertEqual(
             config["guidance"]["velocity_establishing_png"]["total_accel_limit_m_s2"],
             7,
@@ -327,8 +340,14 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
         self.assertTrue(thrust["enabled"])
         self.assertEqual(thrust["model"], "voltage_throttle_lut")
-        self.assertEqual(thrust["calibration_id"], "PENDING_FULL_6S_THRUST_LUT")
-        self.assertEqual(config["control_authorization"]["minimum_approval_schema_version"], 4)
+        self.assertEqual(
+            thrust["calibration_id"],
+            "6S_2412KG_3115_900KV_1050R_HIST15_PHYSICS_V1_20260905",
+        )
+        self.assertEqual(config["control_authorization"]["minimum_approval_schema_version"], 5)
+        self.assertTrue(
+            config["control_authorization"]["manual_msp_loss_waiver_required"]
+        )
         self.assertTrue(
             config["control_authorization"]["finalized_run_evidence_required"]
         )
@@ -340,21 +359,138 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
             config["control_authorization"]["thrust_model_evidence_required"]
         )
         takeover = config["safety"]["takeover_duration_interlock"]
+        self.assertEqual(config["flight_profile"]["operator_target_takeover_duration_s"], 0.5)
         self.assertTrue(takeover["enabled"])
-        self.assertEqual(takeover["max_duration_s"], 2.0)
+        self.assertEqual(takeover["max_duration_s"], 0.9)
         self.assertTrue(takeover["latch_until_disarm"])
         self.assertEqual(takeover["max_takeovers_per_arm"], 1)
         self.assertEqual(takeover["rearm_release_s"], 0)
 
+    def test_contact_supervised_profile_binds_lut_and_contact_policy(self):
+        config = self.contact_supervised
+        scope = "flight_contact_short_supervised_v2"
+        self.assertEqual(config["candidate_profile"]["scope"], scope)
+        self.assertEqual(config["flight_profile"]["scope"], scope)
+        self.assertEqual(config["runtime_policy"]["required_authorization_scope"], scope)
+        self.assertEqual(config["control_authorization"]["required_scope"], scope)
+        self.assertTrue(config["runtime_policy"]["msp_set_raw_rc_permitted"])
+        self.assertEqual(
+            config["guidance"]["velocity_establishing_png"]["engagement_policy"],
+            "contact",
+        )
+        self.assertEqual(config["msp_runtime"]["throttle_command_min_us"], 1200)
+        self.assertEqual(config["msp_runtime"]["throttle_command_max_us"], 1500)
+        self.assertEqual(config["rc_mapping"]["throttle_min_us"], 1200)
+        self.assertEqual(config["rc_mapping"]["throttle_max_us"], 1500)
+        self.assertEqual(config["safety"]["min_vbat_v"], 22.0)
+        self.assertEqual(config["safety"]["max_vbat_v"], 25.2)
+        self.assertTrue(
+            config["safety"]["takeover_duration_interlock"]["enabled"]
+        )
+        self.assertEqual(
+            config["flight_profile"]["operator_target_takeover_duration_s"], 0.5
+        )
+        self.assertEqual(
+            config["safety"]["takeover_duration_interlock"]["max_duration_s"],
+            0.9,
+        )
+        self.assertTrue(
+            config["safety"]["takeover_duration_interlock"]["latch_until_disarm"]
+        )
+        self.assertEqual(
+            config["safety"]["takeover_duration_interlock"]["max_takeovers_per_arm"],
+            1,
+        )
+        self.assertNotIn(
+            "unbounded_takeover_waiver_required", config["control_authorization"]
+        )
+
+        model, status = runner._load_voltage_thrust_model(
+            config,
+            config_path=CONFIG_DIR
+            / "betaflight.rk3588.velocity_png.flight_contact_supervised.json",
+            required=True,
+        )
+        self.assertIsNotNone(model)
+        self.assertTrue(status["ready"])
+        self.assertEqual(model.minimum_voltage_v, 22.0)
+        self.assertEqual(model.maximum_voltage_v, 25.2)
+        self.assertEqual(model.throttle_us[0], 1200.0)
+        self.assertEqual(model.throttle_us[-1], 1500.0)
+        terminal = config["guidance"]["velocity_establishing_png"]
+        self.assertEqual(terminal["area_ttc_min_samples"], 7)
+        self.assertEqual(terminal["area_ttc_min_span_s"], 0.3)
+
+        runner._validate_active_flight_configuration(
+            config,
+            flight_scope=scope,
+            msp_runtime_config=runner.MspRuntimeConfig.from_mapping(
+                config["msp_runtime"]
+            ),
+            rc_mapping_config=runner._rc_mapping_config(config),
+            takeover_duration_config=runner.TakeoverDurationInterlockConfig.from_mapping(
+                config["safety"]["takeover_duration_interlock"]
+            ),
+            thrust_mapping=runner._acceleration_tilt_rate_config(
+                config
+            ).thrust_feedforward,
+            thrust_model=model,
+        )
+
+        invalid = json.loads(json.dumps(config))
+        invalid["safety"]["min_vbat_v"] = 21.0
+        with self.assertRaisesRegex(RuntimeError, "exact 22.0-25.2 V"):
+            runner._validate_active_flight_configuration(
+                invalid,
+                flight_scope=scope,
+                msp_runtime_config=runner.MspRuntimeConfig.from_mapping(
+                    invalid["msp_runtime"]
+                ),
+                rc_mapping_config=runner._rc_mapping_config(invalid),
+                takeover_duration_config=runner.TakeoverDurationInterlockConfig.from_mapping(
+                    invalid["safety"]["takeover_duration_interlock"]
+                ),
+                thrust_mapping=runner._acceleration_tilt_rate_config(
+                    invalid
+                ).thrust_feedforward,
+                thrust_model=model,
+            )
+
     def test_runtime_policy_rejects_output_for_log_only_profiles(self):
-        log_args = argparse.Namespace(control_mode="log_only", allow_control=False)
+        log_args = argparse.Namespace(
+            control_mode="log_only",
+            allow_control=False,
+            acknowledge_props_removed=True,
+        )
         output_args = argparse.Namespace(control_mode="msp_raw_rc", allow_control=True)
         runner._validate_runtime_policy(self.log_only, log_args)
         runner._validate_runtime_policy(self.limited, log_args)
-        with self.assertRaisesRegex(RuntimeError, "forbids control mode"):
+        with self.assertRaisesRegex(RuntimeError, "requires LOG_ONLY"):
             runner._validate_runtime_policy(self.log_only, output_args)
         with self.assertRaisesRegex(RuntimeError, "forbids control mode"):
             runner._validate_runtime_policy(self.limited, output_args)
+
+    def test_noprop_log_only_requires_acknowledgement_and_zero_mask(self):
+        args = argparse.Namespace(
+            control_mode="log_only",
+            allow_control=False,
+            acknowledge_props_removed=False,
+        )
+        with self.assertRaisesRegex(RuntimeError, "acknowledge-props-removed"):
+            runner._validate_runtime_policy(self.log_only, args)
+
+        args.acknowledge_props_removed = True
+        config = json.loads(json.dumps(self.log_only))
+        config["msp_runtime"]["override_channels_mask"] = 15
+        with self.assertRaisesRegex(RuntimeError, "override_channels_mask=0"):
+            runner._validate_runtime_policy(config, args)
+
+    def test_active_profiles_reject_log_only_before_hardware_startup(self):
+        args = argparse.Namespace(control_mode="log_only", allow_control=False)
+        for config in (self.flight_supervised, self.contact_supervised):
+            with self.subTest(scope=config["flight_profile"]["scope"]):
+                with self.assertRaisesRegex(RuntimeError, "requires --control-mode"):
+                    runner._validate_runtime_policy(config, args)
 
     def test_runtime_policy_allows_only_explicit_noprop_output(self):
         output_args = argparse.Namespace(control_mode="msp_raw_rc", allow_control=True)
@@ -399,6 +535,10 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         }
         runner._validate_runtime_policy(
             self.flight_supervised,
+            argparse.Namespace(**base),
+        )
+        runner._validate_runtime_policy(
+            self.contact_supervised,
             argparse.Namespace(**base),
         )
 

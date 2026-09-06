@@ -5,6 +5,7 @@ import json
 import sys
 import tempfile
 import unittest
+from unittest import mock
 from pathlib import Path
 
 
@@ -21,6 +22,7 @@ from create_betaflight_flight_supervised_approval import (  # noqa: E402
     validate_release_evidence,
     validate_flight_supervised_config,
     validate_snapshot_flight_state,
+    validate_sitl_evidence,
 )
 
 
@@ -28,7 +30,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
     def setUp(self):
         path = ROOT / "config" / "betaflight.rk3588.velocity_png.flight_supervised.json"
         self.config = json.loads(path.read_text(encoding="utf-8"))
-        self.output = ROOT / "logs" / "betaflight_velocity_png_flight_noncollision_v2_approval.json"
+        self.output = ROOT / "logs" / "betaflight_velocity_png_flight_noncollision_v3_approval.json"
         self.parsed_cli = {
             "rate_profiles": {
                 "0": {
@@ -120,6 +122,41 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             ],
         )
 
+    def test_accepts_separately_scoped_bounded_contact_profile(self):
+        path = (
+            ROOT
+            / "config"
+            / "betaflight.rk3588.velocity_png.flight_contact_supervised.json"
+        )
+        config = json.loads(path.read_text(encoding="utf-8"))
+        thrust = config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
+        source = self.config["guidance_command"]["accel_tilt_rate"]["thrust_feedforward"]
+        thrust.update(
+            calibration_id=source["calibration_id"],
+            model_path=source["model_path"],
+            model_sha256=source["model_sha256"],
+        )
+        output = ROOT / "logs" / "betaflight_velocity_png_flight_contact_v2_approval.json"
+
+        evidence = validate_flight_supervised_config(
+            config,
+            output_path=output,
+            parsed_cli=self.parsed_cli,
+            fc_identity=self.fc_identity,
+        )
+
+        self.assertEqual(evidence["scope"], "flight_contact_short_supervised_v2")
+        self.assertEqual(evidence["guidance"]["engagement_policy"], "contact")
+
+        config["candidate_profile"]["scope"] = "flight_noncollision_short_supervised_v3"
+        with self.assertRaisesRegex(RuntimeError, "same supported"):
+            validate_flight_supervised_config(
+                config,
+                output_path=output,
+                parsed_cli=self.parsed_cli,
+                fc_identity=self.fc_identity,
+            )
+
     def test_rejects_rate_acceleration_and_throttle_expansion(self):
         config = copy.deepcopy(self.config)
         config["rc_mapping"]["roll_command_limit_deg_s"] = 61
@@ -139,6 +176,13 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         config = copy.deepcopy(self.config)
         config["safety"]["max_vbat_v"] = 25.3
         with self.assertRaisesRegex(RuntimeError, "maximum battery gate"):
+            self.validate(config)
+
+        config = copy.deepcopy(self.config)
+        config["guidance"]["velocity_establishing_png"][
+            "detection_result_age_limit_s"
+        ] = 0.25
+        with self.assertRaisesRegex(RuntimeError, "result-age limit"):
             self.validate(config)
 
     def test_rejects_old_relative_limit_and_wrong_thrust_binding(self):
@@ -200,18 +244,88 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "pending thrust LUT"):
             self.validate(config)
 
+    def test_accepts_bounded_physics_constrained_sparse_thrust_lut(self):
+        config = copy.deepcopy(self.config)
+        model = json.loads(self.thrust_model_path.read_text(encoding="utf-8"))
+        model["fit"] = {
+            "method": "voltage_scaled_effective_input_quadratic_v1",
+            "effective_input": (
+                "voltage_v * (throttle_us - effective_zero_throttle_us)"
+            ),
+            "effective_zero_throttle_us": 1000.0,
+        }
+        model["validation"].update(
+            {
+                "coverage_policy": (
+                    "bounded_physics_constrained_sparse_surface_v1"
+                ),
+                "three_by_five_sample_counts": [
+                    [0, 100, 5, 0, 0],
+                    [5, 100, 5, 0, 0],
+                    [5, 100, 5, 1, 6],
+                ],
+                "voltage_extrapolation_v": [0.25, 0.07],
+                "maximum_voltage_extrapolation_v": 0.30,
+                "throttle_band_sample_counts": [10, 300, 15, 1, 6],
+                "high_throttle_sample_count": 6,
+                "minimum_high_throttle_samples": 5,
+                "maximum_high_throttle_p95_relative_error": 0.25,
+                "high_throttle_support_median_relative_error": 0.07,
+                "high_throttle_support_p95_relative_error": 0.18,
+                "high_throttle_holdout_sample_count": 2,
+                "high_throttle_holdout_median_relative_error": 0.12,
+                "high_throttle_holdout_p95_relative_error": 0.19,
+                "holdout_three_by_five_sample_counts": [
+                    [0, 20, 1, 0, 0],
+                    [1, 20, 1, 0, 0],
+                    [1, 20, 1, 0, 2],
+                ],
+            }
+        )
+        sparse_path = Path(self.temporary_directory.name) / "sparse.json"
+        sparse_path.write_text(json.dumps(model), encoding="utf-8")
+        thrust = config["guidance_command"]["accel_tilt_rate"][
+            "thrust_feedforward"
+        ]
+        thrust["model_path"] = str(sparse_path)
+        thrust["model_sha256"] = hashlib.sha256(sparse_path.read_bytes()).hexdigest()
+
+        evidence = self.validate(config)
+
+        self.assertEqual(
+            evidence["guidance_command"]["thrust_model"]["validation"][
+                "coverage_policy"
+            ],
+            "bounded_physics_constrained_sparse_surface_v1",
+        )
+
+        model["validation"]["high_throttle_sample_count"] = 4
+        invalid_path = Path(self.temporary_directory.name) / "sparse_invalid.json"
+        invalid_path.write_text(json.dumps(model), encoding="utf-8")
+        thrust["model_path"] = str(invalid_path)
+        thrust["model_sha256"] = hashlib.sha256(
+            invalid_path.read_bytes()
+        ).hexdigest()
+        with self.assertRaisesRegex(RuntimeError, "physics-constrained coverage"):
+            self.validate(config)
+
     def test_rejects_wrong_timer_or_poll_schedule(self):
         config = copy.deepcopy(self.config)
         config["safety"]["takeover_duration_interlock"].update(
             enabled=True,
             max_duration_s=10,
         )
-        with self.assertRaisesRegex(RuntimeError, "one 2 s pulse"):
+        with self.assertRaisesRegex(RuntimeError, "one 0.9 s pulse"):
             self.validate(config)
 
         config = copy.deepcopy(self.config)
         config["msp_runtime"]["attitude_poll_hz"] = 10
         with self.assertRaisesRegex(RuntimeError, "attitude_poll_hz"):
+            self.validate(config)
+
+        config = copy.deepcopy(self.config)
+        config["control_authorization"].pop("sitl_evidence_required")
+        with self.assertRaisesRegex(RuntimeError, "policy-bound SIL evidence"):
             self.validate(config)
 
     def test_release_evidence_requires_bound_passing_mc100(self):
@@ -364,6 +478,34 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             )
             self.assertEqual(evidence["required_scenario_count"], 3)
             self.assertEqual(evidence["required_noncollision_scenario_count"], 3)
+
+            contact_report = copy.deepcopy(report)
+            contact_report["required_summary_count"] = 3
+            contact_report["summaries"] = [
+                value
+                for value in contact_report["summaries"]
+                if value["evidence_role"] == "contact_performance"
+            ]
+            contact_report["policy_results"] = {
+                "passed": True,
+                "runtime_engagement_policy": "contact",
+                "contact_mc_is_performance_evidence_only": True,
+                "contact_performance": contact_report["policy_results"][
+                    "contact_performance"
+                ],
+                "noncollision_safety": None,
+            }
+            report_path.write_text(json.dumps(contact_report), encoding="utf-8")
+            contact_evidence = validate_release_evidence(
+                contact_report,
+                report_path,
+                runtime_config_sha256=config_sha256,
+                runtime_thrust_model=thrust_evidence,
+                expected_engagement_policy="contact",
+            )
+            self.assertEqual(
+                contact_evidence["required_noncollision_scenario_count"], 0
+            )
 
             report["release_passed"] = False
             with self.assertRaisesRegex(RuntimeError, "did not pass"):
@@ -632,6 +774,136 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
                 manifest_path,
                 runtime_config_sha256=config_sha256,
             )
+
+    def test_sitl_evidence_requires_two_clean_policy_bound_modes(self):
+        root = Path(self.temporary_directory.name) / "sitl"
+        root.mkdir()
+        commit = "1" * 40
+        flight_config = root / "flight.json"
+        flight_config.write_text("{}\n", encoding="utf-8")
+        config_sha256 = hashlib.sha256(flight_config.read_bytes()).hexdigest()
+        official_binary = root / "betaflight.elf"
+        official_binary.write_bytes(b"official-betaflight-test-binary")
+        official_binary_sha256 = hashlib.sha256(official_binary.read_bytes()).hexdigest()
+        required_artifacts = {
+            "flight_config",
+            "sitl_config",
+            "configuration_manifest",
+            "betaflight_binary",
+            "betaflight_cli",
+            "eeprom",
+            "gazebo_world",
+            "gazebo_bridge_source",
+            "gazebo_bridge_library",
+            "interceptor_model",
+            "target_model",
+            "runner_csv",
+            "runner_meta",
+            "runner_manifest",
+            "betaflight_console",
+            "gazebo_console",
+            "runner_console",
+        }
+
+        reports = []
+        for detector_mode in ("projected", "rendered"):
+            mode_root = root / detector_mode
+            mode_root.mkdir()
+            artifacts = {}
+            for name in sorted(required_artifacts):
+                if name == "flight_config":
+                    path = flight_config
+                elif name == "betaflight_binary":
+                    path = official_binary
+                else:
+                    path = mode_root / name
+                    path.write_text(f"{detector_mode}:{name}\n", encoding="utf-8")
+                artifacts[name] = {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            if detector_mode == "rendered":
+                yolo_model = mode_root / "best.pt"
+                yolo_model.write_bytes(b"test-yolo-model")
+                artifacts["yolo_model"] = {
+                    "path": str(yolo_model),
+                    "sha256": hashlib.sha256(yolo_model.read_bytes()).hexdigest(),
+                }
+            software = {
+                "repository_commit": commit,
+                "repository_dirty": False,
+            }
+            manifest = {
+                "schema_version": 1,
+                "evidence_type": "betaflight_gazebo_sil_run",
+                "scope": "betaflight_sitl_loopback_v1",
+                "completed": True,
+                "failure": "",
+                "policy": "noncollision",
+                "detector_mode": detector_mode,
+                "software_binding": software,
+                "artifacts": artifacts,
+            }
+            manifest_path = mode_root / "run_manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            report = {
+                "schema_version": 1,
+                "evidence_type": "betaflight_gazebo_sil_audit",
+                "scope": "betaflight_sitl_loopback_v1",
+                "passed": True,
+                "violations": [],
+                "policy": "noncollision",
+                "detector_mode": detector_mode,
+                "detector_representative": False,
+                "hardware_authorization": False,
+                "software_binding": software,
+                "flight_candidate_binding": {
+                    "sha256": config_sha256,
+                    "engagement_policy": "noncollision",
+                },
+                "betaflight_binding": {
+                    "source_commit": "79065c96ba0bb5cdc675e67d7093e05dab8b330e",
+                    "elf_sha256": official_binary_sha256,
+                },
+                "orchestration_manifest": {
+                    "path": str(manifest_path),
+                    "sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                },
+                "metrics": {
+                    "rendered_detection_count": 1 if detector_mode == "rendered" else 0,
+                    "terminal": {"passed": True},
+                },
+            }
+            report_path = mode_root / "audit.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            reports.append((report, report_path))
+
+        with mock.patch(
+            "create_betaflight_flight_supervised_approval.SITL_OFFICIAL_BETAFLIGHT_ELF_SHA256",
+            official_binary_sha256,
+        ):
+            evidence = validate_sitl_evidence(
+                reports,
+                runtime_config_sha256=config_sha256,
+                expected_engagement_policy="noncollision",
+                repository_commit=commit,
+            )
+            self.assertEqual(
+                [item["detector_mode"] for item in evidence],
+                ["projected", "rendered"],
+            )
+            self.assertTrue(all(item["hardware_authorization"] is False for item in evidence))
+
+            rendered_report, rendered_path = reports[1]
+            rendered_report["hardware_authorization"] = True
+            rendered_path.write_text(json.dumps(rendered_report), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "hardware_authorization=false"):
+                validate_sitl_evidence(
+                    reports,
+                    runtime_config_sha256=config_sha256,
+                    expected_engagement_policy="noncollision",
+                    repository_commit=commit,
+                )
 
 
 if __name__ == "__main__":
