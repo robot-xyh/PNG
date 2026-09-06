@@ -160,6 +160,33 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
         self.assertEqual(stale.controller.phase, InterceptPhase.ABORT)
         self.assertEqual(stale.controller.reason, "detection_stale")
 
+    def test_new_los_timestamp_is_independent_of_cached_result_aliasing(self):
+        runtime = self._runtime()
+        cached = _vision(0.82)
+        runtime.update(
+            timestamp_s=1.0,
+            vision_result=cached,
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+        )
+        current = _vision(1.05)
+        # Some live pipelines reuse a result holder. The freshness comparison must
+        # not read history through an object that the producer can update in place.
+        object.__setattr__(cached, "los", current.los)
+
+        output = runtime.update(
+            timestamp_s=1.06,
+            vision_result=current,
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+        )
+
+        self.assertTrue(output.controller.valid)
+        self.assertAlmostEqual(output.controller.detection_age_s, 0.01)
+        self.assertAlmostEqual(output.controller.detection_update_age_s, 0.0)
+
     def test_track_change_reason_aborts_immediately(self):
         runtime = self._runtime()
         runtime.update(

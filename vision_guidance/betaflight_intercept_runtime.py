@@ -50,6 +50,7 @@ class VelocityEstablishingPngRuntime:
         self.velocity_source = source
         self.image_area = float(image_width * image_height)
         self._last_valid_vision: VisionGuidanceResult | None = None
+        self._last_valid_los_timestamp_s: float | None = None
         self._last_valid_vision_update_s: float | None = None
         self._engagement_active = False
 
@@ -83,16 +84,10 @@ class VelocityEstablishingPngRuntime:
             and vision_result.los is not None
             and vision_result.los.valid
         ):
-            previous_los = (
-                None
-                if self._last_valid_vision is None
-                else self._last_valid_vision.los
-            )
-            if (
-                previous_los is None
-                or vision_result.los.timestamp != previous_los.timestamp
-            ):
+            los_timestamp_s = float(vision_result.los.timestamp)
+            if los_timestamp_s != self._last_valid_los_timestamp_s:
                 self._last_valid_vision_update_s = float(timestamp_s)
+                self._last_valid_los_timestamp_s = los_timestamp_s
             self._last_valid_vision = vision_result
         elif vision_result is None:
             source_result = self._last_valid_vision
