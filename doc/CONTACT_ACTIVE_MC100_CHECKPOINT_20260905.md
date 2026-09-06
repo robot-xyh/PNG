@@ -22,10 +22,33 @@
 最少 `27,000` 行；接触只需要基线和接触性能两组评估，最少 `18,000` 行。两者仍都要求
 每工况至少 `100` 次、至少 `30` 个镜像工况及三个规定电压/延迟场景。
 
-Betaflight Gazebo SIL 的 projected/rendered、contact/noncollision 四组均已通过，但任何代码
-提交都会使 SIL 的提交绑定失效。因此最终批准必须使用本节修正提交之后重新运行的四份干净
-SIL 证据。仍未完成的真机项目是：当前提交的无桨主动 50 Hz 时序、当天飞控快照，以及分别
-生成非碰撞和接触的 schema v5 批准文件。
+Betaflight Gazebo SIL 已在干净提交
+`6bf11d70c5b136164ad30a6d028d385748746e52` 上完成四组最终验证。批准器的
+`validate_sitl_evidence` 已分别接受两种策略的 projected/rendered 证据组合：
+
+- 非碰撞 projected：
+  `logs/betaflight_sitl/noncollision_projected_20260906_084752/betaflight_gazebo_sil_audit.json`
+  - audit SHA256：`1b1007fe41dc30b1a741a222938ffc240d872949ed3cf60e1d5abf925344b9b2`
+  - MSP `50.000 Hz`，最大写间隔 `21.624 ms`，零错误；由 TTC 触发 ABORT。
+- 非碰撞 rendered：
+  `logs/betaflight_sitl/noncollision_rendered_20260906_084932/betaflight_gazebo_sil_audit.json`
+  - audit SHA256：`ca4e0e81329f06916c0f28f8905402cbbce879ca8b640e19cbbf2a2c4a7caf4e`
+  - MSP `49.995 Hz`，最大写间隔 `22.676 ms`，零错误；由面积 TTC 触发 ABORT。
+- 接触 projected：
+  `logs/betaflight_sitl/contact_projected_20260906_084836/betaflight_gazebo_sil_audit.json`
+  - audit SHA256：`a368d7913b70003413d47e86332d1958ab016aebb3a01eb0642365f512c149ee`
+  - MSP `50.000 Hz`，最大写间隔 `21.902 ms`，零错误；进入 TERMINAL_VISUAL 后 COMPLETE。
+- 接触 rendered：
+  `logs/betaflight_sitl/contact_rendered_20260906_085203/betaflight_gazebo_sil_audit.json`
+  - audit SHA256：`5435af1eb3344c492f93e37394277eb21465ba23454faab8df561c8530d9eecc`
+  - MSP `50.000 Hz`，最大写间隔 `22.252 ms`，零错误；完整经过
+    TRACKING、TERMINAL_VISUAL、BLIND_HOLD、COMPLETE。
+
+四组 NED 真值校验、命令到 gyro 方向和电机差速方向均通过。SIL 场景按策略和检测模式
+生成目标逼近参数，实际生成的模型文件已写入运行 manifest 并参与 SHA256 绑定。仍未完成
+的真机项目是：当前提交的无桨主动 50 Hz 时序、当天飞控快照，以及分别生成非碰撞和接触
+的 schema v5 批准文件。完整单元测试为 `549/549` 通过，`git diff --check` 通过。SIL
+本身不构成真机控制批准。
 
 ## 当前状态
 
