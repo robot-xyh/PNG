@@ -2615,12 +2615,28 @@ def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -
             )
         if int(dict(config.get("msp_runtime", {})).get("override_channels_mask", -1)) != 0:
             raise RuntimeError("noprop_log_only requires override_channels_mask=0")
-    if flight_scope in ACTIVE_FLIGHT_SCOPES and (
-        args.control_mode != "msp_raw_rc" or not bool(args.allow_control)
-    ):
-        raise RuntimeError(
-            f"{flight_scope} requires --control-mode msp_raw_rc --allow-control"
-        )
+    if flight_scope in ACTIVE_FLIGHT_SCOPES:
+        candidate = dict(config.get("candidate_profile", {}))
+        if args.control_mode == "log_only":
+            if bool(args.allow_control):
+                raise RuntimeError(
+                    f"{flight_scope} LOG_ONLY forbids --allow-control"
+                )
+            if candidate.get("runnable_as_log_only") is not True:
+                raise RuntimeError(f"{flight_scope} is not runnable as LOG_ONLY")
+            if candidate.get("log_only_all_propellers_removed_required") is not True:
+                raise RuntimeError(
+                    f"{flight_scope} LOG_ONLY must require all propellers removed"
+                )
+            if not bool(getattr(args, "acknowledge_props_removed", False)):
+                raise RuntimeError(
+                    f"{flight_scope} LOG_ONLY requires --acknowledge-props-removed"
+                )
+        elif args.control_mode != "msp_raw_rc" or not bool(args.allow_control):
+            raise RuntimeError(
+                f"{flight_scope} active control requires "
+                "--control-mode msp_raw_rc --allow-control"
+            )
 
     allowed = values.get("allowed_control_modes")
     if not isinstance(allowed, list) or not allowed:
@@ -2697,8 +2713,10 @@ def _validate_active_flight_configuration(
         or authorization_cfg.get("required_scope") != flight_scope
     ):
         raise RuntimeError(f"{flight_scope} control authorization scope mismatch")
-    if policy_cfg.get("allowed_control_modes") != ["msp_raw_rc"]:
-        raise RuntimeError(f"{flight_scope} must reject LOG_ONLY startup")
+    if policy_cfg.get("allowed_control_modes") != ["log_only", "msp_raw_rc"]:
+        raise RuntimeError(
+            f"{flight_scope} must allow acknowledged no-prop LOG_ONLY and msp_raw_rc"
+        )
     if authorization_cfg.get("manual_msp_loss_waiver_required") is not True:
         raise RuntimeError(f"{flight_scope} requires the manual MSP-loss risk waiver")
     if msp_runtime_config.throttle_relative_limit_us != 0:

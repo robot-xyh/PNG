@@ -966,6 +966,10 @@ def validate_flight_supervised_config(
     logging = dict(config.get("logging", {}))
     scope = _configured_scope(config)
 
+    if candidate.get("runnable_as_log_only") is not True:
+        raise RuntimeError("active flight profile must support finalized LOG_ONLY evidence")
+    if candidate.get("log_only_all_propellers_removed_required") is not True:
+        raise RuntimeError("active flight LOG_ONLY evidence must require all propellers removed")
     for key in ("propellers_installed", "professional_pilot_required", "acro_rate_mode_required"):
         if profile.get(key) is not True:
             raise RuntimeError(f"flight_profile.{key}=true is required")
@@ -987,8 +991,10 @@ def validate_flight_supervised_config(
 
     if policy.get("required_authorization_scope") != scope:
         raise RuntimeError("runtime policy scope mismatch")
-    if policy.get("allowed_control_modes") != ["msp_raw_rc"]:
-        raise RuntimeError("active flight profile must reject LOG_ONLY startup")
+    if policy.get("allowed_control_modes") != ["log_only", "msp_raw_rc"]:
+        raise RuntimeError(
+            "active flight profile must allow no-prop LOG_ONLY evidence and msp_raw_rc"
+        )
     if policy.get("allow_control_flag_permitted") is not True:
         raise RuntimeError("runtime policy must permit --allow-control")
     if policy.get("msp_set_raw_rc_permitted") is not True:

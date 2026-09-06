@@ -485,11 +485,40 @@ class BetaflightCandidateConfigTest(unittest.TestCase):
         with self.assertRaisesRegex(RuntimeError, "override_channels_mask=0"):
             runner._validate_runtime_policy(config, args)
 
-    def test_active_profiles_reject_log_only_before_hardware_startup(self):
-        args = argparse.Namespace(control_mode="log_only", allow_control=False)
+    def test_active_profiles_require_no_prop_acknowledgement_for_log_only(self):
+        args = argparse.Namespace(
+            control_mode="log_only",
+            allow_control=False,
+            acknowledge_props_removed=False,
+        )
         for config in (self.flight_supervised, self.contact_supervised):
             with self.subTest(scope=config["flight_profile"]["scope"]):
-                with self.assertRaisesRegex(RuntimeError, "requires --control-mode"):
+                self.assertTrue(config["candidate_profile"]["runnable_as_log_only"])
+                self.assertTrue(
+                    config["candidate_profile"][
+                        "log_only_all_propellers_removed_required"
+                    ]
+                )
+                self.assertEqual(
+                    config["runtime_policy"]["allowed_control_modes"],
+                    ["log_only", "msp_raw_rc"],
+                )
+                with self.assertRaisesRegex(RuntimeError, "acknowledge-props-removed"):
+                    runner._validate_runtime_policy(config, args)
+
+                args.acknowledge_props_removed = True
+                runner._validate_runtime_policy(config, args)
+                args.acknowledge_props_removed = False
+
+    def test_active_profiles_forbid_allow_control_in_log_only(self):
+        args = argparse.Namespace(
+            control_mode="log_only",
+            allow_control=True,
+            acknowledge_props_removed=True,
+        )
+        for config in (self.flight_supervised, self.contact_supervised):
+            with self.subTest(scope=config["flight_profile"]["scope"]):
+                with self.assertRaisesRegex(RuntimeError, "LOG_ONLY forbids --allow-control"):
                     runner._validate_runtime_policy(config, args)
 
     def test_runtime_policy_allows_only_explicit_noprop_output(self):

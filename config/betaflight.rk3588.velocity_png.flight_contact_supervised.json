@@ -3,7 +3,8 @@
   "candidate_profile": {
     "id": "velocity_png_flight_contact_short_supervised_v2",
     "scope": "flight_contact_short_supervised_v2",
-    "runnable_as_log_only": false,
+    "runnable_as_log_only": true,
+    "log_only_all_propellers_removed_required": true,
     "active_control_runnable_after_fresh_approval": true,
     "control_authorized_without_manifest": false,
     "propellers_installed": true,
@@ -11,6 +12,7 @@
   },
   "runtime_policy": {
     "allowed_control_modes": [
+      "log_only",
       "msp_raw_rc"
     ],
     "allow_control_flag_permitted": true,
