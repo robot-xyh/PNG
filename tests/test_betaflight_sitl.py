@@ -7,6 +7,7 @@ import socket
 import math
 import tempfile
 import unittest
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from unittest import mock
 
@@ -91,6 +92,7 @@ class BetaflightSitlTest(unittest.TestCase):
             generated["msp_runtime"]["raw_imu_gyro"]["axis_sign"], [1, -1, 1]
         )
         self.assertEqual(generated["msp_runtime"]["raw_imu_poll_hz"], 20)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_after_s"], 5.2)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.35)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.7)
         self.assertEqual(validate_loopback_sitl_config(generated)["simulated_vbat_v"], 23.6)
@@ -113,6 +115,30 @@ class BetaflightSitlTest(unittest.TestCase):
 
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.70)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.9)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_delta_us"], 100)
+
+    def test_rendered_target_approach_preserves_terminal_detection_standoff(self):
+        model_path = (
+            Path(__file__).resolve().parents[1]
+            / "sitl"
+            / "gazebo"
+            / "models"
+            / "target_uav"
+            / "model.sdf"
+        )
+        root = ET.parse(model_path).getroot()
+        plugin = root.find(".//plugin[@name='png::sitl::DeterministicTargetMotion']")
+
+        self.assertIsNotNone(plugin)
+        assert plugin is not None
+        speed = float(plugin.findtext("verticalApproachSpeedMps", "nan"))
+        maximum_approach = float(plugin.findtext("maximumVerticalApproachM", "nan"))
+        initial_camera_range = 7.0 - 0.16 - 0.06
+        final_standoff = initial_camera_range - maximum_approach
+
+        self.assertEqual(speed, 10.0)
+        self.assertGreaterEqual(final_standoff, 0.8)
+        self.assertLessEqual(final_standoff, 1.0)
 
     def test_fdm_packet_matches_official_2025_12_2_layout(self):
         packet = BetaflightFdmPacket(

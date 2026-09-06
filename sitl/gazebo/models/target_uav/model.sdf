@@ -19,8 +19,8 @@
       <northAmplitudeM>0.6</northAmplitudeM>
       <periodS>8</periodS>
       <verticalApproachStartS>7.5</verticalApproachStartS>
-      <verticalApproachSpeedMps>12.0</verticalApproachSpeedMps>
-      <maximumVerticalApproachM>6.2</maximumVerticalApproachM>
+      <verticalApproachSpeedMps>10.0</verticalApproachSpeedMps>
+      <maximumVerticalApproachM>5.95</maximumVerticalApproachM>
       <horizontalApproachDecayS>1.5</horizontalApproachDecayS>
       <cameraAlignmentStartS>5.8</cameraAlignmentStartS>
       <cameraAlignmentBlendS>0.5</cameraAlignmentBlendS>
