@@ -37,9 +37,11 @@ SIL_PORTS = ((socket.SOCK_STREAM, 5761),) + tuple(
 )
 GAZEBO_WORLD_NAME = "png_betaflight_sitl"
 RUNNER_READY_MARKER = "MSP RAW_IMU gyro:"
-TARGET_APPROACH_BY_POLICY = {
-    "noncollision": (7.1, 2.5, 6.2),
-    "contact": (7.5, 10.0, 5.95),
+TARGET_APPROACH_BY_SCENARIO = {
+    ("noncollision", "projected"): (7.5, 10.0, 5.95),
+    ("noncollision", "rendered"): (7.1, 2.5, 6.2),
+    ("contact", "projected"): (7.5, 10.0, 5.95),
+    ("contact", "rendered"): (7.5, 10.0, 5.95),
 }
 
 
@@ -100,14 +102,16 @@ def _artifact(path: Path) -> dict[str, Any]:
 
 
 def materialize_target_model(
-    source_path: Path, resource_root: Path, policy: str
+    source_path: Path, resource_root: Path, policy: str, detector_mode: str
 ) -> Path:
     try:
         approach_start_s, approach_speed_m_s, maximum_approach_m = (
-            TARGET_APPROACH_BY_POLICY[policy]
+            TARGET_APPROACH_BY_SCENARIO[(policy, detector_mode)]
         )
     except KeyError as exc:
-        raise ValueError(f"unsupported SIL engagement policy: {policy}") from exc
+        raise ValueError(
+            f"unsupported SIL scenario: policy={policy}, detector={detector_mode}"
+        ) from exc
     tree = ET.parse(source_path)
     plugin = tree.getroot().find(
         ".//plugin[@name='png::sitl::DeterministicTargetMotion']"
@@ -448,6 +452,7 @@ def run_sil(args: argparse.Namespace) -> tuple[Path, Path]:
         gazebo_source / "models/target_uav/model.sdf",
         gazebo_resource_root,
         args.policy,
+        args.detector_mode,
     )
     build_console = run_dir / "gazebo_build_console.log"
     with build_console.open("wb") as stream:

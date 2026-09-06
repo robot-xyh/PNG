@@ -153,11 +153,23 @@ class BetaflightSitlTest(unittest.TestCase):
         )
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            noncollision = orchestrator.materialize_target_model(
-                source_path, root / "noncollision", "noncollision"
+            noncollision_projected = orchestrator.materialize_target_model(
+                source_path,
+                root / "noncollision_projected",
+                "noncollision",
+                "projected",
             )
-            contact = orchestrator.materialize_target_model(
-                source_path, root / "contact", "contact"
+            noncollision_rendered = orchestrator.materialize_target_model(
+                source_path,
+                root / "noncollision_rendered",
+                "noncollision",
+                "rendered",
+            )
+            contact_projected = orchestrator.materialize_target_model(
+                source_path, root / "contact_projected", "contact", "projected"
+            )
+            contact_rendered = orchestrator.materialize_target_model(
+                source_path, root / "contact_rendered", "contact", "rendered"
             )
 
             def approach(path):
@@ -171,8 +183,10 @@ class BetaflightSitlTest(unittest.TestCase):
                     float(plugin.findtext("maximumVerticalApproachM", "nan")),
                 )
 
-            self.assertEqual(approach(noncollision), (7.1, 2.5, 6.2))
-            self.assertEqual(approach(contact), (7.5, 10.0, 5.95))
+            self.assertEqual(approach(noncollision_projected), (7.5, 10.0, 5.95))
+            self.assertEqual(approach(noncollision_rendered), (7.1, 2.5, 6.2))
+            self.assertEqual(approach(contact_projected), (7.5, 10.0, 5.95))
+            self.assertEqual(approach(contact_rendered), (7.5, 10.0, 5.95))
 
     def test_fdm_packet_matches_official_2025_12_2_layout(self):
         packet = BetaflightFdmPacket(
