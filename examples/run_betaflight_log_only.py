@@ -40,6 +40,7 @@ from vision_guidance.betaflight_msp import (  # noqa: E402
     MSP_STATUS,
     BetaflightMSPAdapter,
     BetaflightTelemetry,
+    AnalogTelemetry,
 )
 from vision_guidance.betaflight_kinematics import (  # noqa: E402
     BetaflightKinematicEstimator,
@@ -59,12 +60,22 @@ from vision_guidance.betaflight_intercept_runtime import (  # noqa: E402
 from vision_guidance.betaflight_runtime import (  # noqa: E402
     MSP_OVERRIDE_PERMANENT_ID,
     BetaflightMspIoWorker,
+    ControlAuthorizationStatus,
     MspRuntimeConfig,
     armed_from_telemetry,
     bind_msp_raw_imu_gyro,
     box_mode_active,
     box_mode_index,
     resolve_control_authorization,
+)
+from vision_guidance.betaflight_sitl import (  # noqa: E402
+    GazeboCameraSource,
+    GazeboPoseStream,
+    GazeboProjectedDetectionSource,
+    SitlPilotRcConfig,
+    SitlPilotRcScheduler,
+    sitl_truth_stats,
+    validate_loopback_sitl_config,
 )
 from vision_guidance.betaflight_web import (  # noqa: E402
     TelemetryWebConfig,
@@ -120,9 +131,14 @@ from vision_guidance.thrust_model import VoltageThrottleThrustModel  # noqa: E40
 from vision_guidance.yolo_bytetrack_detector import YoloByteTrackDetector  # noqa: E402
 
 
-LOG_SCHEMA_VERSION = 21
+LOG_SCHEMA_VERSION = 23
 GUIDANCE_EVAL_FRAME = "inertial_ned"
 RATE_GAIN_INPUT_FRAME = "body_frd"
+NONCOLLISION_FLIGHT_SCOPE = "flight_noncollision_short_supervised_v3"
+CONTACT_FLIGHT_SCOPE = "flight_contact_short_supervised_v2"
+ACTIVE_FLIGHT_SCOPES = frozenset(
+    {NONCOLLISION_FLIGHT_SCOPE, CONTACT_FLIGHT_SCOPE}
+)
 MSP_COMMAND_LOG_SPECS = (
     ("status", MSP_STATUS),
     ("raw_imu", MSP_RAW_IMU),
@@ -189,8 +205,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--control-mode", choices=("log_only", "msp_raw_rc"), default="log_only")
     parser.add_argument("--allow-control", action="store_true", help="Required before MSP_SET_RAW_RC is sent.")
     parser.add_argument(
+        "--sitl-loopback",
+        action="store_true",
+        help="Enable the isolated Betaflight SITL scope; only socket://127.0.0.1:5761 is accepted.",
+    )
+    parser.add_argument(
+        "--acknowledge-props-removed",
+        action="store_true",
+        help="Required by the no-prop LOG_ONLY profile after every physical propeller is removed.",
+    )
+    parser.add_argument(
         "--detector-source",
-        choices=("none", "csv", "camera_only", "yolo_bytetrack", "rknn_native", "rknn_bytetrack"),
+        choices=(
+            "none",
+            "csv",
+            "camera_only",
+            "yolo_bytetrack",
+            "rknn_native",
+            "rknn_bytetrack",
+            "sitl_projected",
+            "gazebo_yolo_bytetrack",
+        ),
         default="none",
     )
     parser.add_argument("--detections-csv", default="", help="CSV with x1,y1,x2,y2 and optional exposure_ts,track_id,score.")
@@ -203,6 +238,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yolo-device", default="")
     parser.add_argument("--yolo-tracker", default="bytetrack.yaml")
     parser.add_argument("--yolo-allow-untracked-fallback", action="store_true")
+    parser.add_argument("--sitl-world", default="png_betaflight_sitl")
+    parser.add_argument("--sitl-interceptor-model", default="interceptor")
+    parser.add_argument("--sitl-target-model", default="target_uav")
+    parser.add_argument(
+        "--gazebo-camera-topic",
+        default="/world/png_betaflight_sitl/model/interceptor/link/base_link/sensor/upward_camera/image",
+    )
     parser.add_argument("--rknn-library", default="", help="Override rknn_detector.library.")
     parser.add_argument("--rknn-model", default="", help="Override rknn_detector.model.")
     parser.add_argument(
@@ -755,6 +797,50 @@ class OpenCvYoloSource:
 
     def _read_image(self, _client: Any, _config: AirSimDetectionConfig):
         return self.camera.read_image()
+
+
+class GazeboYoloSource(OpenCvYoloSource):
+    def __init__(self, args: argparse.Namespace, config: dict[str, Any], *, preview_sink: Any = None):
+        self.pose_stream = GazeboPoseStream(
+            world=str(args.sitl_world),
+            model_names=(
+                str(args.sitl_interceptor_model),
+                str(args.sitl_target_model),
+            ),
+        )
+        self.interceptor_model = str(args.sitl_interceptor_model)
+        self.target_model = str(args.sitl_target_model)
+        camera = GazeboCameraSource(topic=str(args.gazebo_camera_topic))
+        try:
+            super().__init__(args, config, camera_source=camera, preview_sink=preview_sink)
+        except BaseException:
+            camera.close()
+            self.pose_stream.close()
+            raise
+
+    def close(self) -> None:
+        try:
+            super().close()
+        finally:
+            self.pose_stream.close()
+
+    def detect(
+        self,
+        *,
+        timestamp: float,
+        frame_id: int,
+        active_track_id: int | None,
+    ) -> tuple[FrameDetection | None, dict[str, Any]]:
+        detection, stats = super().detect(
+            timestamp=timestamp,
+            frame_id=frame_id,
+            active_track_id=active_track_id,
+        )
+        interceptor = self.pose_stream.latest(self.interceptor_model)
+        target = self.pose_stream.latest(self.target_model)
+        if interceptor is not None and target is not None:
+            stats.update(sitl_truth_stats(interceptor, target, timestamp=timestamp))
+        return detection, stats
 
 
 class OpenCvRknnSource:
@@ -1378,7 +1464,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         required=bool(
             control_output_requested
             and str(dict(config.get("flight_profile", {})).get("scope", ""))
-            == "flight_noncollision_supervised_v2"
+            in ACTIVE_FLIGHT_SCOPES
         ),
     )
     intrinsics = _camera_intrinsics(config)
@@ -1439,70 +1525,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             raise RuntimeError("prop_rig_active motor telemetry timeout cannot exceed 0.25 s")
         if float(safety_cfg.get("min_vbat_v", 0.0)) < 20.0:
             raise RuntimeError("prop_rig_active requires safety.min_vbat_v >= 20 V")
-    if control_output_requested and flight_scope == "flight_noncollision_supervised_v2":
-        guidance_cfg = dict(config.get("guidance", {}))
-        velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
-        thrust_cfg = thrust_mapping
-        if guidance_cfg.get("velocity_source") != "msp_kinematics":
-            raise RuntimeError("flight_noncollision_supervised_v2 requires velocity_source=msp_kinematics")
-        if msp_runtime_config.override_channels_mask != 15:
-            raise RuntimeError("flight_noncollision_supervised_v2 requires four-channel mask 15")
-        if (
-            not takeover_duration_config.enabled
-            or takeover_duration_config.max_duration_s != 2.0
-            or not takeover_duration_config.latch_until_disarm
-            or takeover_duration_config.max_takeovers_per_arm != 1
-            or takeover_duration_config.rearm_release_s != 0.0
-        ):
-            raise RuntimeError(
-                "flight_noncollision_supervised_v2 requires a 2 s, one-takeover, DISARM-latched interlock"
-            )
-        if msp_runtime_config.throttle_relative_limit_us != 0:
-            raise RuntimeError("flight_noncollision_supervised_v2 forbids relative throttle limiting")
-        if (
-            msp_runtime_config.throttle_reference_min_us != 1200
-            or msp_runtime_config.throttle_reference_max_us != 1400
-            or msp_runtime_config.throttle_command_min_us != 1200
-            or msp_runtime_config.throttle_command_max_us != 1500
-            or not 0.0 < msp_runtime_config.throttle_slew_limit_us_per_s <= 600.0
-        ):
-            raise RuntimeError("flight_noncollision_supervised_v2 throttle envelope mismatch")
-        if (
-            rc_mapping_config.throttle_min_us != 1200
-            or rc_mapping_config.throttle_hover_us != 1275
-            or rc_mapping_config.throttle_max_us != 1500
-            or rc_mapping_config.yaw_command_limit_deg_s != 0.0
-        ):
-            raise RuntimeError("flight_noncollision_supervised_v2 RC throttle/Yaw mapping mismatch")
-        if any(
-            limit is None or limit > 60.0
-            for limit in (
-                rc_mapping_config.roll_command_limit_deg_s,
-                rc_mapping_config.pitch_command_limit_deg_s,
-            )
-        ):
-            raise RuntimeError("flight_active_supervised Roll/Pitch limits cannot exceed 60 deg/s")
-        if (
-            float(guidance_cfg.get("max_guidance_accel_mps2", float("inf"))) > 7.0
-            or float(velocity_cfg.get("total_accel_limit_m_s2", float("inf"))) > 7.0
-        ):
-            raise RuntimeError("flight_active_supervised total guidance acceleration exceeds 7 m/s2")
-        if (
-            not thrust_cfg.enabled
-            or thrust_cfg.model != "voltage_throttle_lut"
-            or thrust_model is None
-        ):
-            raise RuntimeError(
-                "flight_active_supervised requires a hash-bound, validated voltage/throttle thrust LUT"
-            )
-        if not bool(safety_cfg.get("require_acro_rate_mode", False)):
-            raise RuntimeError("flight_active_supervised requires Acro/Rate mode")
-        if float(safety_cfg.get("min_vbat_v", 0.0)) < 22.0:
-            raise RuntimeError("flight_active_supervised requires safety.min_vbat_v >= 22 V")
-        if float(safety_cfg.get("max_vbat_v", math.inf)) > 25.2:
-            raise RuntimeError(
-                "flight_active_supervised requires safety.max_vbat_v <= 25.2 V"
-            )
+    if control_output_requested and flight_scope in ACTIVE_FLIGHT_SCOPES:
+        _validate_active_flight_configuration(
+            config,
+            flight_scope=flight_scope,
+            msp_runtime_config=msp_runtime_config,
+            rc_mapping_config=rc_mapping_config,
+            takeover_duration_config=takeover_duration_config,
+            thrust_mapping=thrust_mapping,
+            thrust_model=thrust_model,
+        )
     watchdog_timeout_s = float(safety_cfg.get("watchdog_timeout_s", 0.25))
     watchdog = CommandWatchdog(watchdog_timeout_s)
     setpoint_hold = GuidanceSetpointHold(watchdog_timeout_s)
@@ -1591,6 +1623,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             box_ids_error,
             authorization,
             msp_worker,
+            sitl_pilot,
             detection_source,
             evidence_recorder,
         ) = _initialize_runtime_resources(
@@ -1657,6 +1690,16 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
             msp_runtime={
                 "config": asdict(msp_runtime_config),
                 "raw_imu_gyro_conversion": gyro_converter.metadata(),
+                "sitl_profile": (
+                    {}
+                    if config.get("sitl_profile") is None
+                    else {
+                        **dict(config["sitl_profile"]),
+                        "pilot_rc_runtime": (
+                            {} if sitl_pilot is None else sitl_pilot.stats()
+                        ),
+                    }
+                ),
             },
             kinematics={
                 "config": asdict(kinematics_config),
@@ -1806,6 +1849,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
         gc_pause_monitor.start()
         if platform_health is not None:
             platform_health.start()
+        if sitl_pilot is not None:
+            sitl_pilot.start()
         if msp_worker is not None:
             msp_worker.start()
         with DurableCsvLogger(
@@ -1833,6 +1878,11 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     worker_snapshot = msp_worker.snapshot(loop_start)
                     telemetry = worker_snapshot.telemetry
                     telemetry_error = worker_snapshot.telemetry_error
+                telemetry = _inject_sitl_telemetry(
+                    telemetry,
+                    config=config,
+                    timestamp_s=loop_start,
+                )
                 if telemetry is not None:
                     status_sample_s = telemetry.status_timestamp_s
                     if status_sample_s is None and telemetry.status is not None:
@@ -2020,6 +2070,19 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     else physical_rc_age_s is not None
                     and physical_rc_age_s <= msp_runtime_config.physical_rc_timeout_s
                 )
+                manual_rc_latched = bool(
+                    worker_snapshot is not None
+                    and worker_snapshot.manual_rc_latched
+                )
+                manual_rc_latch_age_s = (
+                    None
+                    if worker_snapshot is None
+                    else worker_snapshot.manual_rc_latch_age_s
+                )
+                rc_baseline_ready = bool(
+                    physical_rc_fresh
+                    or override_active and manual_rc_latched
+                )
                 tail_started = post_disarm_tail.update(
                     loop_start,
                     armed if telemetry_fresh else None,
@@ -2134,7 +2197,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and prefill_ready
                     and msp_response_fresh
                     and armed
-                    and physical_rc_fresh
+                    and rc_baseline_ready
                     and telemetry_fresh
                     and attitude_synced
                     and motor_interlock_state.ok
@@ -2143,11 +2206,18 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     and aux_enabled
                     and watchdog_ok
                 )
+                allow_setpoint_hold = bool(
+                    detector_stats.get("detector_reject_reason")
+                    in {"perception_no_new_result", "fusion_waiting_for_attitude"}
+                    and (
+                        intercept_runtime is None
+                        or runtime_result.controller.valid
+                    )
+                )
                 held_setpoint = setpoint_hold.update(
                     raw_setpoint,
                     timestamp=loop_start,
-                    allow_hold=detector_stats.get("detector_reject_reason")
-                    in {"perception_no_new_result", "fusion_waiting_for_attitude"},
+                    allow_hold=allow_setpoint_hold,
                     gate_open=command_gate_open,
                 )
                 gyro_age_s = (
@@ -2207,6 +2277,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         prefill_ready=prefill_ready,
                         msp_response_fresh=msp_response_fresh,
                         physical_rc_fresh=physical_rc_fresh,
+                        manual_rc_latched=manual_rc_latched,
                         snapshot_approved=authorization.approved,
                         config_conflict_free=(
                             authorization.config_conflict_free and msp_runtime_config.io_worker_enabled
@@ -2241,6 +2312,9 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         override_index=box_mode_index(box_ids, MSP_OVERRIDE_PERMANENT_ID),
                         physical_rc_age_s=physical_rc_age_s,
                         physical_rc_fresh=physical_rc_fresh,
+                        manual_rc_latched=manual_rc_latched,
+                        manual_rc_latch_age_s=manual_rc_latch_age_s,
+                        rc_baseline_ready=rc_baseline_ready,
                         authorization=authorization,
                         runtime_config=msp_runtime_config,
                         timestamp=loop_start,
@@ -2275,6 +2349,8 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         "takeover_duration_interlock_reason": takeover_duration_state.reason,
                         "takeover_duration_interlock_latched": int(takeover_duration_state.latched),
                         "physical_rc_fresh": int(physical_rc_fresh),
+                        "manual_rc_latched": int(manual_rc_latched),
+                        "rc_baseline_ready": int(rc_baseline_ready),
                         "watchdog_ok": int(watchdog_ok),
                         "kinematics_origin_locked": int(kinematic_state.origin_locked),
                         "kinematics_valid": int(kinematic_state.valid),
@@ -2501,6 +2577,51 @@ def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -
     if not isinstance(values, dict):
         raise RuntimeError("runtime_policy must be a mapping")
 
+    bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
+    flight_scope = str(dict(config.get("flight_profile", {})).get("scope", ""))
+    misplaced_simulated_fields = sorted(
+        key
+        for key in (
+            "simulated_vbat_v",
+            "simulated_voltage_provenance",
+            "simulated_telemetry_provenance",
+        )
+        if key in config
+    )
+    if misplaced_simulated_fields:
+        raise RuntimeError(
+            "simulated telemetry fields are restricted to sitl_profile: "
+            + ",".join(misplaced_simulated_fields)
+        )
+    sitl_values = config.get("sitl_profile")
+    if sitl_values is not None:
+        validate_loopback_sitl_config(config)
+        if not bool(getattr(args, "sitl_loopback", False)):
+            raise RuntimeError("SITL configuration requires the explicit --sitl-loopback flag")
+        if args.detector_source not in {"sitl_projected", "gazebo_yolo_bytetrack"}:
+            raise RuntimeError("SITL control requires a Gazebo detector source")
+        if dict(config.get("control_authorization", {})).get("enabled") is not False:
+            raise RuntimeError("SITL scope must not load a real-flight approval manifest")
+    elif bool(getattr(args, "sitl_loopback", False)):
+        raise RuntimeError("--sitl-loopback is restricted to a declared sitl_profile")
+    if bench_scope == "noprop_log_only":
+        if dict(config.get("bench_profile", {})).get("all_propellers_removed_required") is not True:
+            raise RuntimeError("noprop_log_only must declare all propellers removed")
+        if args.control_mode != "log_only" or bool(args.allow_control):
+            raise RuntimeError("noprop_log_only requires LOG_ONLY without --allow-control")
+        if not bool(getattr(args, "acknowledge_props_removed", False)):
+            raise RuntimeError(
+                "noprop_log_only requires --acknowledge-props-removed"
+            )
+        if int(dict(config.get("msp_runtime", {})).get("override_channels_mask", -1)) != 0:
+            raise RuntimeError("noprop_log_only requires override_channels_mask=0")
+    if flight_scope in ACTIVE_FLIGHT_SCOPES and (
+        args.control_mode != "msp_raw_rc" or not bool(args.allow_control)
+    ):
+        raise RuntimeError(
+            f"{flight_scope} requires --control-mode msp_raw_rc --allow-control"
+        )
+
     allowed = values.get("allowed_control_modes")
     if not isinstance(allowed, list) or not allowed:
         raise RuntimeError("runtime_policy.allowed_control_modes must be a non-empty list")
@@ -2520,15 +2641,13 @@ def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -
     if args.control_mode == "msp_raw_rc" and bool(args.allow_control) and not output_permitted:
         raise RuntimeError("configuration forbids MSP_SET_RAW_RC output")
 
-    bench_scope = str(dict(config.get("bench_profile", {})).get("scope", ""))
-    flight_scope = str(dict(config.get("flight_profile", {})).get("scope", ""))
     active_scope = flight_scope or bench_scope
     if (
         args.control_mode == "msp_raw_rc"
         and bool(args.allow_control)
         and active_scope in {
             "prop_rig_active",
-            "flight_noncollision_supervised_v2",
+            *ACTIVE_FLIGHT_SCOPES,
         }
     ):
         if getattr(args, "detector_source", "") != "rknn_bytetrack":
@@ -2544,6 +2663,181 @@ def _validate_runtime_policy(config: dict[str, Any], args: argparse.Namespace) -
             rknn_cpus,
             isolate_rknn_process=True,
         )
+
+
+def _validate_active_flight_configuration(
+    config: dict[str, Any],
+    *,
+    flight_scope: str,
+    msp_runtime_config: MspRuntimeConfig,
+    rc_mapping_config: RcMappingConfig,
+    takeover_duration_config: TakeoverDurationInterlockConfig,
+    thrust_mapping: Any,
+    thrust_model: VoltageThrottleThrustModel | None,
+) -> None:
+    if flight_scope not in ACTIVE_FLIGHT_SCOPES:
+        raise RuntimeError(f"unsupported active flight scope: {flight_scope}")
+    guidance_cfg = dict(config.get("guidance", {}))
+    velocity_cfg = dict(guidance_cfg.get("velocity_establishing_png", {}))
+    safety_cfg = dict(config.get("safety", {}))
+    profile_cfg = dict(config.get("flight_profile", {}))
+    policy_cfg = dict(config.get("runtime_policy", {}))
+    authorization_cfg = dict(config.get("control_authorization", {}))
+
+    if guidance_cfg.get("velocity_source") != "msp_kinematics":
+        raise RuntimeError(f"{flight_scope} requires velocity_source=msp_kinematics")
+    if msp_runtime_config.override_channels_mask != 15:
+        raise RuntimeError(f"{flight_scope} requires four-channel mask 15")
+    if int(profile_cfg.get("override_channels_mask", -1)) != 15:
+        raise RuntimeError(f"{flight_scope} flight profile requires four-channel mask 15")
+    if policy_cfg.get("required_authorization_scope") != flight_scope:
+        raise RuntimeError(f"{flight_scope} runtime authorization scope mismatch")
+    if (
+        authorization_cfg.get("enabled") is not True
+        or authorization_cfg.get("required_scope") != flight_scope
+    ):
+        raise RuntimeError(f"{flight_scope} control authorization scope mismatch")
+    if policy_cfg.get("allowed_control_modes") != ["msp_raw_rc"]:
+        raise RuntimeError(f"{flight_scope} must reject LOG_ONLY startup")
+    if authorization_cfg.get("manual_msp_loss_waiver_required") is not True:
+        raise RuntimeError(f"{flight_scope} requires the manual MSP-loss risk waiver")
+    if msp_runtime_config.throttle_relative_limit_us != 0:
+        raise RuntimeError(f"{flight_scope} forbids relative throttle limiting")
+    if (
+        msp_runtime_config.throttle_reference_min_us != 1200
+        or msp_runtime_config.throttle_reference_max_us != 1400
+        or msp_runtime_config.throttle_command_min_us != 1200
+        or msp_runtime_config.throttle_command_max_us != 1500
+        or not 0.0 < msp_runtime_config.throttle_slew_limit_us_per_s <= 600.0
+    ):
+        raise RuntimeError(f"{flight_scope} throttle envelope mismatch")
+    if (
+        rc_mapping_config.throttle_min_us != 1200
+        or rc_mapping_config.throttle_hover_us != 1275
+        or rc_mapping_config.throttle_max_us != 1500
+        or rc_mapping_config.yaw_command_limit_deg_s != 0.0
+    ):
+        raise RuntimeError(f"{flight_scope} RC throttle/Yaw mapping mismatch")
+    if any(
+        limit is None or not math.isclose(limit, 60.0, abs_tol=1.0e-9)
+        for limit in (
+            rc_mapping_config.roll_command_limit_deg_s,
+            rc_mapping_config.pitch_command_limit_deg_s,
+        )
+    ):
+        raise RuntimeError("active flight Roll/Pitch limits must be exactly 60 deg/s")
+    if (
+        not math.isclose(
+            float(guidance_cfg.get("max_guidance_accel_mps2", math.nan)),
+            7.0,
+            abs_tol=1.0e-9,
+        )
+        or not math.isclose(
+            float(velocity_cfg.get("total_accel_limit_m_s2", math.nan)),
+            7.0,
+            abs_tol=1.0e-9,
+        )
+    ):
+        raise RuntimeError("active flight total guidance acceleration must be exactly 7 m/s2")
+    if int(velocity_cfg.get("acquire_consecutive_frames", 0)) != 3:
+        raise RuntimeError("active flight requires three acquisition frames")
+    if not math.isclose(
+        float(velocity_cfg.get("detection_result_age_limit_s", math.nan)),
+        0.20,
+        abs_tol=1.0e-9,
+    ):
+        raise RuntimeError(
+            "active flight requires a 0.20 s detection result-age limit"
+        )
+    entry_handoff_cfg = dict(dict(config.get("guidance_command", {})).get("entry_handoff", {}))
+    if (
+        entry_handoff_cfg.get("enabled") is not True
+        or entry_handoff_cfg.get("rate_source") != "gyro"
+        or not math.isclose(
+            float(entry_handoff_cfg.get("duration_s", math.nan)),
+            0.8,
+            abs_tol=1.0e-9,
+        )
+    ):
+        raise RuntimeError("active flight requires the exact 0.8 s gyro handoff")
+    if (
+        not thrust_mapping.enabled
+        or thrust_mapping.model != "voltage_throttle_lut"
+        or thrust_model is None
+    ):
+        raise RuntimeError(
+            "active flight requires a hash-bound, validated voltage/throttle thrust LUT"
+        )
+    if thrust_model.minimum_voltage_v > 22.0 or thrust_model.maximum_voltage_v < 25.2:
+        raise RuntimeError("active flight thrust LUT must cover 22.0-25.2 V")
+    if not bool(safety_cfg.get("require_acro_rate_mode", False)):
+        raise RuntimeError("active flight requires Acro/Rate mode")
+    if (
+        float(safety_cfg.get("min_vbat_v", math.nan)) != 22.0
+        or float(safety_cfg.get("max_vbat_v", math.nan)) != 25.2
+    ):
+        raise RuntimeError("active flight requires the exact 22.0-25.2 V envelope")
+
+    if (
+        not takeover_duration_config.enabled
+        or not math.isclose(
+            float(takeover_duration_config.max_duration_s),
+            0.9,
+            abs_tol=1.0e-9,
+        )
+        or not takeover_duration_config.latch_until_disarm
+        or takeover_duration_config.max_takeovers_per_arm != 1
+        or takeover_duration_config.rearm_release_s != 0.0
+        or not math.isclose(
+            float(profile_cfg.get("max_takeover_duration_s", math.nan)),
+            0.9,
+            abs_tol=1.0e-9,
+        )
+        or not math.isclose(
+            float(profile_cfg.get("operator_target_takeover_duration_s", math.nan)),
+            0.5,
+            abs_tol=1.0e-9,
+        )
+        or int(profile_cfg.get("max_takeovers_per_arm", 0)) != 1
+    ):
+        raise RuntimeError(
+            f"{flight_scope} requires a 0.9 s, one-takeover, DISARM-latched interlock"
+        )
+
+    engagement_policy = str(velocity_cfg.get("engagement_policy", ""))
+    if flight_scope == NONCOLLISION_FLIGHT_SCOPE:
+        if engagement_policy != "noncollision":
+            raise RuntimeError("non-collision active flight requires noncollision policy")
+        return
+
+    risk_cfg = dict(config.get("contact_risk_policy", {}))
+    if engagement_policy != "contact":
+        raise RuntimeError("contact active flight requires contact policy")
+    if (
+        risk_cfg.get("intentional_contact") is not True
+        or risk_cfg.get("explicit_risk_waiver_required") is not True
+    ):
+        raise RuntimeError(
+            f"{flight_scope} requires an explicit intentional-contact acknowledgement"
+        )
+    expected_terminal = {
+        "detection_timeout_s": 0.25,
+        "contact_bbox_terminal_ratio": 0.05,
+        "contact_ttc_terminal_s": 1.0,
+        "contact_bbox_complete_ratio": 0.25,
+        "blind_hold_s": 0.20,
+        "terminal_reacquire_frames": 2,
+        "area_ttc_min_samples": 7,
+        "area_ttc_min_span_s": 0.3,
+    }
+    for name, expected in expected_terminal.items():
+        actual = velocity_cfg.get(name)
+        if isinstance(expected, int):
+            matches = int(actual) == expected
+        else:
+            matches = math.isclose(float(actual), expected, abs_tol=1.0e-9)
+        if not matches:
+            raise RuntimeError(f"contact terminal parameter mismatch: {name}")
 
 
 def _guidance_evaluator(
@@ -2654,6 +2948,9 @@ def _velocity_establishing_config(
             png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
             acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
             detection_timeout_s=float(raw.get("detection_timeout_s", 0.15)),
+            detection_result_age_limit_s=float(
+                raw.get("detection_result_age_limit_s", 0.20)
+            ),
             velocity_timeout_s=float(raw.get("velocity_timeout_s", 0.5)),
             los_prediction_max_s=float(raw.get("los_prediction_max_s", 0.0)),
             gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),
@@ -2771,6 +3068,7 @@ def _velocity_establishing_log_stats(
         "intercept_velocity_source": velocity_source,
         "intercept_velocity_reason": velocity_reason,
         "intercept_detection_age_s": output.detection_age_s,
+        "intercept_detection_update_age_s": output.detection_update_age_s,
         "intercept_velocity_age_s": output.velocity_age_s,
         "intercept_prediction_horizon_s": output.los_prediction_horizon_s,
         "intercept_acquire_count": output.acquire_count,
@@ -3053,6 +3351,20 @@ def _create_detection_source(
         return OpenCvCameraSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "yolo_bytetrack":
         return OpenCvYoloSource(args, config, preview_sink=preview_sink)
+    if args.detector_source == "sitl_projected":
+        sitl = validate_loopback_sitl_config(config)
+        return GazeboProjectedDetectionSource(
+            world=str(args.sitl_world),
+            interceptor_model=str(args.sitl_interceptor_model),
+            target_model=str(args.sitl_target_model),
+            intrinsics=_camera_intrinsics(config),
+            R_BC=_camera_mount(config),
+            target_size_m=sitl.get("target_size_m", [0.55, 0.55, 0.20]),
+            detection_latency_s=float(sitl["projected_detection_latency_s"]),
+        )
+    if args.detector_source == "gazebo_yolo_bytetrack":
+        validate_loopback_sitl_config(config)
+        return GazeboYoloSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_native":
         return OpenCvRknnSource(args, config, preview_sink=preview_sink)
     if args.detector_source == "rknn_bytetrack":
@@ -3083,7 +3395,7 @@ def _initialize_runtime_resources(
         resources.enter_context(
             ExclusiveResourceLock(f"serial:{serial_port}", lock_directory=lock_directory)
         )
-        if args.detector_source not in {"none", "csv"}:
+        if args.detector_source not in {"none", "csv", "sitl_projected"}:
             camera = dict(config.get("camera", {}))
             requested_device = getattr(args, "camera_device", "")
             camera_device = requested_device or camera.get("device", 0)
@@ -3097,7 +3409,11 @@ def _initialize_runtime_resources(
         adapter = BetaflightMSPAdapter(serial_port, baudrate, timeout_s=timeout_s)
         adapter.open()
         resources.callback(adapter.close)
-        fc_identity = _read_fc_identity(adapter)
+        fc_identity = _read_fc_identity(
+            adapter,
+            attempts=20 if config.get("sitl_profile") is not None else 1,
+            retry_delay_s=0.1,
+        )
         gyro_converter = bind_msp_raw_imu_gyro(
             msp_runtime_config.raw_imu_gyro,
             fc_identity,
@@ -3113,14 +3429,35 @@ def _initialize_runtime_resources(
                 f"{gyro_converter.reason}"
             )
         box_ids, box_ids_error = _read_box_ids(adapter)
-        authorization = resolve_control_authorization(
-            dict(config.get("control_authorization", {})),
-            fc_identity=fc_identity,
-            box_ids=box_ids,
-            parameters_path=args.config,
-            repository_commit=_git_commit(),
-            repository_dirty=_git_dirty(),
-        )
+        sitl_pilot = None
+        if config.get("sitl_profile") is not None:
+            sitl = validate_loopback_sitl_config(config)
+            sitl_pilot = SitlPilotRcScheduler(
+                SitlPilotRcConfig.from_mapping(dict(sitl.get("pilot_rc", {})))
+            )
+            resources.callback(sitl_pilot.close)
+            authorization = ControlAuthorizationStatus(
+                approved=True,
+                reason="sitl_loopback_scope",
+                config_conflict_free=True,
+                scope=str(sitl["scope"]),
+                parameters_path=str(Path(args.config).resolve()),
+                parameters_sha256=_sha256_path(Path(args.config)),
+            )
+        else:
+            authorization = resolve_control_authorization(
+                dict(config.get("control_authorization", {})),
+                fc_identity=fc_identity,
+                box_ids=box_ids,
+                parameters_path=args.config,
+                repository_commit=_git_commit(),
+                repository_dirty=_git_dirty(),
+            )
+        if control_output_requested and not authorization.approved:
+            raise RuntimeError(
+                "active control authorization rejected: "
+                f"{authorization.reason}"
+            )
         if (
             args.control_mode == "msp_raw_rc"
             and args.allow_control
@@ -3168,6 +3505,7 @@ def _initialize_runtime_resources(
             box_ids_error,
             authorization,
             msp_worker,
+            sitl_pilot,
             detection_source,
             evidence_recorder,
         )
@@ -3181,20 +3519,32 @@ def _detector_metadata(detection_source: Any) -> dict[str, Any]:
     return metadata() if callable(metadata) else {}
 
 
-def _read_fc_identity(adapter: BetaflightMSPAdapter) -> dict[str, Any]:
+def _read_fc_identity(
+    adapter: BetaflightMSPAdapter,
+    *,
+    attempts: int = 1,
+    retry_delay_s: float = 0.0,
+) -> dict[str, Any]:
+    if attempts < 1:
+        raise ValueError("FC identity attempts must be positive")
     identity: dict[str, Any] = {}
-    try:
-        api = adapter.read_api_version()
-        identity["api_protocol_version"] = api.protocol_version
-        identity["api_major"] = api.api_major
-        identity["api_minor"] = api.api_minor
-        identity["fc_variant"] = adapter.read_fc_variant()
-        version = adapter.read_fc_version()
-        identity["fc_version_major"] = version.major
-        identity["fc_version_minor"] = version.minor
-        identity["fc_version_patch"] = version.patch
-    except Exception as exc:
-        identity["fc_identity_error"] = str(exc)
+    for attempt in range(attempts):
+        identity = {}
+        try:
+            api = adapter.read_api_version()
+            identity["api_protocol_version"] = api.protocol_version
+            identity["api_major"] = api.api_major
+            identity["api_minor"] = api.api_minor
+            identity["fc_variant"] = adapter.read_fc_variant()
+            version = adapter.read_fc_version()
+            identity["fc_version_major"] = version.major
+            identity["fc_version_minor"] = version.minor
+            identity["fc_version_patch"] = version.patch
+            return identity
+        except Exception as exc:
+            identity["fc_identity_error"] = str(exc)
+            if attempt + 1 < attempts and retry_delay_s > 0.0:
+                time.sleep(retry_delay_s)
     return identity
 
 
@@ -3212,6 +3562,30 @@ def _read_telemetry(adapter: BetaflightMSPAdapter) -> tuple[BetaflightTelemetry 
         return None, str(exc)
 
 
+def _inject_sitl_telemetry(
+    telemetry: BetaflightTelemetry | None,
+    *,
+    config: dict[str, Any],
+    timestamp_s: float,
+) -> BetaflightTelemetry | None:
+    """Inject explicitly declared simulator-only values after MSP decoding."""
+    if telemetry is None or config.get("sitl_profile") is None:
+        return telemetry
+    profile = validate_loopback_sitl_config(config)
+    existing = telemetry.analog
+    analog = AnalogTelemetry(
+        vbat_v=float(profile["simulated_vbat_v"]),
+        mah_drawn=None if existing is None else existing.mah_drawn,
+        rssi=None if existing is None else existing.rssi,
+        amperage_a=None if existing is None else existing.amperage_a,
+    )
+    return replace(
+        telemetry,
+        analog=analog,
+        analog_timestamp_s=float(timestamp_s),
+    )
+
+
 def _msp_log_stats(
     adapter: BetaflightMSPAdapter,
     worker_snapshot,
@@ -3222,6 +3596,9 @@ def _msp_log_stats(
     override_index: int | None,
     physical_rc_age_s: float | None,
     physical_rc_fresh: bool,
+    manual_rc_latched: bool,
+    manual_rc_latch_age_s: float | None,
+    rc_baseline_ready: bool,
     authorization,
     runtime_config: MspRuntimeConfig,
     timestamp: float,
@@ -3234,6 +3611,11 @@ def _msp_log_stats(
         "msp_override_mode_index": "" if override_index is None else override_index,
         "physical_rc_age_s": "" if physical_rc_age_s is None else physical_rc_age_s,
         "physical_rc_fresh": int(physical_rc_fresh),
+        "manual_rc_latched": int(manual_rc_latched),
+        "manual_rc_latch_age_s": (
+            "" if manual_rc_latch_age_s is None else manual_rc_latch_age_s
+        ),
+        "rc_baseline_ready": int(rc_baseline_ready),
         "control_snapshot_approved": int(authorization.approved),
         "control_authorization_reason": authorization.reason,
         "config_conflict_free": int(authorization.config_conflict_free),
@@ -3282,6 +3664,8 @@ def _msp_log_stats(
         "msp_algorithm_authorized": "",
         "msp_worker_override_active": "",
         "msp_prefill_ready": "",
+        "msp_manual_rc_latched": "",
+        "msp_manual_rc_latch_age_s": "",
         "msp_prefill_success_count": "",
         "msp_passthrough_send_count": "",
         "msp_algorithm_send_count": "",
@@ -3354,6 +3738,12 @@ def _msp_log_stats(
             msp_algorithm_authorized=int(worker_snapshot.algorithm_authorized),
             msp_worker_override_active=int(worker_snapshot.override_active),
             msp_prefill_ready=int(worker_snapshot.prefill_ready),
+            msp_manual_rc_latched=int(worker_snapshot.manual_rc_latched),
+            msp_manual_rc_latch_age_s=(
+                ""
+                if worker_snapshot.manual_rc_latch_age_s is None
+                else worker_snapshot.manual_rc_latch_age_s
+            ),
             msp_prefill_success_count=worker_snapshot.prefill_success_count,
             msp_passthrough_send_count=worker_snapshot.passthrough_send_count,
             msp_algorithm_send_count=worker_snapshot.algorithm_send_count,
@@ -3808,6 +4198,9 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_override_mode_index",
         "physical_rc_age_s",
         "physical_rc_fresh",
+        "manual_rc_latched",
+        "manual_rc_latch_age_s",
+        "rc_baseline_ready",
         "control_snapshot_approved",
         "control_authorization_reason",
         "config_conflict_free",
@@ -3848,6 +4241,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "msp_algorithm_authorized",
         "msp_worker_override_active",
         "msp_prefill_ready",
+        "msp_manual_rc_latched",
+        "msp_manual_rc_latch_age_s",
         "msp_prefill_success_count",
         "msp_passthrough_send_count",
         "msp_algorithm_send_count",
@@ -4011,6 +4406,34 @@ def _log_fields(channel_count: int) -> list[str]:
         "camera_reported_fps",
         "camera_reported_fourcc",
         "camera_failed_frames",
+        "sitl_interceptor_simulation_time_s",
+        "sitl_interceptor_truth_age_s",
+        "sitl_interceptor_position_enu_x_m",
+        "sitl_interceptor_position_enu_y_m",
+        "sitl_interceptor_position_enu_z_m",
+        "sitl_interceptor_velocity_enu_x_m_s",
+        "sitl_interceptor_velocity_enu_y_m_s",
+        "sitl_interceptor_velocity_enu_z_m_s",
+        "sitl_target_simulation_time_s",
+        "sitl_target_truth_age_s",
+        "sitl_target_position_enu_x_m",
+        "sitl_target_position_enu_y_m",
+        "sitl_target_position_enu_z_m",
+        "sitl_target_velocity_enu_x_m_s",
+        "sitl_target_velocity_enu_y_m_s",
+        "sitl_target_velocity_enu_z_m_s",
+        "sitl_expected_velocity_ned_n_m_s",
+        "sitl_expected_velocity_ned_e_m_s",
+        "sitl_expected_velocity_ned_d_m_s",
+        "sitl_interceptor_roll_frd_deg",
+        "sitl_interceptor_pitch_frd_deg",
+        "sitl_interceptor_yaw_ned_deg",
+        "sitl_expected_msp_roll_deg",
+        "sitl_expected_msp_pitch_deg",
+        "sitl_expected_msp_yaw_deg",
+        "sitl_target_depth_m",
+        "sitl_projected_bbox_center_x",
+        "sitl_projected_bbox_center_y",
         "frame_id",
         "detection_exposure_ts",
         "detection_score",
@@ -4057,6 +4480,7 @@ def _log_fields(channel_count: int) -> list[str]:
         "intercept_velocity_source",
         "intercept_velocity_reason",
         "intercept_detection_age_s",
+        "intercept_detection_update_age_s",
         "intercept_velocity_age_s",
         "intercept_prediction_horizon_s",
         "intercept_acquire_count",
@@ -4312,6 +4736,11 @@ def _log_row(
         "msp_override_mode_index": detector_stats.get("msp_override_mode_index", ""),
         "physical_rc_age_s": _stats_float(detector_stats, "physical_rc_age_s", precision=6),
         "physical_rc_fresh": detector_stats.get("physical_rc_fresh", ""),
+        "manual_rc_latched": detector_stats.get("manual_rc_latched", ""),
+        "manual_rc_latch_age_s": _stats_float(
+            detector_stats, "manual_rc_latch_age_s", precision=6
+        ),
+        "rc_baseline_ready": detector_stats.get("rc_baseline_ready", ""),
         "control_snapshot_approved": detector_stats.get("control_snapshot_approved", ""),
         "control_authorization_reason": detector_stats.get("control_authorization_reason", ""),
         "config_conflict_free": detector_stats.get("config_conflict_free", ""),
@@ -4378,6 +4807,10 @@ def _log_row(
         "msp_algorithm_authorized": detector_stats.get("msp_algorithm_authorized", ""),
         "msp_worker_override_active": detector_stats.get("msp_worker_override_active", ""),
         "msp_prefill_ready": detector_stats.get("msp_prefill_ready", ""),
+        "msp_manual_rc_latched": detector_stats.get("msp_manual_rc_latched", ""),
+        "msp_manual_rc_latch_age_s": _stats_float(
+            detector_stats, "msp_manual_rc_latch_age_s", precision=6
+        ),
         "msp_prefill_success_count": detector_stats.get("msp_prefill_success_count", ""),
         "msp_passthrough_send_count": detector_stats.get("msp_passthrough_send_count", ""),
         "msp_algorithm_send_count": detector_stats.get("msp_algorithm_send_count", ""),
@@ -4604,6 +5037,39 @@ def _log_row(
         "camera_reported_fps": _stats_float(detector_stats, "camera_reported_fps", precision=3),
         "camera_reported_fourcc": detector_stats.get("camera_reported_fourcc", ""),
         "camera_failed_frames": detector_stats.get("camera_failed_frames", ""),
+        **{
+            key: _stats_float(detector_stats, key, precision=9)
+            for key in (
+                "sitl_interceptor_simulation_time_s",
+                "sitl_interceptor_truth_age_s",
+                "sitl_interceptor_position_enu_x_m",
+                "sitl_interceptor_position_enu_y_m",
+                "sitl_interceptor_position_enu_z_m",
+                "sitl_interceptor_velocity_enu_x_m_s",
+                "sitl_interceptor_velocity_enu_y_m_s",
+                "sitl_interceptor_velocity_enu_z_m_s",
+                "sitl_target_simulation_time_s",
+                "sitl_target_truth_age_s",
+                "sitl_target_position_enu_x_m",
+                "sitl_target_position_enu_y_m",
+                "sitl_target_position_enu_z_m",
+                "sitl_target_velocity_enu_x_m_s",
+                "sitl_target_velocity_enu_y_m_s",
+                "sitl_target_velocity_enu_z_m_s",
+                "sitl_expected_velocity_ned_n_m_s",
+                "sitl_expected_velocity_ned_e_m_s",
+                "sitl_expected_velocity_ned_d_m_s",
+                "sitl_interceptor_roll_frd_deg",
+                "sitl_interceptor_pitch_frd_deg",
+                "sitl_interceptor_yaw_ned_deg",
+                "sitl_expected_msp_roll_deg",
+                "sitl_expected_msp_pitch_deg",
+                "sitl_expected_msp_yaw_deg",
+                "sitl_target_depth_m",
+                "sitl_projected_bbox_center_x",
+                "sitl_projected_bbox_center_y",
+            )
+        },
         "frame_id": "" if detection is None else detection.frame_id,
         "detection_exposure_ts": "" if detection is None else f"{detection.exposure_ts:.6f}",
         "detection_score": "" if detection is None else f"{detection.score:.6f}",
@@ -4660,6 +5126,9 @@ def _log_row(
         "intercept_velocity_reason": detector_stats.get("intercept_velocity_reason", ""),
         "intercept_detection_age_s": _stats_float(
             detector_stats, "intercept_detection_age_s", precision=6
+        ),
+        "intercept_detection_update_age_s": _stats_float(
+            detector_stats, "intercept_detection_update_age_s", precision=6
         ),
         "intercept_velocity_age_s": _stats_float(
             detector_stats, "intercept_velocity_age_s", precision=6

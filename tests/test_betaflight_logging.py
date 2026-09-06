@@ -139,6 +139,47 @@ class _FakeCv2:
 
 
 class BetaflightLoggingTest(unittest.TestCase):
+    def test_sitl_voltage_injection_is_explicit_and_preserves_real_telemetry(self):
+        telemetry = BetaflightTelemetry(
+            timestamp=10.0,
+            analog=AnalogTelemetry(
+                vbat_v=0.0,
+                mah_drawn=12,
+                rssi=900,
+                amperage_a=1.25,
+            ),
+            analog_timestamp_s=9.9,
+        )
+        real = runner._inject_sitl_telemetry(
+            telemetry,
+            config={},
+            timestamp_s=11.0,
+        )
+        sitl = runner._inject_sitl_telemetry(
+            telemetry,
+            config={
+                "serial": {"port": "socket://127.0.0.1:5761"},
+                "control_authorization": {"enabled": False},
+                "sitl_profile": {
+                    "scope": "betaflight_sitl_loopback_v1",
+                    "loopback_only": True,
+                    "simulated_telemetry_provenance": "gazebo_truth",
+                    "simulated_vbat_v": 23.6,
+                    "simulated_voltage_provenance": "sitl_config_only",
+                    "projected_detection_latency_s": 0.04,
+                    "pilot_rc": {},
+                },
+            },
+            timestamp_s=11.0,
+        )
+
+        self.assertIs(real, telemetry)
+        self.assertEqual(sitl.analog.vbat_v, 23.6)
+        self.assertEqual(sitl.analog.mah_drawn, 12)
+        self.assertEqual(sitl.analog.rssi, 900)
+        self.assertEqual(sitl.analog.amperage_a, 1.25)
+        self.assertEqual(sitl.analog_timestamp_s, 11.0)
+
     def test_csv_source_wait_does_not_report_a_new_empty_detection(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             path = Path(tmpdir) / "detections.csv"
@@ -974,7 +1015,7 @@ class BetaflightLoggingTest(unittest.TestCase):
             self.assertEqual(data["config"]["serial"]["port"], "/dev/null")
             self.assertEqual(data["fields"], ["timestamp", "mode_flags"])
             self.assertEqual(data["fc_identity"]["fc_variant"], "BTFL")
-            self.assertEqual(data["log_schema_version"], 21)
+            self.assertEqual(data["log_schema_version"], 23)
             self.assertFalse(data["kinematics"]["control_connected"])
             self.assertTrue(data["runtime_diagnostics"]["python_gc_pause_monitor"])
             self.assertIn("repository_dirty", data)

@@ -1,5 +1,8 @@
 import struct
+import sys
+import types
 import unittest
+from unittest import mock
 
 import numpy as np
 
@@ -72,6 +75,30 @@ class FakeTransport:
 
 
 class BetaflightMSPTest(unittest.TestCase):
+    def test_adapter_opens_serial_device_through_serial_for_url(self):
+        transport = FakeTransport([])
+        serial_module = types.SimpleNamespace(
+            serial_for_url=mock.Mock(return_value=transport)
+        )
+        adapter = BetaflightMSPAdapter(
+            "socket://127.0.0.1:5761",
+            baudrate=115200,
+            timeout_s=0.05,
+        )
+
+        with mock.patch.dict(sys.modules, {"serial": serial_module}):
+            adapter.open()
+
+        serial_module.serial_for_url.assert_called_once_with(
+            "socket://127.0.0.1:5761",
+            baudrate=115200,
+            timeout=0.05,
+            write_timeout=0.05,
+        )
+        self.assertIs(adapter.transport, transport)
+        adapter.close()
+        self.assertTrue(transport.closed)
+
     def test_parses_raw_gps_units_signs_and_optional_hdop(self):
         payload = struct.pack(
             "<BBiiHHHH", 2, 17, 374221234, -1220845678, 40000, 456, 2712, 85

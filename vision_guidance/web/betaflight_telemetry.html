@@ -176,7 +176,7 @@
           <div class="gate"><label>Override / RC7</label><output id="gateOverride" class="unknown">--</output></div>
           <div class="gate"><label>RC Prefill</label><output id="gatePrefill" class="unknown">--</output></div>
           <div class="gate"><label>SET ACK</label><output id="gateSetAck" class="unknown">--</output></div>
-          <div class="gate"><label>Physical RC</label><output id="gatePhysicalRc" class="unknown">--</output></div>
+          <div class="gate"><label>RC Baseline</label><output id="gatePhysicalRc" class="unknown">--</output></div>
           <div class="gate"><label>MSP Telemetry</label><output id="gateTelemetry" class="unknown">--</output></div>
           <div class="gate"><label>Attitude Sync</label><output id="gateAttitude" class="unknown">--</output></div>
           <div class="gate"><label>Voltage</label><output id="gateVoltage" class="unknown">--</output></div>
@@ -246,7 +246,7 @@
           <div class="metric"><label>Rate input frame</label><output id="rateInputFrame">--</output></div>
           <div class="metric"><label>Intercept phase</label><output id="interceptPhase">--</output></div>
           <div class="metric"><label>Velocity source</label><output id="interceptVelocitySource">--</output></div>
-          <div class="metric"><label>Detection / velocity age</label><output id="interceptAges">--</output></div>
+          <div class="metric"><label>Exposure / update / velocity age</label><output id="interceptAges">--</output></div>
           <div class="metric"><label>LOS speed</label><output id="interceptLosSpeed">--</output></div>
           <div class="metric"><label>Speed accel N/E/D</label><output id="interceptSpeedAccel">--</output></div>
           <div class="metric"><label>PNG accel N/E/D</label><output id="interceptPngAccel">--</output></div>
@@ -435,7 +435,14 @@
       setGate("gateOverride", safety.override_active, "ACTIVE", safety.override_available === false ? "UNAVAILABLE" : "MANUAL", safety.override_available === false ? "fail" : "wait");
       setGate("gatePrefill", safety.prefill_ready, "READY", "WAITING");
       setGate("gateSetAck", safety.msp_response_fresh, "FRESH", "STALE", "fail");
-      setGate("gatePhysicalRc", safety.physical_rc_fresh, "FRESH", "STALE", "fail");
+      setGate(
+        "gatePhysicalRc",
+        safety.rc_baseline_ready,
+        safety.physical_rc_fresh ? "LIVE" : safety.manual_rc_latched ? "LATCHED" : "READY",
+        "MISSING",
+        "fail"
+      );
+      $("gatePhysicalRc").title = `physical_fresh=${text(safety.physical_rc_fresh)} / manual_latched=${text(safety.manual_rc_latched)} / latch_age=${number(safety.manual_rc_latch_age_s, 3, " s")}`;
       setGate("gateTelemetry", safety.telemetry_fresh, "FRESH", "STALE", "fail");
       setGate("gateAttitude", safety.attitude_synced, "SYNCED", "STALE", "fail");
       setGate("gateVoltage", safety.voltage_ok, "OK", "LOW", "fail");
@@ -586,7 +593,7 @@
       setMetric("rateInputFrame", text(path(data, ["guidance", "rate_gain_input_frame"])));
       setMetric("interceptPhase", `${text(intercept.phase)} / ${text(intercept.reason)}`);
       setMetric("interceptVelocitySource", `${text(intercept.velocity_source)} / ${text(intercept.velocity_reason)}`);
-      setMetric("interceptAges", `${number(intercept.detection_age_s, 3, " s")} / ${number(intercept.velocity_age_s, 3, " s")}`);
+      setMetric("interceptAges", `${number(intercept.detection_age_s, 3, " s")} / ${number(intercept.detection_update_age_s, 3, " s")} / ${number(intercept.velocity_age_s, 3, " s")}`);
       setMetric("interceptLosSpeed", number(intercept.los_speed_m_s, 2, " m/s"));
       setMetric("interceptSpeedAccel", formatVector(intercept.speed_acceleration_ned_m_s2, 2));
       setMetric("interceptPngAccel", formatVector(intercept.png_acceleration_ned_m_s2, 2));

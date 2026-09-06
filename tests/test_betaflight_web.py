@@ -138,6 +138,10 @@ class BetaflightWebTest(unittest.TestCase):
             "armed": "0",
             "msp_override_available": "1",
             "msp_override_active": "0",
+            "physical_rc_fresh": "0",
+            "manual_rc_latched": "1",
+            "manual_rc_latch_age_s": "0.8",
+            "rc_baseline_ready": "1",
             "msp_transport_mode": "async_pipeline",
             "msp_set_raw_rc_write_success_count": "100",
             "msp_set_raw_rc_ack_count": "99",
@@ -170,6 +174,7 @@ class BetaflightWebTest(unittest.TestCase):
             "intercept_velocity_source": "bench_zero_velocity",
             "intercept_velocity_reason": "bench_zero_velocity",
             "intercept_detection_age_s": "0.04",
+            "intercept_detection_update_age_s": "0.01",
             "intercept_velocity_age_s": "0.0",
             "intercept_prediction_horizon_s": "0.04",
             "intercept_acquire_count": "3",
@@ -372,6 +377,10 @@ class BetaflightWebTest(unittest.TestCase):
         self.assertFalse(payload["safety"]["armed"])
         self.assertTrue(payload["safety"]["target_valid"])
         self.assertTrue(payload["safety"]["msp_response_fresh"])
+        self.assertFalse(payload["safety"]["physical_rc_fresh"])
+        self.assertTrue(payload["safety"]["manual_rc_latched"])
+        self.assertEqual(payload["safety"]["manual_rc_latch_age_s"], 0.8)
+        self.assertTrue(payload["safety"]["rc_baseline_ready"])
         self.assertEqual(payload["msp"]["transport_mode"], "async_pipeline")
         self.assertEqual(payload["msp"]["set_raw_rc"]["ack_count"], 99)
         self.assertEqual(payload["msp"]["set_raw_rc"]["write_rate_hz"], 49.9)
@@ -442,6 +451,7 @@ class BetaflightWebTest(unittest.TestCase):
         intercept = payload["guidance"]["intercept"]
         self.assertEqual(intercept["phase"], "TRACKING")
         self.assertEqual(intercept["velocity_source"], "bench_zero_velocity")
+        self.assertEqual(intercept["detection_update_age_s"], 0.01)
         self.assertEqual(intercept["velocity_reference_raw_ned_m_s"], [3.0, 4.0, -1.0])
         self.assertEqual(intercept["velocity_reference_ned_m_s"], [1.0, 2.0, -0.5])
         self.assertEqual(intercept["png_acceleration_ned_m_s2"], [0.4, 0.5, 0.0])

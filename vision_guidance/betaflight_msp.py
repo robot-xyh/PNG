@@ -460,9 +460,11 @@ class BetaflightMSPAdapter:
             import serial  # type: ignore
         except ImportError as exc:
             raise RuntimeError("pyserial is required for Betaflight MSP. Install with: python3 -m pip install pyserial") from exc
-        self.transport = serial.Serial(
+        # serial_for_url preserves ordinary /dev/tty* handling while allowing
+        # pyserial's socket:// transport for the loopback-only SITL runner.
+        self.transport = serial.serial_for_url(
             self.port,
-            self.baudrate,
+            baudrate=self.baudrate,
             timeout=self.timeout_s,
             write_timeout=self.timeout_s,
         )

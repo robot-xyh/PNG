@@ -32,12 +32,17 @@ from .betaflight_msp import (
     parse_rc_channels,
     parse_status,
 )
+from .betaflight_sitl import revalidate_bound_sitl_evidence
 from .flight_control import RcCommand
 from .runtime_evidence import verify_evidence_frame_index
 
 
 MSP_OVERRIDE_PERMANENT_ID = 50
 MSP_GYRO_AXIS_NAMES = ("x", "y", "z")
+SITL_POLICY_BY_FLIGHT_SCOPE = {
+    "flight_noncollision_short_supervised_v3": "noncollision",
+    "flight_contact_short_supervised_v2": "contact",
+}
 
 
 @dataclass(frozen=True)
@@ -317,6 +322,8 @@ class MspWorkerSnapshot:
     motor_age_s: float | None
     physical_rc_age_s: float | None
     physical_rc_fresh: bool
+    manual_rc_latched: bool
+    manual_rc_latch_age_s: float | None
     poll_count: int
     poll_error_count: int
     staged_count: int
@@ -419,6 +426,16 @@ def resolve_control_authorization(
     required_scope = str(values.get("required_scope", "")).strip()
     if required_scope and scope != required_scope:
         return ControlAuthorizationStatus(False, "authorization_scope_mismatch", str(approval_path), scope=scope)
+    if (
+        bool(values.get("unbounded_takeover_waiver_required", False))
+        and approval.get("unbounded_takeover_waiver") is not True
+    ):
+        return ControlAuthorizationStatus(
+            False,
+            "unbounded_takeover_waiver_missing",
+            str(approval_path),
+            scope=scope,
+        )
     if bool(values.get("software_binding_required", False)):
         binding = approval.get("software_binding")
         if not isinstance(binding, dict):
@@ -508,6 +525,81 @@ def resolve_control_authorization(
             parameters_path=str(resolved_parameters_path),
             parameters_sha256=actual_parameters_sha,
         )
+    if bool(values.get("sitl_evidence_required", False)):
+        sitl_evidence = approval.get("sitl_evidence")
+        if not isinstance(sitl_evidence, list):
+            return ControlAuthorizationStatus(
+                False,
+                "sitl_evidence_missing",
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
+        expected_policy = SITL_POLICY_BY_FLIGHT_SCOPE.get(scope)
+        if expected_policy is None:
+            reason = "unsupported authorization scope for SIL evidence"
+        else:
+            try:
+                revalidate_bound_sitl_evidence(
+                    sitl_evidence,
+                    runtime_config_sha256=actual_parameters_sha,
+                    expected_engagement_policy=expected_policy,
+                    repository_commit=repository_commit,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                reason = str(exc)
+            else:
+                reason = ""
+        if reason:
+            return ControlAuthorizationStatus(
+                False,
+                f"sitl_evidence_invalid:{reason}",
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
+    if bool(values.get("manual_msp_loss_waiver_required", False)):
+        waiver = approval.get("manual_msp_loss_waiver")
+        if (
+            not isinstance(waiver, dict)
+            or waiver.get("acknowledged") is not True
+            or waiver.get("scope") != scope
+            or waiver.get("parameters_sha256") != actual_parameters_sha
+        ):
+            return ControlAuthorizationStatus(
+                False,
+                "manual_msp_loss_waiver_missing_or_mismatched",
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
+    if bool(values.get("intentional_contact_acknowledgement_required", False)):
+        acknowledgement = approval.get("intentional_contact_acknowledgement")
+        if (
+            not isinstance(acknowledgement, dict)
+            or acknowledgement.get("acknowledged") is not True
+            or acknowledgement.get("scope") != scope
+            or acknowledgement.get("parameters_sha256") != actual_parameters_sha
+        ):
+            return ControlAuthorizationStatus(
+                False,
+                "intentional_contact_acknowledgement_missing_or_mismatched",
+                str(approval_path),
+                str(snapshot_path),
+                actual_sha,
+                scope=scope,
+                parameters_path=str(resolved_parameters_path),
+                parameters_sha256=actual_parameters_sha,
+            )
     if bool(values.get("release_evidence_required", False)):
         release_evidence = approval.get("release_evidence")
         if not isinstance(release_evidence, dict):
@@ -934,6 +1026,7 @@ class BetaflightMspIoWorker:
         self._poll_errors: dict[str, str] = {}
         self._telemetry_received_s: float | None = None
         self._physical_rc_received_s: float | None = None
+        self._manual_rc_received_s: float | None = None
         self._staged: RcCommand | None = None
         self._staged_received_s: float | None = None
         self._output_enabled = False
@@ -1081,6 +1174,11 @@ class BetaflightMspIoWorker:
             motor_age = None if motor_timestamp is None else max(0.0, now - motor_timestamp)
             telemetry_age = status_age
             rc_age = None if self._physical_rc_received_s is None else max(0.0, now - self._physical_rc_received_s)
+            manual_rc_latch_age = (
+                None
+                if self._manual_rc_received_s is None
+                else max(0.0, now - self._manual_rc_received_s)
+            )
             command_age = None if self._staged_received_s is None else max(0.0, now - self._staged_received_s)
             send_success_age = (
                 None if self._last_send_success_s is None else max(0.0, now - self._last_send_success_s)
@@ -1109,9 +1207,10 @@ class BetaflightMspIoWorker:
                 motor_age_s=motor_age,
                 physical_rc_age_s=rc_age,
                 physical_rc_fresh=bool(
-                    (self._override_active or release_hold_active) and self._manual_rc
-                    or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+                    rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
                 ),
+                manual_rc_latched=bool(self._manual_rc),
+                manual_rc_latch_age_s=manual_rc_latch_age,
                 poll_count=self._poll_count,
                 poll_error_count=self._poll_error_count,
                 staged_count=self._staged_count,
@@ -1408,9 +1507,8 @@ class BetaflightMspIoWorker:
                 if not self._override_active and self._physical_rc_valid(physical):
                     self._manual_rc = physical
                     self._physical_rc_received_s = received_s
+                    self._manual_rc_received_s = received_s
                     self._override_released_s = None
-                elif not self._manual_rc:
-                    self._physical_rc_received_s = received_s
             elif name == "analog":
                 telemetry = replace(
                     telemetry,
@@ -1505,12 +1603,13 @@ class BetaflightMspIoWorker:
                 self._poll_errors.clear()
                 self._telemetry_received_s = telemetry.timestamp
                 if telemetry.rc_channels:
-                    self._physical_rc_received_s = telemetry.timestamp
                     physical = reorder_msp_rc_to_set_raw_rc(
                         telemetry.rc_channels,
                         self.config.set_raw_rc_channel_map,
                     )
                     if not observed_override and self._physical_rc_valid(physical):
+                        self._physical_rc_received_s = telemetry.timestamp
+                        self._manual_rc_received_s = telemetry.timestamp
                         self._manual_rc = physical
                         self._override_released_s = None
                 self._poll_count += 1
@@ -1537,9 +1636,13 @@ class BetaflightMspIoWorker:
             manual_rc = self._manual_rc
             rc_age = None if self._physical_rc_received_s is None else now - self._physical_rc_received_s
             release_hold_active = self._override_release_hold_active_locked(now)
-            fresh = bool(
-                (override_active or release_hold_active) and manual_rc
-                or rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+            physical_rc_fresh = bool(
+                rc_age is not None and rc_age <= self.config.physical_rc_timeout_s
+            )
+            manual_rc_latched = bool(manual_rc)
+            source_ready = bool(
+                physical_rc_fresh
+                or (override_active or release_hold_active) and manual_rc_latched
             )
             prefill_ready = self._prefill_ready()
         last_ack_s = self.adapter.last_set_raw_rc_ack_monotonic_s()
@@ -1566,13 +1669,26 @@ class BetaflightMspIoWorker:
                 self._throttle_reference_us = None
                 self._clear_throttle_slew()
             return
-        if telemetry is None or not telemetry.rc_channels or not fresh:
+        if telemetry is None or not source_ready:
+            current_physical = (
+                ()
+                if telemetry is None or not telemetry.rc_channels
+                else reorder_msp_rc_to_set_raw_rc(
+                    telemetry.rc_channels,
+                    self.config.set_raw_rc_channel_map,
+                )
+            )
+            source_reason = (
+                "physical_rc_invalid"
+                if current_physical and not self._physical_rc_valid(current_physical)
+                else "physical_rc_stale"
+            )
             with self._lock:
                 self._send_skip_count += 1
                 self._was_algorithm_authorized = False
                 self._prefill_success_count = 0
                 self._publish_mode = "disabled"
-                self._publish_reason = "physical_rc_stale"
+                self._publish_reason = source_reason
                 self._rc_source = "none"
                 self._pilot_control_available = not override_active
                 self._handover.clear()
@@ -1781,7 +1897,7 @@ class BetaflightMspIoWorker:
                 self._last_publish_override_active = override_active
                 self._last_publish_override_release_hold_active = release_hold_active
                 self._last_publish_prefill_ready = prefill_ready or not self.config.prefill_enabled
-                self._last_publish_physical_rc_fresh = fresh
+                self._last_publish_physical_rc_fresh = physical_rc_fresh
                 self._last_publish_command_fresh = command_fresh
                 self._last_publish_command_active = bool(command is not None and command.active)
                 self._last_publish_command_reason = "" if command is None else str(command.reason)

@@ -6,6 +6,7 @@ import time
 import unittest
 from dataclasses import replace
 from pathlib import Path
+from unittest import mock
 
 from vision_guidance.betaflight_msp import (
     MSP_MOTOR,
@@ -37,6 +38,7 @@ from vision_guidance.betaflight_runtime import (
     reorder_msp_rc_to_set_raw_rc,
     resolve_control_authorization,
 )
+from vision_guidance.betaflight_sitl import SITL_REQUIRED_ARTIFACTS, SITL_SCOPE
 from vision_guidance.flight_control import (
     GuidanceSetpoint,
     RcCommand,
@@ -151,6 +153,110 @@ class BetaflightRuntimeTest(unittest.TestCase):
             "api_major": 1,
             "api_minor": 47,
         }
+
+    @staticmethod
+    def _write_sitl_evidence(root, parameters, *, repository_commit, policy):
+        official_binary = root / "betaflight.elf"
+        official_binary.write_bytes(b"official-betaflight-test-binary")
+        official_binary_sha256 = hashlib.sha256(official_binary.read_bytes()).hexdigest()
+        config_sha256 = hashlib.sha256(parameters.read_bytes()).hexdigest()
+        software = {
+            "repository_commit": repository_commit,
+            "repository_dirty": False,
+        }
+        bindings = []
+        mode_state = {}
+        for detector_mode in ("projected", "rendered"):
+            mode_root = root / detector_mode
+            mode_root.mkdir()
+            artifacts = {}
+            for name in sorted(SITL_REQUIRED_ARTIFACTS):
+                if name == "flight_config":
+                    path = parameters
+                elif name == "betaflight_binary":
+                    path = official_binary
+                else:
+                    path = mode_root / name
+                    path.write_text(f"{detector_mode}:{name}\n", encoding="utf-8")
+                artifacts[name] = {
+                    "path": str(path),
+                    "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                }
+            if detector_mode == "rendered":
+                yolo_model = mode_root / "best.pt"
+                yolo_model.write_bytes(b"test-yolo-model")
+                artifacts["yolo_model"] = {
+                    "path": str(yolo_model),
+                    "sha256": hashlib.sha256(yolo_model.read_bytes()).hexdigest(),
+                }
+            manifest = {
+                "schema_version": 1,
+                "evidence_type": "betaflight_gazebo_sil_run",
+                "scope": SITL_SCOPE,
+                "completed": True,
+                "failure": "",
+                "policy": policy,
+                "detector_mode": detector_mode,
+                "software_binding": software,
+                "artifacts": artifacts,
+            }
+            manifest_path = mode_root / "run_manifest.json"
+            manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+            manifest_sha256 = hashlib.sha256(manifest_path.read_bytes()).hexdigest()
+            report = {
+                "schema_version": 1,
+                "evidence_type": "betaflight_gazebo_sil_audit",
+                "scope": SITL_SCOPE,
+                "passed": True,
+                "violations": [],
+                "policy": policy,
+                "detector_mode": detector_mode,
+                "detector_representative": False,
+                "hardware_authorization": False,
+                "software_binding": software,
+                "flight_candidate_binding": {
+                    "sha256": config_sha256,
+                    "engagement_policy": policy,
+                },
+                "betaflight_binding": {
+                    "source_commit": "79065c96ba0bb5cdc675e67d7093e05dab8b330e",
+                    "elf_sha256": official_binary_sha256,
+                },
+                "orchestration_manifest": {
+                    "path": str(manifest_path),
+                    "sha256": manifest_sha256,
+                },
+                "metrics": {
+                    "rendered_detection_count": 1 if detector_mode == "rendered" else 0,
+                    "terminal": {"passed": True},
+                },
+            }
+            report_path = mode_root / "audit.json"
+            report_path.write_text(json.dumps(report), encoding="utf-8")
+            bindings.append(
+                {
+                    "path": str(report_path),
+                    "sha256": hashlib.sha256(report_path.read_bytes()).hexdigest(),
+                    "schema_version": 1,
+                    "scope": SITL_SCOPE,
+                    "policy": policy,
+                    "detector_mode": detector_mode,
+                    "detector_representative": False,
+                    "hardware_authorization": False,
+                    "runtime_config_sha256": config_sha256,
+                    "repository_commit": repository_commit,
+                    "orchestration_manifest": {
+                        "path": str(manifest_path),
+                        "sha256": manifest_sha256,
+                    },
+                }
+            )
+            mode_state[detector_mode] = {
+                "artifacts": artifacts,
+                "manifest_path": manifest_path,
+                "report_path": report_path,
+            }
+        return bindings, mode_state, official_binary_sha256
 
     def test_raw_imu_gyro_conversion_requires_exact_firmware_binding(self):
         config = MspRawImuGyroConfig.from_mapping(
@@ -326,6 +432,42 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertFalse(status.approved)
         self.assertEqual(status.reason, "authorization_disabled")
 
+    def test_contact_authorization_requires_unbounded_takeover_waiver(self):
+        with tempfile.TemporaryDirectory() as directory:
+            approval = Path(directory) / "approval.json"
+            values = {
+                "enabled": True,
+                "required_scope": "flight_contact_supervised_v1",
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 4,
+                "unbounded_takeover_waiver_required": True,
+            }
+            payload = {
+                "schema_version": 4,
+                "approved": True,
+                "scope": "flight_contact_supervised_v1",
+                "source_conflicts_resolved": True,
+            }
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+            )
+            self.assertFalse(status.approved)
+            self.assertEqual(status.reason, "unbounded_takeover_waiver_missing")
+
+            payload["unbounded_takeover_waiver"] = True
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            status = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+            )
+            self.assertFalse(status.approved)
+            self.assertEqual(status.reason, "snapshot_manifest_missing")
+
     def test_authorization_binds_scope_and_parameters_hash(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -385,6 +527,244 @@ class BetaflightRuntimeTest(unittest.TestCase):
             )
             self.assertFalse(wrong_scope.approved)
             self.assertEqual(wrong_scope.reason, "authorization_scope_mismatch")
+
+    def test_schema_v5_manual_msp_loss_waiver_is_scope_and_config_bound(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"short-supervised"}\n', encoding="utf-8")
+            parameters_sha256 = hashlib.sha256(parameters.read_bytes()).hexdigest()
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            scope = "flight_noncollision_short_supervised_v3"
+            payload = {
+                "schema_version": 5,
+                "approved": True,
+                "scope": scope,
+                "source_conflicts_resolved": True,
+                "snapshot_manifest": str(snapshot),
+                "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                "expected_fc_identity": {"fc_variant": "BTFL"},
+                "parameters_sha256": parameters_sha256,
+            }
+            approval = root / "approval.json"
+            values = {
+                "enabled": True,
+                "required_scope": scope,
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 5,
+                "manual_msp_loss_waiver_required": True,
+            }
+
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            missing = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertEqual(
+                missing.reason, "manual_msp_loss_waiver_missing_or_mismatched"
+            )
+
+            payload["manual_msp_loss_waiver"] = {
+                "acknowledged": True,
+                "scope": "flight_contact_short_supervised_v2",
+                "parameters_sha256": parameters_sha256,
+            }
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            wrong_scope = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertEqual(
+                wrong_scope.reason,
+                "manual_msp_loss_waiver_missing_or_mismatched",
+            )
+
+            payload["manual_msp_loss_waiver"]["scope"] = scope
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            accepted = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+            )
+            self.assertTrue(accepted.approved)
+
+    def test_schema_v5_sitl_evidence_is_required_and_rechecked(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"short-supervised"}\n', encoding="utf-8")
+            parameters_sha256 = hashlib.sha256(parameters.read_bytes()).hexdigest()
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            repository_commit = "a" * 40
+            scope = "flight_noncollision_short_supervised_v3"
+            bindings, state, binary_sha256 = self._write_sitl_evidence(
+                root,
+                parameters,
+                repository_commit=repository_commit,
+                policy="noncollision",
+            )
+            payload = {
+                "schema_version": 5,
+                "approved": True,
+                "scope": scope,
+                "source_conflicts_resolved": True,
+                "snapshot_manifest": str(snapshot),
+                "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                "expected_fc_identity": {"fc_variant": "BTFL"},
+                "parameters_sha256": parameters_sha256,
+                "software_binding": {
+                    "repository_commit": repository_commit,
+                    "repository_dirty": False,
+                },
+            }
+            approval = root / "approval.json"
+            values = {
+                "enabled": True,
+                "required_scope": scope,
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 5,
+                "software_binding_required": True,
+                "sitl_evidence_required": True,
+            }
+
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            missing = resolve_control_authorization(
+                values,
+                fc_identity={"fc_variant": "BTFL"},
+                box_ids=(0, 50),
+                parameters_path=parameters,
+                repository_commit=repository_commit,
+                repository_dirty=False,
+            )
+            self.assertEqual(missing.reason, "sitl_evidence_missing")
+
+            payload["sitl_evidence"] = bindings
+            approval.write_text(json.dumps(payload), encoding="utf-8")
+            with mock.patch(
+                "vision_guidance.betaflight_sitl.SITL_OFFICIAL_BETAFLIGHT_ELF_SHA256",
+                binary_sha256,
+            ):
+                accepted = resolve_control_authorization(
+                    values,
+                    fc_identity={"fc_variant": "BTFL"},
+                    box_ids=(0, 50),
+                    parameters_path=parameters,
+                    repository_commit=repository_commit,
+                    repository_dirty=False,
+                )
+                self.assertTrue(accepted.approved)
+
+                report_path = state["rendered"]["report_path"]
+                original_report = report_path.read_bytes()
+                report_path.write_bytes(original_report + b"\n")
+                changed = resolve_control_authorization(
+                    values,
+                    fc_identity={"fc_variant": "BTFL"},
+                    box_ids=(0, 50),
+                    parameters_path=parameters,
+                    repository_commit=repository_commit,
+                    repository_dirty=False,
+                )
+                self.assertTrue(changed.reason.startswith("sitl_evidence_invalid:"))
+                self.assertIn("SHA256 mismatch", changed.reason)
+
+    def test_schema_v5_sitl_rechecks_manifest_and_artifacts(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            parameters = root / "config.json"
+            parameters.write_text('{"profile":"short-supervised"}\n', encoding="utf-8")
+            snapshot = root / "snapshot.json"
+            snapshot.write_text(
+                json.dumps({"readiness": {"log_only_ready": True}}) + "\n",
+                encoding="utf-8",
+            )
+            repository_commit = "b" * 40
+            scope = "flight_contact_short_supervised_v2"
+            bindings, state, binary_sha256 = self._write_sitl_evidence(
+                root,
+                parameters,
+                repository_commit=repository_commit,
+                policy="contact",
+            )
+            approval = root / "approval.json"
+            approval.write_text(
+                json.dumps(
+                    {
+                        "schema_version": 5,
+                        "approved": True,
+                        "scope": scope,
+                        "source_conflicts_resolved": True,
+                        "snapshot_manifest": str(snapshot),
+                        "snapshot_sha256": hashlib.sha256(snapshot.read_bytes()).hexdigest(),
+                        "expected_fc_identity": {"fc_variant": "BTFL"},
+                        "parameters_sha256": hashlib.sha256(parameters.read_bytes()).hexdigest(),
+                        "software_binding": {
+                            "repository_commit": repository_commit,
+                            "repository_dirty": False,
+                        },
+                        "sitl_evidence": bindings,
+                    }
+                ),
+                encoding="utf-8",
+            )
+            values = {
+                "enabled": True,
+                "required_scope": scope,
+                "approval_manifest": str(approval),
+                "minimum_approval_schema_version": 5,
+                "software_binding_required": True,
+                "sitl_evidence_required": True,
+            }
+
+            with mock.patch(
+                "vision_guidance.betaflight_sitl.SITL_OFFICIAL_BETAFLIGHT_ELF_SHA256",
+                binary_sha256,
+            ):
+                artifact_path = Path(
+                    state["projected"]["artifacts"]["runner_csv"]["path"]
+                )
+                artifact_path.write_text("changed\n", encoding="utf-8")
+                changed_artifact = resolve_control_authorization(
+                    values,
+                    fc_identity={"fc_variant": "BTFL"},
+                    box_ids=(0, 50),
+                    parameters_path=parameters,
+                    repository_commit=repository_commit,
+                    repository_dirty=False,
+                )
+                self.assertIn(
+                    "SIL artifact changed or is missing: runner_csv",
+                    changed_artifact.reason,
+                )
+
+                artifact_path.write_text("projected:runner_csv\n", encoding="utf-8")
+                manifest_path = state["rendered"]["manifest_path"]
+                manifest_path.write_bytes(manifest_path.read_bytes() + b"\n")
+                changed_manifest = resolve_control_authorization(
+                    values,
+                    fc_identity={"fc_variant": "BTFL"},
+                    box_ids=(0, 50),
+                    parameters_path=parameters,
+                    repository_commit=repository_commit,
+                    repository_dirty=False,
+                )
+                self.assertIn(
+                    "SIL orchestration manifest changed or is missing",
+                    changed_manifest.reason,
+                )
 
     def test_authorization_rejects_legacy_schema_when_v2_is_required(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -1369,6 +1749,10 @@ class BetaflightRuntimeTest(unittest.TestCase):
         worker._queue_one_async_poll(time.monotonic())
         self.assertEqual(transport.writes, [])
         self.assertTrue(worker.snapshot().rc_poll_suspended)
+        during_override = worker.snapshot(now + 1.0)
+        self.assertFalse(during_override.physical_rc_fresh)
+        self.assertTrue(during_override.manual_rc_latched)
+        self.assertGreaterEqual(during_override.manual_rc_latch_age_s, 1.0)
 
         worker._merge_poll_value("status", StatusTelemetry(100, 0, 0, 0, 0), time.monotonic())
         worker._next_poll_s["rc"] = 0.0

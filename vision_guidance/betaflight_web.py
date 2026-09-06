@@ -206,6 +206,9 @@ def telemetry_payload_from_log_row(
                 in {"takeover_rearm_wait", "takeover_release_required"},
             },
             "physical_rc_fresh": _boolean(row.get("physical_rc_fresh")),
+            "manual_rc_latched": _boolean(row.get("manual_rc_latched")),
+            "manual_rc_latch_age_s": _number(row.get("manual_rc_latch_age_s")),
+            "rc_baseline_ready": _boolean(row.get("rc_baseline_ready")),
             "watchdog_ok": _boolean(row.get("watchdog_ok")),
             "voltage_ok": _boolean(row.get("voltage_ok")),
             "aux_enabled": _boolean(row.get("aux_enabled")),
@@ -503,6 +506,9 @@ def telemetry_payload_from_log_row(
                 "velocity_source": _text(row.get("intercept_velocity_source")),
                 "velocity_reason": _text(row.get("intercept_velocity_reason")),
                 "detection_age_s": _number(row.get("intercept_detection_age_s")),
+                "detection_update_age_s": _number(
+                    row.get("intercept_detection_update_age_s")
+                ),
                 "velocity_age_s": _number(row.get("intercept_velocity_age_s")),
                 "prediction_horizon_s": _number(
                     row.get("intercept_prediction_horizon_s")

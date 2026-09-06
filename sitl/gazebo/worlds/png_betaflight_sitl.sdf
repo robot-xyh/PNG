@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<sdf version="1.10">
+  <world name="png_betaflight_sitl">
+    <physics name="fast" type="ignored">
+      <!-- Match the measured ~3.16 kHz MICOAIR743V2 flight loop closely enough
+           for official SITL's byte-at-a-time MSP parser to sustain 50 Hz RC. -->
+      <max_step_size>0.0003125</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <gravity>0 0 -9.80665</gravity>
+    <magnetic_field>2.1e-5 5.0e-6 -4.3e-5</magnetic_field>
+    <atmosphere type="adiabatic"/>
+
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-user-commands-system" name="gz::sim::systems::UserCommands"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+    <plugin filename="gz-sim-sensors-system" name="gz::sim::systems::Sensors"><render_engine>ogre2</render_engine></plugin>
+
+    <light type="directional" name="sun"><cast_shadows>true</cast_shadows><pose>0 0 10 0 0 0</pose><diffuse>0.9 0.9 0.9 1</diffuse><specular>0.2 0.2 0.2 1</specular><direction>-0.3 0.2 -1</direction></light>
+    <model name="ground_plane"><static>true</static><link name="link"><collision name="collision"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry></collision><visual name="visual"><geometry><plane><normal>0 0 1</normal><size>100 100</size></plane></geometry><material><ambient>0.35 0.38 0.42 1</ambient><diffuse>0.45 0.48 0.52 1</diffuse></material></visual></link></model>
+
+    <include><uri>model://interceptor</uri></include>
+    <include><uri>model://target_uav</uri></include>
+  </world>
+</sdf>
