@@ -35,6 +35,7 @@ class VoltageThrottleThrustModel:
         throttle_us: np.ndarray,
         specific_force_m_s2: np.ndarray,
         validation: Mapping[str, object],
+        fit: Mapping[str, object] | None = None,
         dynamics: Mapping[str, object] | None = None,
         source_path: str = "",
         source_sha256: str = "",
@@ -44,6 +45,7 @@ class VoltageThrottleThrustModel:
         self.throttle_us = np.asarray(throttle_us, dtype=float)
         self.specific_force_m_s2 = np.asarray(specific_force_m_s2, dtype=float)
         self.validation = dict(validation)
+        self.fit = {} if fit is None else dict(fit)
         self.dynamics = {} if dynamics is None else dict(dynamics)
         self.source_path = str(source_path)
         self.source_sha256 = str(source_sha256)
@@ -69,6 +71,7 @@ class VoltageThrottleThrustModel:
                 values.get("specific_force_m_s2", []), dtype=float
             ),
             validation=dict(values.get("validation", {})),
+            fit=dict(values.get("fit", {})),
             dynamics=dict(values.get("dynamics", {})),
             source_path=source_path,
             source_sha256=source_sha256,
@@ -161,6 +164,7 @@ class VoltageThrottleThrustModel:
                 float(self.throttle_us[-1]),
             ],
             "validation": dict(self.validation),
+            "fit": dict(self.fit),
             "dynamics": dict(self.dynamics),
         }
 
