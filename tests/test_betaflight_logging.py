@@ -413,6 +413,35 @@ class BetaflightLoggingTest(unittest.TestCase):
         self.assertFalse(runner._aux_enabled(telemetry, safety, override_active=False))
         self.assertTrue(runner._aux_enabled(telemetry, safety, override_active=True))
 
+    def test_acro_mode_release_latches_until_rc7_is_lowered(self):
+        self.assertTrue(
+            runner._update_acro_mode_release_latch(
+                False,
+                armed=True,
+                override_active=True,
+                require_acro_rate_mode=True,
+                acro_rate_mode_ok=False,
+            )
+        )
+        self.assertTrue(
+            runner._update_acro_mode_release_latch(
+                True,
+                armed=True,
+                override_active=True,
+                require_acro_rate_mode=True,
+                acro_rate_mode_ok=True,
+            )
+        )
+        self.assertFalse(
+            runner._update_acro_mode_release_latch(
+                True,
+                armed=True,
+                override_active=False,
+                require_acro_rate_mode=True,
+                acro_rate_mode_ok=True,
+            )
+        )
+
     def test_rk3588_torch_runtime_disables_mkldnn_and_limits_threads(self):
         fake_torch = SimpleNamespace(
             backends=SimpleNamespace(mkldnn=SimpleNamespace(enabled=True)),

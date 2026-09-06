@@ -1,12 +1,13 @@
 {
   "candidate_profile": {
+    "revision_label": "first_version_fix",
     "id": "velocity_png_flight_active_supervised",
     "scope": "flight_active_supervised",
     "runnable_as_log_only": true,
     "active_control_runnable_after_fresh_approval": true,
     "control_authorized_without_manifest": false,
     "propellers_installed": true,
-    "purpose": "Supervised four-channel PNG candidate with measured variable thrust and no fixed takeover-duration cutoff."
+    "purpose": "First-version fix of the 2026-09-04 field program: latch RC8 ANGLE/HORIZON exits until RC7 release; PNG guidance parameters are unchanged."
   },
   "runtime_policy": {
     "allowed_control_modes": [

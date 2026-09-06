@@ -674,6 +674,7 @@ class BetaflightMspIoWorker:
         self._staged_received_s: float | None = None
         self._output_enabled = False
         self._algorithm_authorized = False
+        self._acro_mode_release_requested = False
         self._override_active = False
         self._override_released_s: float | None = None
         self._poll_count = 0
@@ -684,10 +685,12 @@ class BetaflightMspIoWorker:
         self._worker_error = ""
         self._handover = ThrottleHandover(config.throttle_handover_s)
         self._throttle_reference_us: int | None = None
+        self._release_throttle_reference_us: int | None = None
         self._throttle_slew_output_us: int | None = None
         self._throttle_slew_timestamp_s: float | None = None
         self._throttle_slew_limited = False
         self._was_algorithm_authorized = False
+        self._acro_mode_release_active = False
         self._manual_rc: tuple[int, ...] = ()
         self._prefill_success_count = 0
         self._passthrough_send_count = 0
@@ -761,6 +764,7 @@ class BetaflightMspIoWorker:
         output_enabled: bool | None = None,
         algorithm_authorized: bool | None = None,
         override_active: bool = False,
+        acro_mode_release_requested: bool = False,
         authorized: bool | None = None,
     ) -> None:
         if authorized is not None:
@@ -774,7 +778,11 @@ class BetaflightMspIoWorker:
             self._staged_received_s = now
             self._output_enabled = bool(output_enabled)
             self._algorithm_authorized = bool(algorithm_authorized)
+            self._acro_mode_release_requested = bool(acro_mode_release_requested)
             self._set_override_active_locked(bool(override_active), now)
+            if not override_active:
+                self._acro_mode_release_active = False
+                self._release_throttle_reference_us = None
             self._staged_count += 1
 
     def snapshot(self, timestamp: float | None = None) -> MspWorkerSnapshot:
@@ -1034,7 +1042,12 @@ class BetaflightMspIoWorker:
             publish_mode, use_algorithm = context
             if use_algorithm:
                 return
-            if publish_mode in {"prefill", "passthrough", "set_ack_stale"}:
+            if publish_mode in {
+                "prefill",
+                "passthrough",
+                "set_ack_stale",
+                "acro_mode_release_hold",
+            }:
                 self._prefill_success_count += 1
 
     def _next_due_poll_name(self, now: float) -> str | None:
@@ -1256,6 +1269,7 @@ class BetaflightMspIoWorker:
             command_received_s = self._staged_received_s
             output_enabled = self._output_enabled
             algorithm_authorized = self._algorithm_authorized
+            acro_mode_release_requested = self._acro_mode_release_requested
             override_active = self._override_active
             telemetry = self._telemetry
             manual_rc = self._manual_rc
@@ -1361,6 +1375,7 @@ class BetaflightMspIoWorker:
                 throttle_reference_invalid = True
             else:
                 self._throttle_reference_us = candidate_reference
+                self._release_throttle_reference_us = candidate_reference
                 self._handover.reset(now, candidate_reference)
                 self._reset_throttle_slew(now, candidate_reference)
         if use_algorithm and command is not None:
@@ -1405,16 +1420,30 @@ class BetaflightMspIoWorker:
             channels[throttle] = self._apply_throttle_slew(now, handover_output_us)
             publish_mode = "algorithm"
         elif self.config.prefill_enabled:
-            channels = list(self._passthrough_channels(physical, manual_rc, override_active))
-            if throttle_reference_invalid:
-                publish_mode = "throttle_reference_out_of_range"
-            elif not ack_fresh and prefill_ready:
-                publish_mode = "set_ack_stale"
+            if (
+                acro_mode_release_requested
+                and override_active
+                and self._was_algorithm_authorized
+            ):
+                self._acro_mode_release_active = True
+            if self._acro_mode_release_active and override_active:
+                channels = list(self._acro_mode_release_channels(physical, now))
+                publish_mode = "acro_mode_release_hold"
             else:
-                publish_mode = "prefill" if not prefill_ready else "passthrough"
+                channels = list(self._passthrough_channels(physical, manual_rc, override_active))
+                if throttle_reference_invalid:
+                    publish_mode = "throttle_reference_out_of_range"
+                elif not ack_fresh and prefill_ready:
+                    publish_mode = "set_ack_stale"
+                else:
+                    publish_mode = "prefill" if not prefill_ready else "passthrough"
             self._handover.clear()
-            self._throttle_reference_us = None
-            self._clear_throttle_slew()
+            if publish_mode != "acro_mode_release_hold":
+                self._throttle_reference_us = None
+                self._clear_throttle_slew()
+            if not override_active:
+                self._acro_mode_release_active = False
+                self._release_throttle_reference_us = None
         else:
             with self._lock:
                 self._send_skip_count += 1
@@ -1528,6 +1557,23 @@ class BetaflightMspIoWorker:
                 if self.config.override_channels_mask & (1 << index):
                     result[index] = int(manual_channels[index])
         return tuple(result)
+
+    def _acro_mode_release_channels(
+        self,
+        physical_channels: Sequence[int],
+        timestamp: float,
+    ) -> tuple[int, ...]:
+        channels = [int(value) for value in physical_channels]
+        for index in (0, 1, 3):
+            if index < len(channels) and self.config.override_channels_mask & (1 << index):
+                channels[index] = 1500
+        throttle = self.config.throttle_channel_zero_based
+        if throttle < len(channels) and self.config.override_channels_mask & (1 << throttle):
+            target = self._release_throttle_reference_us
+            if target is None:
+                target = channels[throttle]
+            channels[throttle] = self._apply_throttle_slew(timestamp, int(target))
+        return tuple(channels)
 
     def metadata(self) -> dict[str, Any]:
         return {"config": asdict(self.config)}

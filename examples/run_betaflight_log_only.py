@@ -1612,6 +1612,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
     rows_written = 0
     stop_reason = "unknown"
     stop_exception = ""
+    acro_mode_release_latched = False
 
     print(f"Logging Betaflight MSP telemetry to: {log_path}")
     print(f"Control mode: {args.control_mode}; allow_control={int(args.allow_control)}")
@@ -1916,14 +1917,30 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                     takeover_release_elapsed_s=takeover_duration_state.release_elapsed_s,
                 )
                 aux_enabled = _aux_enabled(telemetry, safety_cfg, override_active=override_active)
-                if bool(safety_cfg.get("require_acro_rate_mode", False)):
-                    aux_enabled = bool(
-                        aux_enabled
-                        and telemetry is not None
+                require_acro_rate_mode = bool(safety_cfg.get("require_acro_rate_mode", False))
+                acro_rate_mode_ok = bool(
+                    not require_acro_rate_mode
+                    or (
+                        telemetry is not None
                         and telemetry.status is not None
                         and not box_mode_active(telemetry.status.mode_flags, box_ids, 1)
                         and not box_mode_active(telemetry.status.mode_flags, box_ids, 2)
                     )
+                )
+                acro_mode_release_latched = _update_acro_mode_release_latch(
+                    acro_mode_release_latched,
+                    armed=armed,
+                    override_active=override_active,
+                    require_acro_rate_mode=require_acro_rate_mode,
+                    acro_rate_mode_ok=acro_rate_mode_ok,
+                )
+                aux_enabled = bool(
+                    aux_enabled and acro_rate_mode_ok and not acro_mode_release_latched
+                )
+                detector_stats.update(
+                    acro_rate_mode_ok=int(acro_rate_mode_ok),
+                    acro_mode_release_latched=int(acro_mode_release_latched),
+                )
                 control_requested = args.control_mode == "msp_raw_rc"
                 allow_control = bool(args.allow_control)
                 prefill_ready = bool(
@@ -2041,6 +2058,7 @@ def _run(args: argparse.Namespace, config: dict[str, Any], web_service: Telemetr
                         output_enabled=output_enabled,
                         algorithm_authorized=decision.command_active,
                         override_active=override_active,
+                        acro_mode_release_requested=acro_mode_release_latched,
                     )
                     send_error = worker_snapshot.worker_error if worker_snapshot is not None else ""
                 detector_stats.update(
@@ -3153,6 +3171,19 @@ def _aux_enabled(
     )
 
 
+def _update_acro_mode_release_latch(
+    latched: bool,
+    *,
+    armed: bool,
+    override_active: bool,
+    require_acro_rate_mode: bool,
+    acro_rate_mode_ok: bool,
+) -> bool:
+    if not armed or not override_active:
+        return False
+    return bool(latched or (require_acro_rate_mode and not acro_rate_mode_ok))
+
+
 def _maybe_send_rc(
     adapter: BetaflightMSPAdapter,
     args: argparse.Namespace,
@@ -3382,6 +3413,8 @@ def _log_fields(channel_count: int) -> list[str]:
         "watchdog_ok",
         "voltage_ok",
         "aux_enabled",
+        "acro_rate_mode_ok",
+        "acro_mode_release_latched",
         "telemetry_age_s",
         "attitude_age_s",
         "watchdog_age_s",
@@ -3894,6 +3927,10 @@ def _log_row(
         "watchdog_ok": int(watchdog_ok),
         "voltage_ok": int(voltage_ok),
         "aux_enabled": int(aux_enabled),
+        "acro_rate_mode_ok": detector_stats.get("acro_rate_mode_ok", ""),
+        "acro_mode_release_latched": detector_stats.get(
+            "acro_mode_release_latched", ""
+        ),
         "telemetry_age_s": _format_optional_float(telemetry_age_s, precision=6),
         "attitude_age_s": _format_optional_float(attitude_age_s, precision=6),
         "watchdog_age_s": _format_optional_float(watchdog_age_s, precision=6),

@@ -853,6 +853,71 @@ class BetaflightRuntimeTest(unittest.TestCase):
         self.assertEqual(snapshot.publish_mode, "passthrough")
         self.assertEqual(snapshot.stale_command_count, 1)
 
+    def test_acro_mode_exit_neutralizes_axes_and_returns_entry_throttle(self):
+        adapter = _Adapter()
+        adapter.telemetry = replace(
+            adapter.telemetry,
+            rc_channels=(1500, 1500, 1500, 1300, 1800, 1200, 1800, 1000),
+        )
+        worker = BetaflightMspIoWorker(
+            adapter,
+            MspRuntimeConfig(
+                prefill_enabled=True,
+                prefill_min_frames=1,
+                throttle_handover_s=0.0,
+                throttle_slew_limit_us_per_s=600.0,
+                shutdown_passthrough_frames=0,
+            ),
+        )
+        worker._poll(1.0)
+        command = RcCommand(
+            1.0,
+            (1600, 1400, 1450, 1550, 1800, 1200, 1800, 1000),
+            True,
+        )
+        worker.stage(command, output_enabled=True, algorithm_authorized=False)
+        worker._publish(1.01)
+        worker.stage(
+            command,
+            output_enabled=True,
+            algorithm_authorized=True,
+            override_active=True,
+        )
+        worker._publish(1.02)
+        worker._publish(1.12)
+        self.assertEqual(adapter.sent[-1][:4], (1600, 1400, 1360, 1550))
+
+        worker.stage(
+            command,
+            output_enabled=True,
+            algorithm_authorized=False,
+            override_active=True,
+            acro_mode_release_requested=True,
+        )
+        worker._publish(1.17)
+
+        self.assertEqual(worker.snapshot(1.17).publish_mode, "acro_mode_release_hold")
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1330, 1500))
+
+        worker.stage(
+            command,
+            output_enabled=True,
+            algorithm_authorized=False,
+            override_active=True,
+            acro_mode_release_requested=True,
+        )
+        worker._publish(1.22)
+        self.assertEqual(adapter.sent[-1][:4], (1500, 1500, 1300, 1500))
+
+        worker.stage(
+            command,
+            output_enabled=True,
+            algorithm_authorized=False,
+            override_active=False,
+        )
+        worker._publish(1.24)
+        self.assertEqual(worker.snapshot(1.24).publish_mode, "passthrough")
+
     def test_worker_refuses_prefill_when_started_with_override_active_and_885_rc(self):
         adapter = _Adapter()
         adapter.telemetry = BetaflightTelemetry(
