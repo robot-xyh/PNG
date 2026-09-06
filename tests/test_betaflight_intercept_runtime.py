@@ -74,13 +74,14 @@ def _vision(timestamp=1.0, *, track_id=7, valid=True, reason=None):
 
 
 class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
-    def _runtime(self, source="bench_zero_velocity"):
+    def _runtime(self, source="bench_zero_velocity", *, acquire_frames=1):
         return VelocityEstablishingPngRuntime(
             VelocityEstablishingPngController(
                 VelocityEstablishingPngConfig(
                     fixed_vm_m_s=10.0,
-                    acquire_consecutive_frames=1,
+                    acquire_consecutive_frames=acquire_frames,
                     detection_timeout_s=0.15,
+                    detection_result_age_limit_s=0.20,
                     velocity_timeout_s=0.5,
                 )
             ),
@@ -127,6 +128,37 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
         self.assertEqual(stale.controller.reason, "detection_stale")
         self.assertFalse(recovered.result.guidance.valid)
         self.assertEqual(recovered.controller.reason, "detection_stale")
+
+    def test_delayed_result_uses_arrival_time_for_update_freshness(self):
+        runtime = self._runtime()
+        first = runtime.update(
+            timestamp_s=1.0,
+            vision_result=_vision(0.82),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+        )
+        held = runtime.update(
+            timestamp_s=1.14,
+            vision_result=None,
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+        )
+        stale = runtime.update(
+            timestamp_s=1.16,
+            vision_result=None,
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+        )
+
+        self.assertTrue(first.result.guidance.valid)
+        self.assertTrue(held.result.guidance.valid)
+        self.assertAlmostEqual(held.controller.detection_age_s, 0.32)
+        self.assertAlmostEqual(held.controller.detection_update_age_s, 0.14)
+        self.assertEqual(stale.controller.phase, InterceptPhase.ABORT)
+        self.assertEqual(stale.controller.reason, "detection_stale")
 
     def test_track_change_reason_aborts_immediately(self):
         runtime = self._runtime()
@@ -207,6 +239,82 @@ class VelocityEstablishingPngRuntimeTest(unittest.TestCase):
         self.assertFalse(output.result.guidance.valid)
         self.assertEqual(output.controller.reason, "velocity_invalid")
         self.assertEqual(output.velocity_reason, "gps_missing")
+
+    def test_long_standby_does_not_preramp_active_controller(self):
+        runtime = self._runtime("msp_kinematics", acquire_frames=3)
+        for timestamp in (1.0, 10.0, 20.0, 40.0):
+            runtime.update(
+                timestamp_s=timestamp,
+                vision_result=_vision(timestamp),
+                attitude_R_IB=np.eye(3),
+                attitude_valid=True,
+                kinematics=_kinematics(velocity=(2.0, 0.0, 0.0)),
+                engagement_active=False,
+            )
+
+        first = runtime.update(
+            timestamp_s=41.0,
+            vision_result=_vision(41.0),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(velocity=(2.0, 0.0, 0.0)),
+            engagement_active=True,
+        )
+        second = runtime.update(
+            timestamp_s=41.04,
+            vision_result=_vision(41.04),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(velocity=(2.0, 0.0, 0.0)),
+            engagement_active=True,
+        )
+        third = runtime.update(
+            timestamp_s=41.08,
+            vision_result=_vision(41.08),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(velocity=(2.0, 0.0, 0.0)),
+            engagement_active=True,
+        )
+
+        self.assertEqual(first.controller.acquire_count, 1)
+        self.assertEqual(second.controller.acquire_count, 2)
+        self.assertFalse(second.result.guidance.valid)
+        self.assertTrue(third.result.guidance.valid)
+        self.assertEqual(third.controller.velocity_reference_ned_m_s, (2.0, 0.0, 0.0))
+        self.assertEqual(third.controller.speed_acceleration_ned_m_s2, (0.0, 0.0, 0.0))
+
+    def test_active_acquisition_requires_distinct_same_track_frames(self):
+        runtime = self._runtime(acquire_frames=3)
+        first = runtime.update(
+            timestamp_s=1.0,
+            vision_result=_vision(1.0, track_id=7),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=True,
+        )
+        repeated = runtime.update(
+            timestamp_s=1.01,
+            vision_result=_vision(1.0, track_id=7),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=True,
+        )
+        changed = runtime.update(
+            timestamp_s=1.02,
+            vision_result=_vision(1.02, track_id=8),
+            attitude_R_IB=np.eye(3),
+            attitude_valid=True,
+            kinematics=_kinematics(valid=False),
+            engagement_active=True,
+        )
+
+        self.assertEqual(first.controller.acquire_count, 1)
+        self.assertEqual(repeated.controller.acquire_count, 1)
+        self.assertEqual(changed.controller.acquire_count, 1)
+        self.assertFalse(changed.result.guidance.valid)
 
 
 if __name__ == "__main__":

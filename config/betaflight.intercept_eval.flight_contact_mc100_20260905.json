@@ -3,21 +3,21 @@
   "base_seed": 20260903,
   "trials_per_case": 100,
   "runtime_binding": {
-    "config": "config/betaflight.rk3588.velocity_png.flight_supervised.json",
-    "sha256": "cf169b38940e050ac723aa9789fca08c6bc64d4e15c3be5979e0771bd767a93d"
+    "config": "config/betaflight.rk3588.velocity_png.flight_contact_supervised.json",
+    "sha256": "89b7ad8e6ac19bb2fcd63bbbf8799d4d33e5284c78e367bae93d9c860cb0d48f"
   },
   "evidence": {
     "controller": "velocity_establishing_png",
     "velocity_source": "msp_kinematics",
-    "evaluation_stage": "policy_separated_contact_and_noncollision_mc100",
+    "evaluation_stage": "contact_terminal_lut_bound_mc100",
     "selected_candidate": "contact_fov_s75_f95",
     "screening_report": "logs/betaflight_intercept_supervised_20260903/betaflight_fov_priority_screen_mc20_20260903.json",
     "software_result_age_p95_s": 0.084556,
     "active_flight_result_age_p95_s": 0.1277,
     "conservative_physical_latency_budget_s": 0.154139,
-    "body_rate_delay_source": "LOG00063_65_HOVER_ACRO",
-    "runtime_detection_timeout_s": 0.15,
+    "runtime_detection_timeout_s": 0.25,
     "runtime_detection_result_age_limit_s": 0.2,
+    "body_rate_delay_source": "LOG00063_65_HOVER_ACRO",
     "thrust_calibration_id": "6S_2412KG_3115_900KV_1050R_HIST15_PHYSICS_V1_20260905"
   },
   "simulation": {
@@ -46,10 +46,10 @@
     "mean_speed_hold_accel_saturation_fraction_max": 0.4,
     "mean_total_accel_saturation_fraction_max": 0.4
   },
-  "noncollision_acceptance": {
-    "timely_abort_rate_min": 0.99,
-    "unsafe_contact_rate_max": 0.01,
-    "minimum_abort_lead_time_s": 0.75
+  "initial_performance": {
+    "initially_visible_hit_rate_min": 0.8,
+    "initially_visible_fov_hit_rate_min": 0.8,
+    "description": "The exact LUT-bound contact runtime must meet the project 80% hit and FOV-hit targets in every scenario."
   },
   "paired_screening": {
     "baseline_evaluation": "contact_fov_priority_disabled",
@@ -84,7 +84,6 @@
   ],
   "evaluations": [
     {"name": "contact_fov_priority_disabled", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "screening_baseline", "required_for_release": false, "simulation_overrides": {"candidate_engagement_policy": "contact", "candidate_fov_priority_enabled": false}},
-    {"name": "contact_fov_s75_f95", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "contact_performance", "required_for_release": true, "simulation_overrides": {"candidate_engagement_policy": "contact"}},
-    {"name": "runtime_noncollision_safety", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "noncollision_safety", "required_for_release": true, "simulation_overrides": {"candidate_engagement_policy": "noncollision"}}
+    {"name": "contact_fov_s75_f95", "controller_mode": "candidate_velocity_hold_variable_thrust", "start_profile": "hover", "evidence_role": "contact_performance", "required_for_release": true, "simulation_overrides": {"candidate_engagement_policy": "contact"}}
   ]
 }

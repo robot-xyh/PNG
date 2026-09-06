@@ -59,7 +59,7 @@ class DeferredAttitudeFusionTests(unittest.TestCase):
         self.assertEqual(cleared.dropped_count, 1)
         self.assertEqual(pipeline.calls, [])
 
-    def test_timeout_processes_frame_through_fail_closed_pipeline(self):
+    def test_timeout_drops_unbracketed_frame_without_poisoning_guidance(self):
         pipeline = _Pipeline()
         pipeline.attitude_buffer.push(AttitudeSample(3.0, np.eye(3)))
         fusion = DeferredAttitudeFusion(pipeline, max_wait_s=0.1)
@@ -69,7 +69,9 @@ class DeferredAttitudeFusionTests(unittest.TestCase):
         timed_out = fusion.update(None, timestamp=3.17, perception_new_result=False)
         self.assertEqual(timed_out.status, "attitude_wait_timeout")
         self.assertEqual(timed_out.pending_count, 0)
-        self.assertEqual(pipeline.calls, [detection])
+        self.assertEqual(timed_out.dropped_count, 1)
+        self.assertIsNone(timed_out.result)
+        self.assertEqual(pipeline.calls, [])
 
     def test_buffer_exposes_timestamp_bounds(self):
         buffer = AttitudeHistoryBuffer(duration_s=2.0)

@@ -136,6 +136,8 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
             )
 
             self.assertEqual(bound["control_rate_hz"], 50.0)
+            self.assertEqual(bound["perception_stale_timeout_s"], 0.15)
+            self.assertEqual(bound["perception_result_age_limit_s"], 0.20)
             self.assertEqual(bound["entry_handoff_duration_s"], 0.8)
             self.assertEqual(bound["throttle_handover_duration_s"], 0.8)
             self.assertEqual(bound["throttle_slew_limit_us_per_s"], 600.0)
@@ -403,6 +405,47 @@ class BetaflightInterceptionEvaluationTest(unittest.TestCase):
         self.assertFalse(
             result["contact_performance"]["authorizes_contact_flight"]
         )
+
+    def test_contact_release_policy_reports_performance_without_authorizing_flight(self):
+        scenarios = [{"name": "high_voltage"}, {"name": "low_voltage"}]
+        evaluations = [
+            {
+                "name": "contact",
+                "evidence_role": "contact_performance",
+                "required_for_release": True,
+            }
+        ]
+        summaries = [
+            {
+                "scenario_name": scenario["name"],
+                "evaluation_name": "contact",
+                "evidence_role": "contact_performance",
+                "engagement_policy": "contact",
+                "passed": True,
+            }
+            for scenario in scenarios
+        ]
+
+        result = _release_policy_verdict(
+            config_schema_version=2,
+            rows=[],
+            summaries=summaries,
+            scenarios=scenarios,
+            evaluations=evaluations,
+            paired_screening=None,
+            noncollision_acceptance=None,
+            runtime_binding={
+                "derived_simulation": {
+                    "candidate_engagement_policy": "contact"
+                }
+            },
+        )
+
+        self.assertTrue(result["passed"])
+        self.assertEqual(result["runtime_engagement_policy"], "contact")
+        self.assertIsNone(result["noncollision_safety"])
+        self.assertTrue(result["contact_mc_is_performance_evidence_only"])
+        self.assertFalse(result["contact_performance"]["authorizes_contact_flight"])
 
     def test_full_dropout_never_delivers_visible_measurement(self):
         config = ClosedLoopSimulationConfig(

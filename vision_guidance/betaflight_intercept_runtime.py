@@ -44,10 +44,14 @@ class VelocityEstablishingPngRuntime:
             )
         if image_width <= 0 or image_height <= 0:
             raise ValueError("image dimensions must be positive")
-        self.controller = controller
+        self.preview_controller = controller
+        self.active_controller = VelocityEstablishingPngController(controller.config)
+        self.controller = self.preview_controller
         self.velocity_source = source
         self.image_area = float(image_width * image_height)
         self._last_valid_vision: VisionGuidanceResult | None = None
+        self._last_valid_vision_update_s: float | None = None
+        self._engagement_active = False
 
     def update(
         self,
@@ -59,20 +63,36 @@ class VelocityEstablishingPngRuntime:
         kinematics: VehicleKinematicState,
         engagement_active: bool = True,
     ) -> VelocityEstablishingRuntimeResult:
+        engagement_rising = bool(engagement_active and not self._engagement_active)
+        self._engagement_active = bool(engagement_active)
+        if engagement_rising:
+            self.active_controller.reset()
+        controller = self.active_controller if engagement_active else self.preview_controller
+        self.controller = controller
         if (
             not engagement_active
-            and self.controller.phase in (InterceptPhase.ABORT, InterceptPhase.COMPLETE)
+            and controller.phase in (InterceptPhase.ABORT, InterceptPhase.COMPLETE)
             and vision_result is not None
             and vision_result.los is not None
             and vision_result.los.valid
         ):
-            self.controller.reset()
+            controller.reset()
         source_result = vision_result
         if (
             vision_result is not None
             and vision_result.los is not None
             and vision_result.los.valid
         ):
+            previous_los = (
+                None
+                if self._last_valid_vision is None
+                else self._last_valid_vision.los
+            )
+            if (
+                previous_los is None
+                or vision_result.los.timestamp != previous_los.timestamp
+            ):
+                self._last_valid_vision_update_s = float(timestamp_s)
             self._last_valid_vision = vision_result
         elif vision_result is None:
             source_result = self._last_valid_vision
@@ -96,10 +116,13 @@ class VelocityEstablishingPngRuntime:
         bbox_area_ratio = (
             None if detection is None else float(detection.area) / self.image_area
         )
-        controller_output = self.controller.update(
+        controller_output = controller.update(
             VelocityEstablishingPngInput(
                 timestamp_s=timestamp_s,
                 los_timestamp_s=None if los is None else los.timestamp,
+                los_update_timestamp_s=(
+                    None if los is None else self._last_valid_vision_update_s
+                ),
                 lambda_ned=None if los is None else los.lambda_I,
                 lambda_dot_ned_s=None if los is None else los.lambda_dot_I,
                 tracking_valid=tracking_valid,

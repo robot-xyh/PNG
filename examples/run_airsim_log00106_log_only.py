@@ -1371,6 +1371,9 @@ def _controller_input(
     return VelocityEstablishingPngInput(
         timestamp_s=float(timestamp_s),
         los_timestamp_s=None if detection is None else detection.sample_time_s,
+        los_update_timestamp_s=(
+            None if detection is None else detection.available_time_s
+        ),
         lambda_ned=None if detection is None else detection.filtered_los_ned,
         lambda_dot_ned_s=None if detection is None else detection.los_rate_ned_s,
         tracking_valid=detection is not None,

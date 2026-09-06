@@ -5,7 +5,12 @@
     "runnable": true,
     "control_authorized": false,
     "propeller_control_authorized": false,
-    "purpose": "Final velocity-establishing PNG candidate logging with zero MSP_SET_RAW_RC output."
+    "purpose": "No-prop velocity-establishing PNG logging with zero MSP_SET_RAW_RC output."
+  },
+  "bench_profile": {
+    "scope": "noprop_log_only",
+    "all_propellers_removed_required": true,
+    "operator_acknowledgement_required": true
   },
   "runtime_policy": {
     "allowed_control_modes": [
@@ -45,7 +50,7 @@
     "control_publish_hz": 50,
     "physical_rc_timeout_s": 0.25,
     "override_grace_hold_s": 0.35,
-    "override_channels_mask": 15,
+    "override_channels_mask": 0,
     "aux_arm_channel_zero_based": 4,
     "throttle_channel_zero_based": 2,
     "set_raw_rc_channel_map": "AETR1234",
@@ -227,6 +232,7 @@
       "velocity_reference_slew_m_s2": 3,
       "acquire_consecutive_frames": 1,
       "detection_timeout_s": 0.15,
+      "detection_result_age_limit_s": 0.2,
       "velocity_timeout_s": 0.5,
       "los_prediction_max_s": 0.15,
       "gravity_m_s2": 9.80665,
@@ -240,8 +246,8 @@
       "blind_hold_s": 0.2,
       "terminal_reacquire_frames": 2,
       "area_ttc_window_s": 0.6,
-      "area_ttc_min_samples": 5,
-      "area_ttc_min_span_s": 0.1
+      "area_ttc_min_samples": 7,
+      "area_ttc_min_span_s": 0.3
     }
   },
   "rc_mapping": {

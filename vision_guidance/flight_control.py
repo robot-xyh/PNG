@@ -1388,6 +1388,7 @@ class SafetyInputs:
     prefill_ready: bool = True
     msp_response_fresh: bool = True
     physical_rc_fresh: bool = False
+    manual_rc_latched: bool = False
     snapshot_approved: bool = False
     config_conflict_free: bool = False
 
@@ -1422,7 +1423,10 @@ class BetaflightSafetyStateMachine:
             return self._set(SafetyState.FAILSAFE, False, "msp_set_raw_rc_ack_stale")
         if not inputs.armed:
             return self._set(SafetyState.READY, False, "not_armed")
-        if not inputs.physical_rc_fresh:
+        if not (
+            inputs.physical_rc_fresh
+            or inputs.override_active and inputs.manual_rc_latched
+        ):
             return self._set(SafetyState.FAILSAFE, False, "physical_rc_stale")
         if not inputs.telemetry_fresh:
             return self._set(SafetyState.FAILSAFE, False, "telemetry_stale")

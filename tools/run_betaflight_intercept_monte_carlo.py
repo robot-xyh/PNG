@@ -159,7 +159,7 @@ def main() -> None:
             "Noise models are configured surrogates, not a fitted YOLO/ByteTrack error distribution.",
             "This Monte Carlo runner does not emit Betaflight RC/PWM; active runtime use remains approval-gated.",
             "The candidate uses the production LOS filter and delayed/noisy own velocity, but its noise model is not fitted to flight data.",
-            "Contact-policy hit rates are project-performance evidence and are not represented as the non-collision runtime policy.",
+            "Passing contact-policy hit-rate checks is performance evidence, not active flight authorization.",
             "Non-collision acceptance measures timely transfer to the pilot; it does not claim autonomous collision avoidance after ABORT.",
         ],
         "source_config": str(source_config_path),
@@ -585,6 +585,9 @@ def _derive_runtime_simulation(
         "camera_vertical_half_fov_deg": vertical_half_fov_deg,
         "perception_rate_hz": float(tracker["perception_rate_hz"]),
         "perception_stale_timeout_s": float(velocity["detection_timeout_s"]),
+        "perception_result_age_limit_s": float(
+            velocity["detection_result_age_limit_s"]
+        ),
         "kinematic_rate_hz": float(msp["raw_gps_poll_hz"]),
         "kinematic_stale_timeout_s": float(velocity["velocity_timeout_s"]),
         "candidate_png_track_speed_ratio": float(
@@ -867,8 +870,15 @@ def _release_policy_verdict(
     if not isinstance(derived, Mapping):
         raise ValueError("runtime_binding derived_simulation is missing")
     runtime_policy = str(derived.get("candidate_engagement_policy", ""))
+    if runtime_policy == "contact":
+        return _contact_release_policy_verdict(
+            summaries=summaries,
+            scenarios=scenarios,
+            evaluations=evaluations,
+            paired_screening=paired_screening,
+        )
     if runtime_policy != "noncollision":
-        raise ValueError("supervised release runtime must use noncollision policy")
+        raise ValueError("release runtime must use contact or noncollision policy")
     if paired_screening is None or paired_screening.get("passed") is not True:
         paired_selected = None
     else:
@@ -968,6 +978,79 @@ def _release_policy_verdict(
             "contact_and_noncollision_checks_passed"
             if contact_passed and noncollision_passed
             else "contact_or_noncollision_check_failed"
+        ),
+    }
+
+
+def _contact_release_policy_verdict(
+    *,
+    summaries: list[dict[str, object]],
+    scenarios: list[dict[str, object]],
+    evaluations: list[dict[str, object]],
+    paired_screening: Mapping[str, object] | None,
+) -> dict[str, object]:
+    scenario_names = {str(scenario["name"]) for scenario in scenarios}
+    contact_evaluations = [
+        evaluation
+        for evaluation in evaluations
+        if evaluation.get("evidence_role") == "contact_performance"
+        and evaluation.get("required_for_release") is True
+    ]
+    if len(contact_evaluations) != 1:
+        raise ValueError(
+            "contact release Monte Carlo requires exactly one required contact_performance evaluation"
+        )
+    contact_name = str(contact_evaluations[0]["name"])
+    contact_summaries = [
+        summary
+        for summary in summaries
+        if summary["evaluation_name"] == contact_name
+        and summary["evidence_role"] == "contact_performance"
+    ]
+    contact_coverage = {
+        str(summary["scenario_name"]) for summary in contact_summaries
+    } == scenario_names
+    paired_required = paired_screening is not None
+    paired_passed = bool(
+        not paired_required
+        or (
+            paired_screening.get("passed") is True
+            and str(paired_screening.get("selected_evaluation", "")) == contact_name
+        )
+    )
+    contact_passed = bool(
+        contact_coverage
+        and contact_summaries
+        and paired_passed
+        and all(
+            summary.get("engagement_policy") == "contact"
+            and summary.get("passed") is True
+            for summary in contact_summaries
+        )
+    )
+    contact_result = {
+        "engagement_policy": "contact",
+        "evaluation_name": contact_name,
+        "scenario_count": len(contact_summaries),
+        "scenario_names": sorted(
+            str(summary["scenario_name"]) for summary in contact_summaries
+        ),
+        "paired_screening_required": paired_required,
+        "paired_screening_passed": paired_passed,
+        "hit_rate_and_fov_hit_rate_required": True,
+        "passed": contact_passed,
+        "authorizes_contact_flight": False,
+    }
+    return {
+        "runtime_engagement_policy": "contact",
+        "contact_performance": contact_result,
+        "noncollision_safety": None,
+        "contact_mc_is_performance_evidence_only": True,
+        "passed": contact_passed,
+        "reason": (
+            "contact_performance_checks_passed"
+            if contact_passed
+            else "contact_performance_check_failed"
         ),
     }
 

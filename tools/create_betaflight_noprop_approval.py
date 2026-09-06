@@ -560,6 +560,9 @@ def _validate_guidance_config(config: dict[str, Any]) -> dict[str, Any]:
                 png_track_speed_ratio=float(raw.get("png_track_speed_ratio", 0.8)),
                 acquire_consecutive_frames=int(raw.get("acquire_consecutive_frames", 5)),
                 detection_timeout_s=float(raw.get("detection_timeout_s", 0.35)),
+                detection_result_age_limit_s=float(
+                    raw.get("detection_result_age_limit_s", 0.20)
+                ),
                 velocity_timeout_s=float(raw.get("velocity_timeout_s", 0.5)),
                 los_prediction_max_s=float(raw.get("los_prediction_max_s", 0.0)),
                 gravity_m_s2=float(raw.get("gravity_m_s2", 9.80665)),

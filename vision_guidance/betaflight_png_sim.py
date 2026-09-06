@@ -113,6 +113,7 @@ class ClosedLoopSimulationConfig:
     perception_latency_s: float = 0.0
     perception_rate_hz: float = 0.0
     perception_stale_timeout_s: float = 0.35
+    perception_result_age_limit_s: float = 0.35
     perception_fov_gate_enabled: bool = False
     random_seed: int = 0
     measurement_dropout_probability: float = 0.0
@@ -173,6 +174,7 @@ class ClosedLoopSimulationConfig:
             "near_hit_radius_m",
             "camera_half_fov_deg",
             "perception_stale_timeout_s",
+            "perception_result_age_limit_s",
             "wind_time_constant_s",
             "kinematic_rate_hz",
             "kinematic_stale_timeout_s",
@@ -228,8 +230,10 @@ class ClosedLoopSimulationConfig:
             raise ValueError("rectangular camera half FOV values must be in [0, 90)")
         if (rectangular_fov[0] > 0.0) != (rectangular_fov[1] > 0.0):
             raise ValueError("both rectangular camera half FOV values must be configured")
-        if self.perception_latency_s > self.perception_stale_timeout_s:
-            raise ValueError("perception latency cannot exceed the stale timeout")
+        if self.perception_latency_s > self.perception_result_age_limit_s:
+            raise ValueError(
+                "perception latency cannot exceed the result-age limit"
+            )
         if isinstance(self.random_seed, bool) or int(self.random_seed) != self.random_seed:
             raise ValueError("random_seed must be an integer")
         if int(self.random_seed) < 0:
@@ -547,6 +551,7 @@ def simulate_case(
                 velocity_reference_slew_m_s2=cfg.candidate_velocity_reference_slew_m_s2,
                 acquire_consecutive_frames=cfg.candidate_acquire_consecutive_frames,
                 detection_timeout_s=cfg.perception_stale_timeout_s,
+                detection_result_age_limit_s=cfg.perception_result_age_limit_s,
                 velocity_timeout_s=cfg.kinematic_stale_timeout_s,
                 los_prediction_max_s=cfg.candidate_los_prediction_max_s,
                 gravity_m_s2=cfg.gravity_m_s2,
@@ -627,6 +632,7 @@ def simulate_case(
     target_continuously_in_fov = initial_target_in_fov
     pending_measurements: deque[_DelayedMeasurement] = deque()
     last_measurement: _DelayedMeasurement | None = None
+    last_measurement_update_time_s: float | None = None
     next_measurement_time_s = 0.0
     measurement_capture_count = 0
     measurement_delivered_count = 0
@@ -810,6 +816,7 @@ def simulate_case(
             and pending_measurements[0].available_time_s <= elapsed + 1.0e-12
         ):
             last_measurement = pending_measurements.popleft()
+            last_measurement_update_time_s = elapsed
             measurement_delivered_count += 1
             if candidate_los_filter is not None:
                 updated_los_estimate = candidate_los_filter.update(
@@ -824,9 +831,23 @@ def simulate_case(
             if last_measurement is not None
             else float("inf")
         )
+        measurement_update_age_s = (
+            elapsed - last_measurement_update_time_s
+            if last_measurement_update_time_s is not None
+            else float("inf")
+        )
+        measurement_result_age_s = (
+            max(0.0, measurement_age_s - measurement_update_age_s)
+            if last_measurement is not None
+            and last_measurement_update_time_s is not None
+            else float("inf")
+        )
         measurement_valid = bool(
             last_measurement is not None
-            and measurement_age_s <= cfg.perception_stale_timeout_s + 1.0e-12
+            and measurement_update_age_s
+            <= cfg.perception_stale_timeout_s + 1.0e-12
+            and measurement_result_age_s
+            <= cfg.perception_result_age_limit_s + 1.0e-12
         )
         if measurement_valid:
             counters["measurement_valid"] += 1
@@ -863,7 +884,11 @@ def simulate_case(
                 measurement_was_valid
                 and first_measurement_stale_time_s is None
                 and last_measurement is not None
-                and measurement_age_s > cfg.perception_stale_timeout_s
+                and (
+                    measurement_update_age_s > cfg.perception_stale_timeout_s
+                    or measurement_result_age_s
+                    > cfg.perception_result_age_limit_s
+                )
             ):
                 first_measurement_stale_time_s = elapsed
             los = np.zeros(3, dtype=float)
@@ -895,6 +920,7 @@ def simulate_case(
                         if last_measurement is None
                         else last_measurement.exposure_time_s
                     ),
+                    los_update_timestamp_s=last_measurement_update_time_s,
                     lambda_ned=(
                         None
                         if candidate_los_estimate is None
@@ -907,8 +933,7 @@ def simulate_case(
                     ),
                     tracking_valid=bool(
                         candidate_los_estimate is not None
-                        and elapsed - candidate_los_estimate.timestamp
-                        <= cfg.perception_stale_timeout_s + 1.0e-12
+                        and measurement_valid
                     ),
                     bbox_area_ratio=(
                         None

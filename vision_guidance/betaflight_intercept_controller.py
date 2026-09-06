@@ -67,6 +67,7 @@ class VelocityEstablishingPngConfig:
     png_track_speed_ratio: float = 0.8
     acquire_consecutive_frames: int = 5
     detection_timeout_s: float = 0.15
+    detection_result_age_limit_s: float = 0.20
     velocity_timeout_s: float = 0.5
     los_prediction_max_s: float = 0.0
     gravity_m_s2: float = 9.80665
@@ -96,6 +97,7 @@ class VelocityEstablishingPngConfig:
             self.vertical_speed_reference_limit_m_s,
             self.velocity_reference_slew_m_s2,
             self.detection_timeout_s,
+            self.detection_result_age_limit_s,
             self.velocity_timeout_s,
             self.noncollision_bbox_abort_ratio,
             self.noncollision_ttc_abort_s,
@@ -154,6 +156,7 @@ class VelocityEstablishingPngInput:
     ttc_valid: bool = False
     ttc_s: float | None = None
     track_id: int | None = None
+    los_update_timestamp_s: float | None = None
 
 
 @dataclass(frozen=True)
@@ -176,6 +179,7 @@ class VelocityEstablishingPngOutput:
     png_speed_m_s: float
     los_speed_m_s: float | None
     detection_age_s: float | None
+    detection_update_age_s: float | None
     velocity_age_s: float | None
     los_prediction_horizon_s: float
     acquire_count: int
@@ -209,6 +213,7 @@ class VelocityEstablishingPngController:
         self.config = config
         self.phase = InterceptPhase.ACQUIRE
         self._acquire_count = 0
+        self._acquire_track_id: int | None = None
         self._last_los_timestamp_s: float | None = None
         self._abort_reason = ""
         self._terminal_trigger: str | None = None
@@ -226,6 +231,7 @@ class VelocityEstablishingPngController:
     def reset(self) -> None:
         self.phase = InterceptPhase.ACQUIRE
         self._acquire_count = 0
+        self._acquire_track_id = None
         self._last_los_timestamp_s = None
         self._abort_reason = ""
         self._terminal_trigger = None
@@ -243,12 +249,29 @@ class VelocityEstablishingPngController:
     def update(self, value: VelocityEstablishingPngInput) -> VelocityEstablishingPngOutput:
         now = float(value.timestamp_s)
         if not math.isfinite(now):
-            return self._empty(0.0, "nonfinite_input", None, None)
+            return self._empty(0.0, "nonfinite_input", None, None, None)
         detection_age = _age(now, value.los_timestamp_s)
+        detection_update_age = _age(
+            now,
+            value.los_timestamp_s
+            if value.los_update_timestamp_s is None
+            else value.los_update_timestamp_s,
+        )
         velocity_age = _age(now, value.velocity_timestamp_s)
-        invalid_reason = self._invalid_reason(value, detection_age, velocity_age)
+        invalid_reason = self._invalid_reason(
+            value,
+            detection_age,
+            detection_update_age,
+            velocity_age,
+        )
         if self.phase in (InterceptPhase.ABORT, InterceptPhase.COMPLETE):
-            return self._empty(now, self._abort_reason or "abort_latched", detection_age, velocity_age)
+            return self._empty(
+                now,
+                self._abort_reason or "abort_latched",
+                detection_age,
+                detection_update_age,
+                velocity_age,
+            )
         if (
             invalid_reason is None
             and self._active_track_id is not None
@@ -257,16 +280,34 @@ class VelocityEstablishingPngController:
         ):
             invalid_reason = "track_id_changed"
         if invalid_reason is not None:
-            return self._handle_invalid(now, invalid_reason, detection_age, velocity_age)
+            return self._handle_invalid(
+                now,
+                invalid_reason,
+                detection_age,
+                detection_update_age,
+                velocity_age,
+            )
 
         if self.phase == InterceptPhase.BLIND_HOLD:
             if value.track_id != self._terminal_track_id:
-                return self._blind_hold(now, "terminal_track_mismatch", detection_age, velocity_age)
+                return self._blind_hold(
+                    now,
+                    "terminal_track_mismatch",
+                    detection_age,
+                    detection_update_age,
+                    velocity_age,
+                )
             if value.los_timestamp_s != self._last_reacquire_timestamp_s:
                 self._last_reacquire_timestamp_s = value.los_timestamp_s
                 self._terminal_reacquire_count += 1
             if self._terminal_reacquire_count < self.config.terminal_reacquire_frames:
-                return self._blind_hold(now, "terminal_reacquiring", detection_age, velocity_age)
+                return self._blind_hold(
+                    now,
+                    "terminal_reacquiring",
+                    detection_age,
+                    detection_update_age,
+                    velocity_age,
+                )
             self.phase = InterceptPhase.TERMINAL_VISUAL
             self._blind_started_s = None
 
@@ -290,6 +331,7 @@ class VelocityEstablishingPngController:
                     terminal_trigger,
                     now,
                     detection_age,
+                    detection_update_age,
                     velocity_age,
                     area_ttc_s,
                     value.track_id,
@@ -300,17 +342,39 @@ class VelocityEstablishingPngController:
                     terminal_trigger,
                     now,
                     detection_age,
+                    detection_update_age,
                     velocity_age,
                     area_ttc_s,
                     value.track_id,
                 )
 
-        if value.los_timestamp_s != self._last_los_timestamp_s:
-            self._last_los_timestamp_s = value.los_timestamp_s
-            self._acquire_count += 1
         if self.phase == InterceptPhase.ACQUIRE:
+            if value.track_id is None:
+                self._acquire_count = 0
+                self._acquire_track_id = None
+                self._last_los_timestamp_s = None
+                return self._empty(
+                    now,
+                    "track_id_missing",
+                    detection_age,
+                    detection_update_age,
+                    velocity_age,
+                )
+            if value.track_id != self._acquire_track_id:
+                self._acquire_track_id = value.track_id
+                self._acquire_count = 0
+                self._last_los_timestamp_s = None
+            if value.los_timestamp_s != self._last_los_timestamp_s:
+                self._last_los_timestamp_s = value.los_timestamp_s
+                self._acquire_count += 1
             if self._acquire_count < self.config.acquire_consecutive_frames:
-                return self._empty(now, "acquiring", detection_age, velocity_age)
+                return self._empty(
+                    now,
+                    "acquiring",
+                    detection_age,
+                    detection_update_age,
+                    velocity_age,
+                )
             self.phase = InterceptPhase.TRACKING
             self._active_track_id = value.track_id
             self._velocity_reference = np.array(velocity, dtype=float, copy=True)
@@ -425,6 +489,7 @@ class VelocityEstablishingPngController:
             png_speed_m_s=png_speed_m_s,
             los_speed_m_s=los_speed,
             detection_age_s=detection_age,
+            detection_update_age_s=detection_update_age,
             velocity_age_s=velocity_age,
             los_prediction_horizon_s=prediction_horizon,
             acquire_count=self._acquire_count,
@@ -469,11 +534,13 @@ class VelocityEstablishingPngController:
         now: float,
         reason: str,
         detection_age_s: float | None,
+        detection_update_age_s: float | None,
         velocity_age_s: float | None,
     ) -> VelocityEstablishingPngOutput:
         tracking_loss = reason in {
             "tracking_invalid",
             "detection_stale",
+            "detection_result_stale",
             "track_id_changed",
             "no_detection",
         } or reason.startswith("track_")
@@ -482,20 +549,39 @@ class VelocityEstablishingPngController:
             and self.phase in (InterceptPhase.TERMINAL_VISUAL, InterceptPhase.BLIND_HOLD)
             and tracking_loss
         ):
-            return self._blind_hold(now, reason, detection_age_s, velocity_age_s)
+            return self._blind_hold(
+                now,
+                reason,
+                detection_age_s,
+                detection_update_age_s,
+                velocity_age_s,
+            )
         if self.phase == InterceptPhase.ACQUIRE:
             self._acquire_count = 0
             self._last_los_timestamp_s = None
-            return self._empty(now, reason, detection_age_s, velocity_age_s)
+            return self._empty(
+                now,
+                reason,
+                detection_age_s,
+                detection_update_age_s,
+                velocity_age_s,
+            )
         self.phase = InterceptPhase.ABORT
         self._abort_reason = reason
-        return self._empty(now, reason, detection_age_s, velocity_age_s)
+        return self._empty(
+            now,
+            reason,
+            detection_age_s,
+            detection_update_age_s,
+            velocity_age_s,
+        )
 
     def _blind_hold(
         self,
         now: float,
         reason: str,
         detection_age_s: float | None,
+        detection_update_age_s: float | None,
         velocity_age_s: float | None,
     ) -> VelocityEstablishingPngOutput:
         if self._blind_started_s is None:
@@ -504,12 +590,23 @@ class VelocityEstablishingPngController:
             self._last_reacquire_timestamp_s = None
         age_s = max(0.0, now - self._blind_started_s)
         if age_s + 1.0e-12 >= self.config.blind_hold_s:
-            self.phase = InterceptPhase.ABORT
-            self._abort_reason = "blind_hold_expired"
-            return self._empty(now, self._abort_reason, detection_age_s, velocity_age_s)
+            self.phase = InterceptPhase.COMPLETE
+            return self._empty(
+                now,
+                "blind_hold_complete",
+                detection_age_s,
+                detection_update_age_s,
+                velocity_age_s,
+            )
         self.phase = InterceptPhase.BLIND_HOLD
         scale = max(0.0, 1.0 - age_s / self.config.blind_hold_s)
-        output = self._empty(now, reason, detection_age_s, velocity_age_s)
+        output = self._empty(
+            now,
+            reason,
+            detection_age_s,
+            detection_update_age_s,
+            velocity_age_s,
+        )
         return VelocityEstablishingPngOutput(
             **{
                 **output.__dict__,
@@ -598,6 +695,7 @@ class VelocityEstablishingPngController:
         reason: str,
         timestamp_s: float,
         detection_age_s: float | None,
+        detection_update_age_s: float | None,
         velocity_age_s: float | None,
         area_ttc_s: float | None,
         track_id: int | None,
@@ -605,7 +703,13 @@ class VelocityEstablishingPngController:
         self.phase = phase
         self._abort_reason = reason
         self._terminal_track_id = track_id
-        output = self._empty(timestamp_s, reason, detection_age_s, velocity_age_s)
+        output = self._empty(
+            timestamp_s,
+            reason,
+            detection_age_s,
+            detection_update_age_s,
+            velocity_age_s,
+        )
         return VelocityEstablishingPngOutput(
             **{
                 **output.__dict__,
@@ -620,15 +724,35 @@ class VelocityEstablishingPngController:
         self,
         value: VelocityEstablishingPngInput,
         detection_age: float | None,
+        detection_update_age: float | None,
         velocity_age: float | None,
     ) -> str | None:
-        for timestamp in (value.los_timestamp_s, value.velocity_timestamp_s):
+        for timestamp in (
+            value.los_timestamp_s,
+            value.los_update_timestamp_s,
+            value.velocity_timestamp_s,
+        ):
             if timestamp is not None and not math.isfinite(float(timestamp)):
                 return "nonfinite_input"
+        if (
+            value.los_timestamp_s is not None
+            and value.los_update_timestamp_s is not None
+            and float(value.los_update_timestamp_s) < float(value.los_timestamp_s)
+        ):
+            return "detection_time_order_invalid"
         if not value.tracking_valid or value.lambda_ned is None or value.lambda_dot_ned_s is None:
             return value.tracking_reason or "tracking_invalid"
-        if detection_age is None or detection_age > self.config.detection_timeout_s:
+        if (
+            detection_update_age is None
+            or detection_update_age > self.config.detection_timeout_s
+        ):
             return "detection_stale"
+        result_age_at_delivery = max(
+            0.0,
+            (detection_age or 0.0) - detection_update_age,
+        )
+        if result_age_at_delivery > self.config.detection_result_age_limit_s:
+            return "detection_result_stale"
         if not value.velocity_valid or value.velocity_ned_m_s is None:
             return "velocity_invalid"
         if velocity_age is None or velocity_age > self.config.velocity_timeout_s:
@@ -662,6 +786,7 @@ class VelocityEstablishingPngController:
         timestamp_s: float,
         reason: str,
         detection_age_s: float | None,
+        detection_update_age_s: float | None,
         velocity_age_s: float | None,
     ) -> VelocityEstablishingPngOutput:
         zero = (0.0, 0.0, 0.0)
@@ -684,6 +809,7 @@ class VelocityEstablishingPngController:
             png_speed_m_s=0.0,
             los_speed_m_s=None,
             detection_age_s=detection_age_s,
+            detection_update_age_s=detection_update_age_s,
             velocity_age_s=velocity_age_s,
             los_prediction_horizon_s=0.0,
             acquire_count=self._acquire_count,

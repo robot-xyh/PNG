@@ -16,6 +16,7 @@ def _input(
     timestamp: float,
     *,
     los_timestamp=None,
+    los_update_timestamp=None,
     velocity=(0.0, 0.0, 0.0),
     valid=True,
     reason=None,
@@ -29,6 +30,7 @@ def _input(
     return VelocityEstablishingPngInput(
         timestamp_s=timestamp,
         los_timestamp_s=timestamp if los_timestamp is None else los_timestamp,
+        los_update_timestamp_s=los_update_timestamp,
         lambda_ned=np.asarray(los, dtype=float),
         lambda_dot_ned_s=np.asarray(los_dot, dtype=float),
         tracking_valid=valid,
@@ -71,6 +73,41 @@ class VelocityEstablishingPngControllerTest(unittest.TestCase):
         np.testing.assert_allclose(second.velocity_reference_raw_ned_m_s, (0.0, 10.0, 0.0))
         delta = np.asarray(second.velocity_reference_ned_m_s) - np.array([2.0, 0.0, 0.0])
         self.assertAlmostEqual(float(np.linalg.norm(delta)), 1.5)
+
+    def test_result_latency_and_detection_update_gap_use_separate_clocks(self):
+        controller = self._controller(
+            detection_timeout_s=0.15,
+            detection_result_age_limit_s=0.20,
+        )
+        first = controller.update(
+            _input(1.0, los_timestamp=0.82, los_update_timestamp=1.0)
+        )
+        held = controller.update(
+            _input(1.14, los_timestamp=0.82, los_update_timestamp=1.0)
+        )
+        stale = controller.update(
+            _input(1.16, los_timestamp=0.82, los_update_timestamp=1.0)
+        )
+
+        self.assertTrue(first.valid)
+        self.assertTrue(held.valid)
+        self.assertAlmostEqual(held.detection_age_s, 0.32)
+        self.assertAlmostEqual(held.detection_update_age_s, 0.14)
+        self.assertEqual(stale.phase, InterceptPhase.ABORT)
+        self.assertEqual(stale.reason, "detection_stale")
+
+    def test_over_age_new_detection_is_rejected_at_delivery(self):
+        controller = self._controller(
+            detection_timeout_s=0.15,
+            detection_result_age_limit_s=0.20,
+        )
+        output = controller.update(
+            _input(1.0, los_timestamp=0.79, los_update_timestamp=1.0)
+        )
+
+        self.assertFalse(output.valid)
+        self.assertEqual(output.phase, InterceptPhase.ACQUIRE)
+        self.assertEqual(output.reason, "detection_result_stale")
 
     def test_png_and_fov_are_protected_before_exact_speed_budget(self):
         controller = self._controller(
@@ -235,8 +272,9 @@ class VelocityEstablishingPngControllerTest(unittest.TestCase):
             np.asarray(halfway.acceleration_ned_m_s2),
             0.5 * np.asarray(terminal.acceleration_ned_m_s2),
         )
-        self.assertEqual(expired.phase, InterceptPhase.ABORT)
-        self.assertEqual(expired.reason, "blind_hold_expired")
+        self.assertEqual(expired.phase, InterceptPhase.COMPLETE)
+        self.assertFalse(expired.valid)
+        self.assertEqual(expired.reason, "blind_hold_complete")
 
     def test_contact_reacquires_only_same_track_after_two_distinct_frames(self):
         controller = self._controller(engagement_policy=EngagementPolicy.CONTACT.value)

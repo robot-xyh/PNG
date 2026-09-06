@@ -890,6 +890,32 @@ class FlightControlTest(unittest.TestCase):
                 self.assertFalse(decision.command_active)
                 self.assertEqual(decision.reason, reason)
 
+    def test_latched_manual_rc_baseline_remains_usable_during_override(self):
+        decision = BetaflightSafetyStateMachine().update(
+            SafetyInputs(
+                control_requested=True,
+                allow_control=True,
+                target_valid=True,
+                aux_enabled=True,
+                telemetry_fresh=True,
+                attitude_synced=True,
+                voltage_ok=True,
+                watchdog_ok=True,
+                armed=True,
+                override_available=True,
+                override_active=True,
+                prefill_ready=True,
+                msp_response_fresh=True,
+                physical_rc_fresh=False,
+                manual_rc_latched=True,
+                snapshot_approved=True,
+                config_conflict_free=True,
+            )
+        )
+
+        self.assertTrue(decision.command_active)
+        self.assertEqual(decision.reason, "active")
+
     def test_guidance_eval_to_setpoint_uses_gain_matrix(self):
         guidance = GuidanceEval(
             timestamp=2.0,

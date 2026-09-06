@@ -390,12 +390,21 @@ class BetaflightPngClosedLoopSimulationTest(unittest.TestCase):
         self.assertEqual(slow.fixed_vm_m_s, 10.0)
         self.assertEqual(fast.fixed_vm_m_s, 10.0)
 
-    def test_rejects_latency_above_stale_timeout(self):
-        with self.assertRaisesRegex(ValueError, "latency cannot exceed"):
+    def test_rejects_latency_above_result_age_limit(self):
+        with self.assertRaisesRegex(ValueError, "result-age limit"):
             ClosedLoopSimulationConfig(
                 perception_latency_s=0.4,
-                perception_stale_timeout_s=0.35,
+                perception_stale_timeout_s=0.15,
+                perception_result_age_limit_s=0.35,
             )
+
+        config = ClosedLoopSimulationConfig(
+            perception_latency_s=0.18,
+            perception_stale_timeout_s=0.15,
+            perception_result_age_limit_s=0.20,
+        )
+        self.assertEqual(config.perception_stale_timeout_s, 0.15)
+        self.assertEqual(config.perception_result_age_limit_s, 0.20)
 
     def test_out_of_fov_geometry_is_not_counted_as_visual_feasible_hit(self):
         result = simulate_case(

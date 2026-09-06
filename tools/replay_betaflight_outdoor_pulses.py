@@ -237,6 +237,9 @@ def _replay_pulse(
 def _controller_input(row: dict[str, str]) -> VelocityEstablishingPngInput:
     timestamp_s = _required_float(row, "elapsed_s")
     detection_age_s = _float(row.get("intercept_detection_age_s"))
+    detection_update_age_s = _float(
+        row.get("intercept_detection_update_age_s")
+    )
     velocity_age_s = _float(row.get("intercept_velocity_age_s"))
     los_values = _vector(row, "lambda_I_x", "lambda_I_y", "lambda_I_z")
     los_dot_values = _vector(
@@ -272,6 +275,11 @@ def _controller_input(row: dict[str, str]) -> VelocityEstablishingPngInput:
             None
             if detection_age_s is None
             else timestamp_s - max(0.0, detection_age_s)
+        ),
+        los_update_timestamp_s=(
+            None
+            if detection_update_age_s is None
+            else timestamp_s - max(0.0, detection_update_age_s)
         ),
         lambda_ned=los_values,
         lambda_dot_ned_s=los_dot_values,

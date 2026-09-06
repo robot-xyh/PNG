@@ -233,6 +233,7 @@
       "velocity_reference_slew_m_s2": 3,
       "acquire_consecutive_frames": 1,
       "detection_timeout_s": 0.15,
+      "detection_result_age_limit_s": 0.2,
       "velocity_timeout_s": 0.5,
       "los_prediction_max_s": 0.15,
       "gravity_m_s2": 9.80665,
@@ -246,8 +247,8 @@
       "blind_hold_s": 0.2,
       "terminal_reacquire_frames": 2,
       "area_ttc_window_s": 0.6,
-      "area_ttc_min_samples": 5,
-      "area_ttc_min_span_s": 0.1
+      "area_ttc_min_samples": 7,
+      "area_ttc_min_span_s": 0.3
     }
   },
   "rc_mapping": {

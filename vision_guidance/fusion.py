@@ -150,11 +150,11 @@ class DeferredAttitudeFusion:
 
         if wait_s >= self.max_wait_s:
             self._pending.popleft()
-            result = self.pipeline.process(pending.detection)
+            self._dropped_count += 1
             return self._state(
                 pending.detection,
                 pending.context,
-                result,
+                None,
                 "attitude_wait_timeout",
                 wait_ms=1000.0 * wait_s,
             )
