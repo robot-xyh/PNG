@@ -316,6 +316,7 @@ class SitlPilotRcConfig:
     motion_test_after_s: float | None = None
     motion_test_half_duration_s: float = 0.4
     motion_test_delta_us: int = 100
+    motion_test_axis: str = "both"
 
     @classmethod
     def from_mapping(cls, values: dict[str, Any]) -> "SitlPilotRcConfig":
@@ -336,6 +337,7 @@ class SitlPilotRcConfig:
                 values.get("motion_test_half_duration_s", 0.4)
             ),
             motion_test_delta_us=int(values.get("motion_test_delta_us", 100)),
+            motion_test_axis=str(values.get("motion_test_axis", "both")),
         )
         if not all(
             math.isfinite(value)
@@ -378,6 +380,8 @@ class SitlPilotRcConfig:
                 raise ValueError("SITL motion-test half duration must be within 0.2-0.6 s")
             if not 50 <= config.motion_test_delta_us <= 150:
                 raise ValueError("SITL motion-test stick delta must be within 50-150 us")
+            if config.motion_test_axis not in {"roll", "pitch", "both"}:
+                raise ValueError("SITL motion-test axis must be roll, pitch, or both")
         return config
 
 
@@ -423,11 +427,15 @@ class SitlPilotRcScheduler:
             motion_elapsed = elapsed - motion_start
             half = self.config.motion_test_half_duration_s
             if 0.0 <= motion_elapsed < half:
-                roll += self.config.motion_test_delta_us
-                pitch += self.config.motion_test_delta_us
+                if self.config.motion_test_axis in {"roll", "both"}:
+                    roll += self.config.motion_test_delta_us
+                if self.config.motion_test_axis in {"pitch", "both"}:
+                    pitch += self.config.motion_test_delta_us
             elif half <= motion_elapsed < 2.0 * half:
-                roll -= self.config.motion_test_delta_us
-                pitch -= self.config.motion_test_delta_us
+                if self.config.motion_test_axis in {"roll", "both"}:
+                    roll -= self.config.motion_test_delta_us
+                if self.config.motion_test_axis in {"pitch", "both"}:
+                    pitch -= self.config.motion_test_delta_us
         # AETR1234: AUX1 low arms, AUX3 high activates MSP OVERRIDE, AUX4 low is Acro.
         return (
             roll,

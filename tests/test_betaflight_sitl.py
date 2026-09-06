@@ -92,7 +92,7 @@ class BetaflightSitlTest(unittest.TestCase):
             generated["msp_runtime"]["raw_imu_gyro"]["axis_sign"], [1, -1, 1]
         )
         self.assertEqual(generated["msp_runtime"]["raw_imu_poll_hz"], 20)
-        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_after_s"], 5.2)
+        self.assertIsNone(generated["sitl_profile"]["pilot_rc"]["motion_test_after_s"])
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.35)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.7)
         self.assertEqual(validate_loopback_sitl_config(generated)["simulated_vbat_v"], 23.6)
@@ -116,6 +116,7 @@ class BetaflightSitlTest(unittest.TestCase):
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_after_s"], 7.70)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["takeover_duration_s"], 0.9)
         self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_delta_us"], 50)
+        self.assertEqual(generated["sitl_profile"]["pilot_rc"]["motion_test_axis"], "roll")
 
     def test_rendered_target_approach_preserves_terminal_detection_standoff(self):
         model_path = (
@@ -291,6 +292,20 @@ class BetaflightSitlTest(unittest.TestCase):
             self.assertEqual(scheduler.channels_at(5.1)[:2], (1600, 1600))
             self.assertEqual(scheduler.channels_at(5.5)[:2], (1400, 1400))
             self.assertEqual(scheduler.channels_at(5.9)[:2], (1500, 1500))
+        finally:
+            scheduler.close()
+
+    def test_sitl_pilot_motion_can_use_one_axis(self):
+        scheduler = SitlPilotRcScheduler(
+            SitlPilotRcConfig(
+                motion_test_after_s=5.0,
+                motion_test_axis="roll",
+                takeover_after_s=8.0,
+            )
+        )
+        try:
+            self.assertEqual(scheduler.channels_at(5.1)[:2], (1600, 1500))
+            self.assertEqual(scheduler.channels_at(5.5)[:2], (1400, 1500))
         finally:
             scheduler.close()
 
