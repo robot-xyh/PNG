@@ -4,7 +4,7 @@
   "trials_per_case": 100,
   "runtime_binding": {
     "config": "config/betaflight.rk3588.velocity_png.flight_contact_supervised.json",
-    "sha256": "8ba8a4871eed7c328c9d223dbd8a3a7b6407c147221c39fa20f8fd35b6919def"
+    "sha256": "144414cca2abd23ceca8a04d5153740fde2739c5af12d38eec04ea71738e408b"
   },
   "evidence": {
     "controller": "velocity_establishing_png",
