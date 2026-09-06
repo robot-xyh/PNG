@@ -66,7 +66,8 @@ RELEASE_HIT_RATE_MIN = 0.80
 RELEASE_FOV_HIT_RATE_MIN = 0.80
 RELEASE_TRIALS_PER_CASE_MIN = 100
 RELEASE_CASE_COUNT_MIN = 30
-RELEASE_ROW_COUNT_MIN = 27000
+RELEASE_CONTACT_ROW_COUNT_MIN = 18000
+RELEASE_NONCOLLISION_ROW_COUNT_MIN = 27000
 RELEASE_NONCOLLISION_TIMELY_ABORT_RATE_MIN = 0.99
 RELEASE_NONCOLLISION_UNSAFE_CONTACT_RATE_MAX = 0.01
 RELEASE_NONCOLLISION_ABORT_LEAD_TIME_S = 0.75
@@ -363,10 +364,15 @@ def validate_release_evidence(
         required_summary_count = int(report["required_summary_count"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RuntimeError("release evidence Monte Carlo coverage is invalid") from exc
+    minimum_row_count = (
+        RELEASE_NONCOLLISION_ROW_COUNT_MIN
+        if expected_engagement_policy == "noncollision"
+        else RELEASE_CONTACT_ROW_COUNT_MIN
+    )
     if (
         trials_per_case < RELEASE_TRIALS_PER_CASE_MIN
         or case_count < RELEASE_CASE_COUNT_MIN
-        or row_count < RELEASE_ROW_COUNT_MIN
+        or row_count < minimum_row_count
     ):
         raise RuntimeError("release evidence Monte Carlo coverage is insufficient")
 

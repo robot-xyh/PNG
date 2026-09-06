@@ -481,6 +481,7 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
 
             contact_report = copy.deepcopy(report)
             contact_report["required_summary_count"] = 3
+            contact_report["row_count"] = 18000
             contact_report["summaries"] = [
                 value
                 for value in contact_report["summaries"]
@@ -506,6 +507,16 @@ class BetaflightFlightSupervisedApprovalTest(unittest.TestCase):
             self.assertEqual(
                 contact_evidence["required_noncollision_scenario_count"], 0
             )
+
+            contact_report["row_count"] = 17999
+            with self.assertRaisesRegex(RuntimeError, "coverage is insufficient"):
+                validate_release_evidence(
+                    contact_report,
+                    report_path,
+                    runtime_config_sha256=config_sha256,
+                    runtime_thrust_model=thrust_evidence,
+                    expected_engagement_policy="contact",
+                )
 
             report["release_passed"] = False
             with self.assertRaisesRegex(RuntimeError, "did not pass"):
