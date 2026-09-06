@@ -125,7 +125,7 @@ def materialize_sitl_config(
             "throttle_after_arm_s": 4.7,
             "motion_test_after_s": 5.2,
             "motion_test_half_duration_s": 0.4,
-            "motion_test_delta_us": 100,
+            "motion_test_delta_us": 50,
             "takeover_after_s": SITL_TAKEOVER_AFTER_S[policy],
             "takeover_duration_s": SITL_TAKEOVER_DURATION_S[policy],
             "disarm_after_s": 11.5,
